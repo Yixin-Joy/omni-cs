@@ -620,6 +620,9 @@ async def draft(body: dict):
                         payload = json.loads(payload)
                     except Exception:
                         payload = {}
+                # JSONB 欄位不保證回 dict（可能是 list / 純量），一律收斂
+                if not isinstance(payload, dict):
+                    payload = {}
                 question = (payload.get("messageContent") or "").strip()
     if not question:
         return _err("找不到可回覆的客戶訊息（可能已經回覆過，或不是文字訊息）", 404)
