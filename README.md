@@ -1,9 +1,13 @@
 # 多渠道客服中轉服務（微信 / WhatsApp / Instagram / Facebook）
 
-把四個渠道收到的客戶消息，統一接進來，做兩件事：
+把四個渠道收到的客戶消息統一接進來，**全部落地本機資料庫**，
+集中在一個網頁（客服工作台）上查看與回覆，並提供 AI 自動回復。
 
-1. **轉發**：微信、WhatsApp 的消息轉成約定的 JSON，轉發給目標業務系統（9033）。
-2. **客服工作台**：微信 / WhatsApp / IG / FB 四個渠道的會話，集中在一個網頁上查看與回覆。
+- **接收**：微信公眾號（走 natapp 隧道）、WhatsApp / Instagram / Facebook（走 ngrok 隧道）。
+- **落地**：四渠道都正規化成同一種 JSON，寫進本機 PostgreSQL（`forward_log` / `igfb_dm`）。
+- **工作台**：`/console` 看會話、回覆客戶、未讀紅點、檔案傳輸、AI 自動回復。
+
+> 本服務**不對外轉發**任何訊息，也沒有任何外部系統會打進來要求發送。
 
 ---
 
@@ -13,31 +17,30 @@
 必須有個服務站在中間接住消息、轉換格式。本服務就是這個中轉層：
 
 ```
-   客戶                   平台伺服器                  本服務                      目標系統 / 客服
- ────────              ─────────────              ─────────────              ──────────────────
- 微信使用者    ──▶   微信伺服器        ──▶   /wechat            ──▶   目標業務系統 9033
- WhatsApp 使用者 ──▶  Meta 伺服器       ──▶   /whatsapp/webhook  ──▶   目標業務系統 9033
- IG 使用者      ──▶  Meta 伺服器       ──▶   /webhook           ──▶   客服工作台（本機）
- FB 使用者      ──▶  Meta 伺服器       ──▶   /webhook           ──▶   客服工作台（本機）
-
-                     ↓ 各自解析、轉成同一種 JSON 後再分流
+客戶  ──▶  平台伺服器  ──▶  本服務 webhook  ──▶  本機 PostgreSQL  ──▶  客服工作台 /console
 ```
 
-- **微信 / WhatsApp** → 轉發給目標系統 9033（既有的自動化流程）。
-- **IG / FB** → 只進本機客服工作台查看與回覆，**不轉發** 9033。
+| 渠道 | 平台伺服器 | 本服務 webhook | 隧道 |
+|---|---|---|---|
+| 微信公眾號 | 微信伺服器 | `POST /wechat` | natapp |
+| WhatsApp | Meta 伺服器 | `POST /whatsapp/webhook` | ngrok |
+| Instagram / Facebook | Meta 伺服器 | `POST /whatsapp/webhook`（同一個） | ngrok |
+
+- 四個渠道**一視同仁**：落地本機 DB → 工作台查看 → 工作台回覆。
+- 回覆由工作台直接呼叫平台 API 發送（微信走客服消息接口、WhatsApp 走 Cloud API、IG/FB 走 Graph API）。
 
 ---
 
 ## 二、功能一覽
 
-| 渠道 | 接收消息 | 轉發 9033 | 工作台查看 | 工作台回覆 | AI 自動回復 |
-|---|---|:---:|:---:|:---:|:---:|
-| 微信公眾號 | 文字 / 圖片 / 語音 / 影片 | ✅ | ✅ | ⚠️ 需認證公眾號 | ✗（未認證號發不出） |
-| WhatsApp | 文字 / 圖片 / 文件 / 語音等 | ✅ | ✅ | ✅ | ✅ 私訊 |
-| Instagram | 私訊 | ✗ | ✅ | ✅ | ✅ 私訊 |
-| Instagram | 貼文留言 | ✗ | ✅ | ✅（需權限，見下） | ✅ 留言 |
-| Facebook | 私訊 | ✗ | ✅ | ✅ | ✅ 私訊 |
-| Facebook | 貼文留言 | ✗ | ✅ | ✅ | ✅ 留言 |
+| 渠道 | 接收消息 | 工作台查看 | 工作台回覆 | AI 自動回復 |
+|---|---|:---:|:---:|:---:|
+| 微信公眾號 | 文字 / 圖片 / 語音 / 影片 | ✅ | ⚠️ 需認證公眾號 | ✗（未認證號發不出） |
+| WhatsApp | 文字 / 圖片 / 文件 / 語音等 | ✅ | ✅ | ✅ 私訊 |
+| Instagram | 私訊 | ✅ | ✅ | ✅ 私訊 |
+| Instagram | 貼文留言 | ✅ | ✅（需權限，見下） | ✅ 留言 |
+| Facebook | 私訊 | ✅ | ✅ | ✅ 私訊 |
+| Facebook | 貼文留言 | ✅ | ✅ | ✅ 留言 |
 
 工作台另提供：**未讀紅點**（分平台 + 分會話）、**右鍵標為已處理**、**貼文留言「已回 / 已忽略」標記**、**檔案與圖片傳輸**，以及 **AI 自動回復**（見第四節）。
 
@@ -164,7 +167,7 @@ cp .env.example .env
 
 編輯 `.env`，四個渠道的憑證都放在這裡。**欄位完整說明見第八節**；最少要先填：
 
-- `DATABASE_URL`、`TARGET_WEBHOOK_URL`、`PUBLIC_BASE_URL`
+- `DATABASE_URL`、`PUBLIC_BASE_URL`
 - 微信：`WECHAT_TOKEN`、`WECHAT_APPID` / `WECHAT_APPSECRET`
 - WhatsApp：`WHATSAPP_ACCESS_TOKEN`、`WHATSAPP_PHONE_NUMBER_ID`、`WHATSAPP_VERIFY_TOKEN`
 - IG / FB：`META_PAGE_ID`、`META_PAGE_ACCESS_TOKEN`、`META_IG_USER_ID`、`META_VERIFY_TOKEN` 等
@@ -176,13 +179,24 @@ cp .env.example .env
 .venv\Scripts\python -m uvicorn main:app --host 127.0.0.1 --port 8001
 ```
 
-服務同時掛了微信、WhatsApp、IG/FB 三組端點，**一條 ngrok 隧道就夠**：
+服務同時掛了微信、WhatsApp、IG/FB 三組端點，**一條隧道就夠**；本專案的實際配置是兩條：
+
+| 渠道 | 隧道 | 說明 |
+|---|---|---|
+| 微信公眾號 | **natapp** | `mp.weixin.qq.com` 的「伺服器配置 URL」填 natapp 位址，指向 `/wechat` |
+| WhatsApp / IG / FB | **ngrok** | Meta 後台的 Callback URL 填 ngrok 位址，指向 `/whatsapp/webhook` |
+
+兩條隧道都轉到本機同一個埠（`8001`），只是分開對外：
 
 ```bash
-ngrok http 8001
+ngrok http 8001        # Meta 用（WhatsApp / IG / FB）
+natapp -authtoken=xxx  # 微信用（設定檔在 natapp.ini）
 ```
 
 把 ngrok 給的 `https://xxxx.ngrok-free.dev` 填進 `.env` 的 `PUBLIC_BASE_URL`，重啟服務。
+
+> `PUBLIC_BASE_URL` 的唯一用途是**拼接媒體下載連結**（`<PUBLIC_BASE_URL>/files/xxx`），
+> 供 Meta 抓檔用；所以填 ngrok 那一條即可，跟微信走哪條隧道無關。
 
 > **ngrok 免費版限制**：只有 1 個域名、同時只能 1 條隧道。
 > 若已有其他服務佔用，會報 `ERR_NGROK_334`。可改用付費版或 cloudflared（免費多域名）。
@@ -263,11 +277,24 @@ ngrok http 8001
 
 ---
 
-## 七、對接方接口（給目標系統 9033）
+## 七、對外接口
 
-目標系統要回覆 WhatsApp 使用者時，POST 到 `POST /whatsapp/reply`，本服務會轉成 WhatsApp 格式發送。
+本服務**不對外提供任何「發送」接口** —— 沒有任何外部系統可以打進來要求「送訊息給某個客戶」。
 
-**完整報文格式、欄位說明、支援的檔案類型見 `api-doc.md`。**
+回覆客戶只有一條路徑：**客服工作台**（`POST /console/reply`，由工作台前端呼叫，
+再由 `wechat_send.py` / `whatsapp_send.py` / `igfb.py` 呼叫平台 API 送出）。
+
+程式對外只開四個入口，全部是「接收平台推來的訊息」或「驗證」：
+
+| 方法 | 路徑 | 用途 |
+|---|---|---|
+| GET | `/wechat` | 微信伺服器驗證（回傳 echostr） |
+| POST | `/wechat` | 接收微信訊息（XML） |
+| GET | `/whatsapp/webhook`、`/webhook` | Meta webhook 驗證（WhatsApp / IG / FB 共用） |
+| POST | `/whatsapp/webhook`、`/webhook` | 接收 Meta 訊息（JSON） |
+
+> 早期版本曾有一個 `POST /whatsapp/reply` 供外部業務系統推播回覆，該接口已移除，
+> 連帶的「把訊息轉發給外部系統」也一併拿掉。要發訊息給客戶，一律走工作台。
 
 ---
 
@@ -278,8 +305,7 @@ ngrok http 8001
 | 欄位 | 說明 |
 |---|---|
 | `DATABASE_URL` | PostgreSQL 連線字串 |
-| `TARGET_WEBHOOK_URL` | 目標系統的 webhook 位址（微信 / WhatsApp 轉發用） |
-| `PUBLIC_BASE_URL` | 本服務對外 https 位址（用於拼接媒體下載連結） |
+| `PUBLIC_BASE_URL` | 本服務對外 https 位址（拼接媒體下載連結給 Meta 抓檔） |
 | `MEDIA_DIR` | 媒體落地目錄（預設 `media/`） |
 
 ### 微信
@@ -289,7 +315,7 @@ ngrok http 8001
 | `WECHAT_TOKEN` | 後台「伺服器配置」填的 Token |
 | `WECHAT_APPID` / `WECHAT_APPSECRET` | 開發者 ID，下載語音 / 影片用 |
 | `WECHAT_ENCODING_AES_KEY` | 安全 / 兼容模式的 43 字元金鑰 |
-| `CHANNEL` / `CHANNEL_IDENTITY_ID` | 微信渠道在目標系統的標識（**需與目標系統方確認**） |
+| `CHANNEL` / `CHANNEL_IDENTITY_ID` | 寫進來訊 payload 的渠道標識（純識別用，不對外送出） |
 
 ### WhatsApp
 
@@ -298,7 +324,7 @@ ngrok http 8001
 | `WHATSAPP_VERIFY_TOKEN` | Meta 後台 webhook 驗證 token |
 | `WHATSAPP_ACCESS_TOKEN` | Meta App access token（下載 / 發送媒體） |
 | `WHATSAPP_PHONE_NUMBER_ID` | 電話號碼 ID（發送回覆用） |
-| `WHATSAPP_CHANNEL` / `WHATSAPP_CHANNEL_IDENTITY_ID` | WhatsApp 渠道在目標系統的標識（**需確認**） |
+| `WHATSAPP_CHANNEL` / `WHATSAPP_CHANNEL_IDENTITY_ID` | 寫進 payload 的渠道標識（純識別用，不對外送出） |
 
 ### Instagram / Facebook
 
@@ -369,7 +395,7 @@ DEEPSEEK_SYSTEM_PROMPT="你是一位專業、友善的客服助手。\n請用簡
 | Meta webhook 驗證失敗 | Callback URL 要能被外網訪問；`Verify token` 要與 `.env` 完全一致。 |
 | 回覆留言 / 私訊回 **502** | 多半是 **Meta 權杖失效**。跑 `python token_tool.py check` 確認，詳見 `META_SETUP.md` 第六節。 |
 | 按「同步最新資料」卻沒有新貼文 | 同上，權杖失效時同步會靜默失敗。 |
-| 微信後台「啟用」失敗 | URL / Token 與 `.env` 不符，或服務沒在跑、ngrok 沒開。 |
+| 微信後台「啟用」失敗 | URL / Token 與 `.env` 不符，或服務沒在跑、natapp 隧道沒開。 |
 | 媒體檔下載不到 | `.env` 的 `PUBLIC_BASE_URL` 沒填或填錯；微信個人號下載媒體權限需實測。 |
 | IG 留言回覆回 502 | 缺 `instagram_manage_comments` 權限（詳見 `META_SETUP.md`）。 |
 | 留言者姓名顯示「用戶」 | 平台隱私限制，非程式問題（見下方已知限制）。 |
@@ -391,9 +417,9 @@ DEEPSEEK_SYSTEM_PROMPT="你是一位專業、友善的客服助手。\n請用簡
 - **IG 留言回覆**：需 `instagram_manage_comments` 權限。未開通前能看能讀，回覆會被 Meta 擋（自動回復同理）。
 - **留言者姓名**：FB / IG 對陌生留言者的姓名有平台隱私限制，`from.name` / `username` 可能為空，工作台顯示「用戶」。這是平台限制，非程式問題。
 - **FB 貼文圖片**：正常顯示（取 `full_picture`，取不到時退回 `attachments`）。圖片連結是 Meta 的簽名 CDN 網址、會過期，但每次同步都會刷新，開著頁面時不需理會。
-- **事件 / 狀態消息**（微信關注取關、WhatsApp 已讀 / 送達回執）：目前忽略，不轉發。
-- **超時**：微信 / Meta 要求 5 秒內回應。本服務轉發超時 5 秒，失敗仍回 200（避免對方無限重試），失敗會記 log。
-  自動回復丟到背景執行，不會拖慢 webhook 回應。
+- **事件 / 狀態消息**（微信關注取關、WhatsApp 已讀 / 送達回執）：目前忽略，不入庫。
+- **超時**：微信 / Meta 要求 5 秒內回應。本服務落地寫入是背景寫 DB，來訊一律立即回 200
+  （避免對方無限重試），寫入失敗只記 log，不影響對方。自動回復丟到背景執行，不會拖慢 webhook 回應。
 - **自動回復只處理文字**：圖片、語音、貼圖、檔案一律留給人工。
 - **AI 可能出錯**：第二層由模型依表格生成答案，仍可能理解偏差。
   建議定期看設定面板的「紀錄」，把答不好的問題補進第一層 FAQ（規則命中比模型生成更穩定）。
@@ -416,7 +442,7 @@ wechat-forwarder/
 ├─ wechat_send.py       # 微信：客服消息發送
 ├─ whatsapp.py          # WhatsApp：webhook 解析、轉換
 ├─ whatsapp_send.py     # WhatsApp：訊息與媒體發送
-├─ forwarder.py         # 轉發到目標系統 + 媒體下載
+├─ forwarder.py         # 媒體下載（微信 media_id / WhatsApp Graph API → media/）
 ├─ db.py                # 轉發日誌寫入（forward_log）
 │
 ├─ faq_matcher.py       # FAQ 匹配算法（繁簡正規化 + 分詞 + bigram + 相似度加權）
