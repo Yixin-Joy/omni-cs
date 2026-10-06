@@ -334,10 +334,28 @@ ngrok http 8001
 | `AUTOREPLY_COOLDOWN_SECONDS` | `30` | 同一會話的自動回復冷卻秒數（0 = 不限制） |
 | `AUTOREPLY_MAX_PER_DAY` | `30` | 同一會話每日自動回復上限（0 = 不限制） |
 
-進階（留空 = 用程式內建預設值）：`DEEPSEEK_SYSTEM_PROMPT`、`DEEPSEEK_COMMENT_PROMPT`（公開留言的附加規則）、
-`DEEPSEEK_TABLE_PROMPT`（業務表格提示詞）、`DEEPSEEK_REWRITE_PROMPT`（FAQ 改寫提示詞）、
-`DEEPSEEK_TABLE_REWRITE_PROMPT`（業務表格 query 改寫提示詞）。
-詳見 `config.py`。
+提示詞全部走環境變數，**直接在 `.env` 編輯即可**（留空 = 用 `config.py` 內建預設值）。
+五個 key 與用途：
+
+| Key | 用途 | 必須保留的佔位符 |
+|---|---|---|
+| `DEEPSEEK_SYSTEM_PROMPT` | 基本人設，所有 AI 回覆都用 | — |
+| `DEEPSEEK_COMMENT_PROMPT` | 公開留言（`scope=comment`）的附加規則 | — |
+| `DEEPSEEK_TABLE_PROMPT` | 業務表格回答 | `{context}`、`{sentinel}` |
+| `DEEPSEEK_REWRITE_PROMPT` | FAQ 問句改寫 | `{faq_list}` |
+| `DEEPSEEK_TABLE_REWRITE_PROMPT` | 表格查不到的 query 改寫 | `{history}`、`{question}` |
+
+**寫法（重要）**：多行提示詞必須用**雙引號**包起來，換行寫 `\n`：
+
+```dotenv
+DEEPSEEK_SYSTEM_PROMPT="你是一位專業、友善的客服助手。\n請用簡潔的繁體中文回答，不要提及自己是 AI。"
+```
+
+不加引號的話 `\n` 會變成人看得見的「反斜線 + n」，提示詞不會換行。單行提示詞加不加引號都可以。
+`DEEPSEEK_TABLE_PROMPT` 是用 Python `.format()` 帶入佔位符，若提示詞裡要寫**字面上的大括號**，得寫成 `{{` 與 `}}`，否則會報錯。
+`.env.example` 底部有可直接複製的五組範例。
+
+> 改完 `.env` 要**重啟服務**才會生效（服務未帶 `--reload`）。
 
 ---
 
