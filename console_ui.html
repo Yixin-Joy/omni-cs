@@ -1,0 +1,3110 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>客服工作台</title>
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --panel: #ffffff;
+    --border: #e5e9f0;
+    --text: #1f2a37;
+    --text-soft: #6b7280;
+    --accent: #1a7f5c;
+    --accent-dark: #116a4b;
+    --accent-soft: #e6f4ee;
+    --red: #e02020;
+    --bubble-in: #ffffff;
+    --bubble-out: #d9f0e4;
+    --shadow: 0 1px 3px rgba(15, 30, 50, 0.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang TC", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .app { display: flex; height: 100vh; overflow: hidden; }
+
+  .sidebar {
+    width: 340px; min-width: 300px; background: var(--panel);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+  }
+  .sidebar-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--border); }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .brand .logo {
+    width: 34px; height: 34px; border-radius: 9px; background: var(--accent);
+    color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;
+  }
+  .brand h1 { font-size: 17px; font-weight: 700; }
+  .brand span { font-size: 12px; color: var(--text-soft); }
+
+  /* 一級導覽：私訊 / 貼文留言 */
+  .nav-main { display: flex; gap: 8px; margin-bottom: 10px; }
+  .nav-main .nav {
+    flex: 1; padding: 9px 10px; border-radius: 9px; border: 1px solid var(--border);
+    background: #fafbfc; color: var(--text-soft); cursor: pointer; text-align: center;
+    font-weight: 700; font-size: 14px; transition: all .15s;
+    position: relative; /* 讓未讀紅點固定定位到右上角 */
+  }
+  .nav-main .nav:hover { border-color: var(--accent); color: var(--accent); }
+  .nav-main .nav.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* 導覽紅點：與平台 tab 同款，固定右上角、大小一致 */
+  .nav-main .nav .nav-badge {
+    position: absolute; top: -6px; right: -6px;
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px;
+    background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
+    text-align: center; padding: 0 5px; box-shadow: 0 0 0 2px #fff;
+    z-index: 2;
+  }
+
+  /* 二級導覽：平台 tab */
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tab {
+    flex: 1; min-width: 0; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border);
+    background: #fafbfc; color: var(--text-soft); cursor: pointer; text-align: center;
+    font-weight: 600; font-size: 12.5px; transition: all .15s;
+    position: relative; /* 讓未讀紅點固定定位到右上角 */
+  }
+  .tab:hover { border-color: var(--accent); color: var(--accent); }
+  .tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
+  .tab .badge {
+    position: absolute; top: -6px; right: -6px;
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px;
+    background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
+    text-align: center; padding: 0 5px; box-shadow: 0 0 0 2px #fff;
+    z-index: 2;
+  }
+
+  .search { padding: 10px 16px; }
+  .search input {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px;
+    background: #fafbfc; font-size: 13px; outline: none; color: var(--text);
+  }
+  .search input:focus { border-color: var(--accent); background: #fff; }
+  .conv-list { flex: 1; overflow-y: auto; }
+  .conv {
+    display: flex; align-items: center; gap: 12px; padding: 13px 16px; cursor: pointer;
+    border-bottom: 1px solid #f0f2f5; transition: background .12s;
+    position: relative; /* 讓未讀紅點固定定位到右上角 */
+  }
+  .conv:hover { background: #f6f8fa; }
+  .conv.active { background: var(--accent-soft); }
+  /* 統一的未讀紅點：固定右上角、大小一致 */
+  .conv-badge {
+    position: absolute; top: 6px; right: 8px;
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px;
+    background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
+    text-align: center; padding: 0 5px; box-shadow: 0 0 0 2px #fff;
+    z-index: 2;
+  }
+  .avatar {
+    width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0;
+    background: #e2e8f0; color: #475569; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 17px;
+  }
+  .conv-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .conv-row1 { display: flex; align-items: center; gap: 8px; }
+  .conv-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .conv-row2 { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
+  .conv-preview { font-size: 12.5px; color: var(--text-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .conv-time { font-size: 11px; color: var(--text-soft); flex-shrink: 0; align-self: flex-end; margin-top: 3px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); flex-shrink: 0; box-shadow: 0 0 0 2px #fff; }
+  .unread-num {
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px; background: var(--red);
+    color: #fff; font-size: 11px; font-weight: 700; text-align: center; padding: 0 5px; flex-shrink: 0;
+  }
+  .empty { padding: 40px 20px; text-align: center; color: var(--text-soft); font-size: 13px; }
+
+  /* 貼文列表卡片 */
+  .post-card {
+    padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #f0f2f5; transition: background .12s;
+    display: flex; gap: 12px; align-items: center;
+  }
+  .post-card:hover { background: #f6f8fa; }
+  .post-card.active { background: var(--accent-soft); }
+  .post-thumb {
+    width: 48px; height: 48px; border-radius: 9px; background: #eef1f5; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; overflow: hidden; color: var(--text-soft);
+  }
+  .post-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .post-meta { flex: 1; min-width: 0; }
+  .post-name { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .post-sub { font-size: 12px; color: var(--text-soft); margin-top: 3px; display: flex; gap: 10px; }
+  .post-badge {
+    font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 10px; flex-shrink: 0;
+  }
+  .post-badge.new { background: #fdeaea; color: var(--red); }
+
+  .list-foot { padding: 12px 16px; text-align: center; }
+  .load-more {
+    width: 100%; padding: 8px; border: 1px dashed var(--border); border-radius: 9px;
+    background: #fafbfc; color: var(--text-soft); cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  .load-more:hover { border-color: var(--accent); color: var(--accent); }
+
+  .chat { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+  .chat-head {
+    min-height: 60px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; padding: 0 20px; flex-shrink: 0;
+  }
+  .chat-head .avatar { width: 38px; height: 38px; font-size: 15px; }
+  .chat-head .who .name { font-weight: 700; font-size: 15px; }
+  .chat-head .who .sub { font-size: 12px; color: var(--text-soft); }
+  .chat-head .spacer { flex: 1; }
+  .platform-tag { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; letter-spacing: .5px; }
+  .platform-tag.wechat { background: #e8f6ee; color: #1a7f3c; }
+  .platform-tag.whatsapp { background: #e7f5ee; color: #147d51; }
+  .platform-tag.ig { background: #fdeef3; color: #c13584; }
+  .platform-tag.fb { background: #e8f0fe; color: #1877f2; }
+
+  .messages { flex: 1; overflow-y: auto; padding: 22px 24px; }
+  .msg-row { display: flex; margin-bottom: 14px; }
+  .msg-row.inbound { justify-content: flex-start; }
+  .msg-row.outbound { justify-content: flex-end; }
+  .bubble {
+    max-width: 68%; padding: 10px 14px; border-radius: 14px; position: relative;
+    box-shadow: var(--shadow); word-break: break-word;
+  }
+  .msg-row.inbound .bubble { background: var(--bubble-in); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .msg-row.outbound .bubble { background: var(--bubble-out); border-bottom-right-radius: 4px; }
+  .bubble .text { white-space: pre-wrap; line-height: 1.55; font-size: 14px; }
+  .bubble .meta { font-size: 11px; color: var(--text-soft); margin-top: 6px; text-align: right; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+  .bubble .status-fail { color: var(--red); font-weight: 600; }
+  .file-card { display: flex; align-items: center; gap: 10px; }
+  .file-icon { width: 42px; height: 42px; border-radius: 9px; background: #eef1f5; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+  .file-info { min-width: 0; }
+  .file-info .fname { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+  .file-info .fsize { font-size: 11px; color: var(--text-soft); margin-top: 2px; }
+  .file-info a { color: var(--accent-dark); font-size: 12px; text-decoration: none; }
+  .file-info a:hover { text-decoration: underline; }
+  .img-thumb { max-width: 260px; max-height: 260px; border-radius: 10px; display: block; cursor: pointer; }
+  .img-broken { color: var(--text-soft); font-size: 12px; }
+
+  .composer { background: var(--panel); border-top: 1px solid var(--border); padding: 12px 16px 14px; flex-shrink: 0; }
+  .pending-file {
+    display: flex; align-items: center; gap: 10px; background: #f6f8fa; border: 1px solid var(--border);
+    border-radius: 9px; padding: 8px 12px; margin-bottom: 10px;
+  }
+  .pending-file .pf-name { flex: 1; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pending-file .pf-x { cursor: pointer; color: var(--text-soft); font-size: 16px; font-weight: 700; padding: 0 4px; }
+  .pending-file .pf-x:hover { color: var(--red); }
+  .composer-row { display: flex; align-items: flex-end; gap: 10px; }
+  .attach-btn {
+    width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--border); background: #fafbfc;
+    cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; color: var(--text-soft); flex-shrink: 0;
+  }
+  .attach-btn:hover { border-color: var(--accent); color: var(--accent); background: #fff; }
+  textarea {
+    flex: 1; resize: none; border: 1px solid var(--border); border-radius: 11px; padding: 11px 14px;
+    font-family: inherit; font-size: 14px; outline: none; background: #fafbfc; color: var(--text);
+    min-height: 42px; max-height: 120px; line-height: 1.4;
+  }
+  textarea:focus { border-color: var(--accent); background: #fff; }
+  .send-btn {
+    height: 42px; padding: 0 22px; border-radius: 11px; border: none; background: var(--accent);
+    color: #fff; font-weight: 700; font-size: 14px; cursor: pointer; flex-shrink: 0;
+  }
+  .send-btn:hover { background: var(--accent-dark); }
+  .send-btn:disabled { opacity: .55; cursor: not-allowed; }
+  .chat-placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-soft); }
+  .chat-placeholder .big { font-size: 52px; margin-bottom: 14px; opacity: .6; }
+  .chat-placeholder p { font-size: 14px; }
+
+  /* ---- 貼文詳情頁 ---- */
+  .post-detail { flex: 1; overflow-y: auto; }
+
+  /* 批次補做進度（右下角浮動提示） */
+  .bf-toast {
+    position: fixed; right: 18px; bottom: 18px; z-index: 60;
+    display: flex; align-items: center; gap: 9px;
+    max-width: 460px; padding: 10px 14px;
+    background: #1f2733; color: #f2f5f8; font-size: 13px; line-height: 1.4;
+    border-radius: 10px; box-shadow: 0 8px 24px rgba(15, 20, 26, .28);
+  }
+  .bf-toast .bf-dot {
+    width: 9px; height: 9px; border-radius: 50%; background: #59c07a; flex-shrink: 0;
+    animation: bf-pulse 1s ease-in-out infinite;
+  }
+  @keyframes bf-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+  .post-body { max-width: 720px; margin: 0 auto; padding: 24px 24px 40px; }
+  .post-card-head { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }
+  .post-head { padding: 16px 18px; display: flex; align-items: center; gap: 12px; }
+  .post-head .avatar { width: 40px; height: 40px; font-size: 16px; background: var(--accent); color: #fff; }
+  .post-head .ph-name { font-weight: 700; font-size: 15px; }
+  .post-head .ph-sub { font-size: 12px; color: var(--text-soft); }
+  .post-head .spacer { flex: 1; }
+  .post-media { width: 100%; background: #0f141a; display: flex; align-items: center; justify-content: center; min-height: 120px; }
+  .post-media img { width: 100%; display: block; }
+  .post-media .no-media { color: #fff; padding: 40px; opacity: .6; }
+  .post-caption { padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .post-caption .caption { white-space: pre-wrap; line-height: 1.55; }
+  .post-stats { padding: 12px 18px; display: flex; gap: 18px; color: var(--text-soft); font-size: 13px; border-bottom: 1px solid var(--border); }
+  .post-stats b { color: var(--text); font-weight: 700; }
+  .post-actions { padding: 12px 18px; display: flex; gap: 10px; }
+  .btn-outline {
+    padding: 7px 16px; border-radius: 9px; border: 1px solid var(--border); background: #fafbfc;
+    color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .btn-outline:hover { border-color: var(--accent); color: var(--accent-dark); }
+  .btn-outline.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-outline.primary:hover { background: var(--accent-dark); }
+
+  .comment-section { margin-top: 18px; }
+  .comment-section h3 { font-size: 15px; font-weight: 700; margin-bottom: 12px; }
+  .comment {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 13px 16px; margin-bottom: 10px; box-shadow: var(--shadow);
+  }
+  .comment-head { display: flex; align-items: center; gap: 10px; }
+  .comment-head .avatar { width: 34px; height: 34px; font-size: 14px; }
+  .comment-head .c-name { font-weight: 600; font-size: 13.5px; }
+  .comment-head .c-time { font-size: 11px; color: var(--text-soft); }
+  .comment-head .spacer { flex: 1; }
+  .tag-replied { font-size: 11px; font-weight: 700; color: var(--accent-dark); background: var(--accent-soft); padding: 2px 8px; border-radius: 10px; }
+  .tag-ignored { font-size: 11px; font-weight: 700; color: var(--text-soft); background: #eef1f5; padding: 2px 8px; border-radius: 10px; }
+  .tag-pending { font-size: 11px; font-weight: 700; color: #b42318; background: #fdeaea; padding: 2px 8px; border-radius: 10px; }
+  .comment-text { margin-top: 8px; line-height: 1.55; font-size: 14px; white-space: pre-wrap; }
+  .comment-foot { margin-top: 10px; display: flex; align-items: center; gap: 12px; }
+  .comment-foot .reply-btn {
+    font-size: 12.5px; font-weight: 600; color: var(--text-soft); cursor: pointer; background: none; border: none;
+  }
+  .comment-foot .reply-btn:hover { color: var(--accent); }
+  .comment-replies { margin-top: 10px; padding-left: 16px; border-left: 2px solid var(--border); }
+  .comment-replies .comment { margin-bottom: 8px; border: none; box-shadow: none; background: #fafbfc; }
+  /* 送出中的樂觀回覆（尚未由伺服器確認） */
+  .comment-sending { opacity: .65; border-style: dashed; }
+  .tag-sending { font-size: 11px; font-weight: 700; color: var(--text-soft); background: #eef1f5; padding: 2px 8px; border-radius: 10px; }
+  /* 送出失敗（重試耗盡）的樂觀氣泡：留著讓你看得出是哪一則沒送出去 */
+  .comment-failed { border-style: dashed; border-color: #e3b0b0; background: #fff7f7; }
+  .tag-failed { font-size: 11px; font-weight: 700; color: #b23b3b; background: #fdeaea; padding: 2px 8px; border-radius: 10px; }
+  .reply-box { margin-top: 10px; display: flex; gap: 8px; align-items: flex-end; }
+  .reply-box textarea { min-height: 36px; }
+  .reply-box .send-btn { height: 36px; padding: 0 16px; font-size: 13px; }
+
+  /* 右鍵選單 */
+  .ctx-menu {
+    position: fixed; z-index: 9999; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.12); padding: 4px; min-width: 160px; display: none;
+  }
+  .ctx-menu .ctx-item {
+    padding: 9px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--text);
+  }
+  .ctx-menu .ctx-item:hover { background: var(--accent-soft); color: var(--accent-dark); }
+
+  /* ---------- AI 自動回復 ---------- */
+  /* 側邊欄的自動回復開關列 */
+  .ar-bar {
+    display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 7px 10px;
+    border: 1px solid var(--border); border-radius: 9px; background: #fafbfc;
+  }
+  .ar-bar .ar-label { font-size: 12px; color: var(--text-soft); flex: 1; }
+  .ar-bar.on { border-color: var(--accent); background: var(--accent-soft); }
+  .ar-bar.on .ar-label { color: var(--accent-dark); font-weight: 700; }
+  .ar-btn {
+    padding: 4px 11px; border-radius: 20px; border: 1px solid var(--border); background: #fff;
+    font-size: 12px; font-weight: 700; cursor: pointer; color: var(--text-soft); white-space: nowrap;
+  }
+  .ar-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .ar-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .ar-btn.off:hover { border-color: var(--red); color: var(--red); }
+  .ar-btn[disabled] { opacity: .55; cursor: not-allowed; }
+
+  /* 訊息 / 留言上的自動回復標記 */
+  .tag-auto-faq, .tag-auto-table, .tag-auto-miss, .tag-auto-fail {
+    font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; white-space: nowrap;
+  }
+  .tag-auto-faq { color: #147d51; background: #e7f5ee; }
+  .tag-auto-table { color: #1a5fb4; background: #e8f0fe; }
+  .tag-auto-table.rw { border: 1px dashed #1a5fb4; }
+  .tag-auto-miss { color: #b42318; background: #fdeaea; }
+  .tag-auto-fail { color: #92400e; background: #fef3c7; }
+
+  /* 設定面板 */
+  .settings-overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, .45); z-index: 500;
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  .settings-overlay.open { display: flex; }
+
+  /* 「把這次回覆加進 FAQ 庫」的小視窗（自動回復未命中、客服手動回完之後問） */
+  .faq-overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, .45); z-index: 600;
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  .faq-overlay.open { display: flex; }
+  .faq-box {
+    width: min(620px, 100%); max-height: 100%; background: var(--panel);
+    border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .faq-box .fm-body { padding: 16px 20px; overflow-y: auto; }
+  .faq-box .fm-hint {
+    background: #fff8e6; border: 1px solid #f0dca8; color: #7a5b12;
+    border-radius: 9px; padding: 9px 12px; font-size: 12.5px; line-height: 1.5; margin-bottom: 14px;
+  }
+  .faq-box .fm-label {
+    display: block; font-size: 12px; font-weight: 700; color: var(--text-soft);
+    margin: 12px 0 6px;
+  }
+  .faq-box textarea, .faq-box input[type="text"] {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px;
+    font: inherit; font-size: 13px; box-sizing: border-box; background: #fff;
+  }
+  .faq-box textarea { resize: vertical; }
+  .faq-box .fm-rewrite {
+    margin-top: 6px; font-size: 12px; color: var(--text-soft); line-height: 1.5;
+  }
+  .faq-box .fm-check {
+    display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 13px;
+  }
+  .faq-box .fm-err {
+    margin-top: 12px; font-size: 12.5px; color: var(--red);
+    background: #fdeaea; border-radius: 8px; padding: 8px 11px;
+  }
+  .faq-box .fm-foot {
+    display: flex; align-items: center; gap: 10px; padding: 14px 20px;
+    border-top: 1px solid var(--border); flex-shrink: 0;
+  }
+  .faq-box .fm-foot .spacer { flex: 1; }
+
+  /* 「引擎答不出來」提醒彈窗（原本是寫在輸入框的 placeholder，會一直掛在聊天框裡） */
+  .engmiss-overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, .45); z-index: 640;
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  .engmiss-overlay.open { display: flex; }
+  .engmiss-box {
+    width: min(480px, 100%); background: var(--panel);
+    border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .engmiss-head {
+    display: flex; align-items: center; gap: 10px; padding: 14px 18px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .engmiss-head h2 { font-size: 15.5px; font-weight: 700; }
+  .engmiss-head .spacer { flex: 1; }
+  .engmiss-icon {
+    width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+    background: #fdeaea; color: #b42318; font-weight: 700; font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .engmiss-body { padding: 16px 18px; font-size: 13.5px; line-height: 1.6; }
+  .engmiss-body p { margin: 0 0 10px; }
+  .engmiss-body .engmiss-q {
+    background: #f7f8fa; border: 1px solid var(--border); border-radius: 9px;
+    padding: 9px 12px; margin-bottom: 10px; font-size: 13px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .engmiss-body .engmiss-reason { font-size: 12.5px; color: var(--text-soft); }
+  .engmiss-foot {
+    display: flex; align-items: center; gap: 10px; padding: 13px 18px;
+    border-top: 1px solid var(--border); flex-shrink: 0;
+  }
+  .engmiss-foot .spacer { flex: 1; }
+  .engmiss-foot .hint { font-size: 12px; color: var(--text-soft); margin: 0; }
+
+  /* 右下角狀態提示（加入 FAQ 成功之類） */
+  .bf-toast.center { left: 50%; right: auto; transform: translateX(-50%); }
+  .settings-panel {
+    width: min(1180px, 100%); height: min(840px, 100%); background: var(--panel);
+    border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .sp-head {
+    display: flex; align-items: center; gap: 12px; padding: 14px 20px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .sp-head h2 { font-size: 16px; font-weight: 700; }
+  .sp-head .spacer { flex: 1; }
+  .sp-close {
+    width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border);
+    background: #fafbfc; cursor: pointer; font-size: 16px; color: var(--text-soft);
+  }
+  .sp-close:hover { border-color: var(--red); color: var(--red); }
+  .sp-tabs { display: flex; gap: 6px; padding: 12px 20px 0; flex-shrink: 0; }
+  .sp-tab {
+    padding: 8px 16px; border-radius: 9px 9px 0 0; border: 1px solid var(--border);
+    border-bottom: none; background: #f6f8fa; color: var(--text-soft); cursor: pointer;
+    font-size: 13px; font-weight: 700;
+  }
+  .sp-tab.active { background: #fff; color: var(--accent-dark); border-color: var(--accent); }
+  .sp-body { flex: 1; overflow-y: auto; padding: 18px 20px 28px; border-top: 1px solid var(--border); }
+
+  .card {
+    border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; margin-bottom: 16px;
+    background: #fff;
+  }
+  .card h3 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .card .hint { font-size: 12px; color: var(--text-soft); line-height: 1.6; margin-bottom: 10px; }
+  .card .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+  .switch-row {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--border);
+    border-radius: 9px; margin-bottom: 8px; background: #fafbfc;
+  }
+  .switch-row .sr-name { font-size: 13px; font-weight: 700; flex: 1; }
+  .switch-row .sr-sub { font-size: 11px; color: var(--text-soft); font-weight: 400; display: block; margin-top: 2px; }
+  .switch-row.on { border-color: var(--accent); background: var(--accent-soft); }
+
+  .btn {
+    padding: 7px 14px; border-radius: 9px; border: 1px solid var(--border); background: #fafbfc;
+    font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text);
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent-dark); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-dark); }
+  .btn.danger { color: var(--red); }
+  .btn.danger:hover { border-color: var(--red); background: #fdeaea; }
+  .btn[disabled] { opacity: .55; cursor: not-allowed; }
+  .btn.sm { padding: 4px 10px; font-size: 12px; }
+
+  .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .data-table th, .data-table td {
+    border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top;
+  }
+  .data-table th { background: #f6f8fa; font-weight: 700; font-size: 12px; white-space: nowrap; }
+  .data-table td input[type="text"], .data-table td textarea {
+    width: 100%; border: 1px solid transparent; background: transparent; font-family: inherit;
+    font-size: 13px; padding: 4px 5px; border-radius: 6px; color: var(--text); resize: vertical;
+  }
+  .data-table td input[type="text"]:focus, .data-table td textarea:focus {
+    border-color: var(--accent); background: #fff; outline: none;
+  }
+  .data-table tr.off td { background: #fafafa; color: var(--text-soft); }
+  .tbl-wrap { overflow-x: auto; max-height: 460px; overflow-y: auto; border-radius: 9px; }
+  .inline-actions { display: flex; gap: 6px; align-items: center; }
+
+  .pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+  .pill.on { background: var(--accent-soft); color: var(--accent-dark); }
+  .pill.off { background: #eef1f5; color: var(--text-soft); }
+  .pill.miss { background: #fdeaea; color: #b42318; }
+
+  .empty-note { padding: 24px; text-align: center; color: var(--text-soft); font-size: 13px; }
+  .test-result {
+    margin-top: 10px; padding: 10px 12px; border-radius: 9px; background: #f6f8fa;
+    border: 1px solid var(--border); font-size: 13px; line-height: 1.6; white-space: pre-wrap;
+  }
+  .log-item {
+    padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px; margin-bottom: 7px;
+    font-size: 12.5px; line-height: 1.55;
+  }
+  .log-item .lg-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 3px; }
+  .log-item .lg-time { color: var(--text-soft); font-size: 11px; }
+  .log-item .lg-q { color: var(--text-soft); }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <div class="brand">
+        <div class="logo">客</div>
+        <div><h1>客服工作台</h1><span>WeChat · WhatsApp · IG · FB</span></div>
+      </div>
+      <div class="nav-main">
+        <div class="nav active" id="nav-dm" onclick="switchSection('dm')">私訊<span class="nav-badge" id="nav-badge-dm" style="display:none"></span></div>
+        <div class="nav" id="nav-posts" onclick="switchSection('posts')">貼文留言<span class="nav-badge" id="nav-badge-posts" style="display:none"></span></div>
+      </div>
+      <div class="tabs" id="tabs"></div>
+      <div class="ar-bar" id="arBar">
+        <span class="ar-label" id="arLabel">AI 自動回復</span>
+        <button class="ar-btn off" id="arBtn" onclick="toggleAutoReply()">載入中…</button>
+        <button class="ar-btn" id="arCfgBtn" onclick="openSettings('autoreply')" title="自動回復設定">⚙</button>
+      </div>
+    </div>
+    <div class="search"><input id="search" type="text" placeholder="搜尋…" oninput="onSearchInput()"></div>
+    <div class="conv-list" id="convList"></div>
+  </aside>
+
+  <main class="chat">
+    <div class="chat-head" id="chatHead">
+      <div class="chat-placeholder" style="flex:1; flex-direction:row; gap:16px;">
+        <span class="big">💬</span><p>選擇左側一位用戶或一篇貼文開始查看</p>
+      </div>
+    </div>
+    <div class="messages" id="messages" style="display:none"></div>
+    <div class="post-detail" id="postDetail" style="display:none"></div>
+    <div class="composer" id="composer" style="display:none">
+      <div class="pending-file" id="pendingFile" style="display:none">
+        <span class="file-icon">📎</span>
+        <span class="pf-name" id="pfName"></span>
+        <span class="pf-x" onclick="clearPendingFile()">✕</span>
+      </div>
+      <div class="composer-row">
+        <label class="attach-btn" title="傳送檔案 / 圖片">＋<input type="file" id="fileInput" style="display:none" onchange="onFilePicked(this)"></label>
+        <textarea id="textInput" rows="1" placeholder="輸入回覆…（Enter 送出，Shift+Enter 換行）"></textarea>
+        <button class="send-btn" id="sendBtn" onclick="sendReply()">送出</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const PLATFORM_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
+const PLATFORM_TAG_CLASS = { wechat: 'wechat', whatsapp: 'whatsapp', ig: 'ig', fb: 'fb' };
+
+const state = {
+  section: 'dm',            // 'dm' | 'posts'
+  platform: 'wechat',       // 目前選中的平台
+  // 私訊資料
+  byPlatform: { wechat: [], whatsapp: [], ig: [], fb: [] },
+  activeCid: null,
+  activeSender: null,
+  activeName: '',
+  msgs: [],                  // 目前聊天框裡的訊息（右鍵「回覆這一則」要按 index 取）
+  // 貼文資料
+  posts: { ig: [], fb: [] },
+  postsOffset: { ig: 0, fb: 0 },
+  postsHasMore: { ig: false, fb: false },
+  postsLoading: false,
+  activePost: null,          // { platform, post_id }
+  pendingFile: null,
+  sending: false,
+  pendingComments: { ig: 0, fb: 0 },  // 各平台待處理留言數（導覽紅點用）
+  engineTier: {},                     // 「這個回覆框的內容是引擎產生的哪一層」→ 送出時標記用
+  failedReplies: {},                  // 送出失敗的留言回覆（輪詢重繪後要再畫回來）
+};
+
+// 上次渲染的 html，用於「內容沒變就不動 DOM」，避免輪詢時畫面跳動
+let _convHtml = '';
+let _msgHtml = '';
+let _postListHtml = '';
+let _postDetailHtml = '';
+let _spHtml = '';   // 設定面板 #spBody
+let _spTab = '';    // 設定面板目前分頁（快取要連分頁一起比）
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function apiJson(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await r.json().catch(() => ({}));
+  return { status: r.status, data };
+}
+
+// POST 且參數放在 query string（後端以 query 參數接收的端點要用這個）
+async function apiPost(path) {
+  const r = await fetch(path, { method: 'POST' });
+  const data = await r.json().catch(() => ({}));
+  return { status: r.status, data };
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return '—';
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const hm = d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (sameDay) return hm;
+  return d.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }) + ' ' + hm;
+}
+
+function fmtSize(n) {
+  n = Number(n || 0);
+  if (!n) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+
+// AI 自動回復的狀態。
+// ⚠ 這一組宣告必須留在這裡（啟動區塊之前）：啟動區塊會呼叫
+// renderList() → renderAutoBar() → currentTarget()，若這些 const 宣告在檔案後段，
+// 會踩到 const 的暫時性死區（TDZ）而讓整段啟動失敗，開關列就會永遠停在「載入中…」。
+const arState = {
+  settings: null,       // GET /console/autoreply/settings 的回應
+  tab: 'autoreply',
+  faqs: [],
+  tables: [],
+  openTableId: null,
+  logs: [],
+  scopeFilter: { channel: '', scope: '' },
+};
+
+const AR_CHANNEL_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
+
+function avatarChar(name) {
+  return (name || '?').trim().charAt(0).toUpperCase() || '?';
+}
+
+/* ---------- AI 自動回復標記 ---------- */
+
+// 依自動回復狀態產生標記：自動回復-FAQ命中 / 自動回復-表格命中 / 自動回復未命中
+function autoTag(m) {
+  const st = m.auto_reply_state || '';
+  if (!st) return '';
+  const detail = esc(m.auto_reply_detail || '');
+  // 「人工確認的」＝客服從右鍵請引擎產生、看過後自己按送出的（不是自動回復自己發的）
+  const pre = (m.auto_reply_detail || '').indexOf('人工確認') === 0 ? '人工確認的' : '';
+  if (st === 'miss') {
+    return '<span class="tag-auto-miss" title="' + detail + '">自動回復未命中</span>';
+  }
+  if (st === 'failed') {
+    return '<span class="tag-auto-fail" title="' + detail + '">自動回復失敗</span>';
+  }
+  if (st !== 'hit') return '';
+  if (m.auto_reply_tier === 'faq') {
+    return '<span class="tag-auto-faq" title="' + detail + '">' + pre + '自動回復-FAQ命中</span>';
+  }
+  if (m.auto_reply_tier === 'table') {
+    // 表格命中；若是「帶對話改寫 query 後才命中」，標記上加一個小註記
+    const rw = (m.auto_reply_detail || '').includes('改寫後命中');
+    return '<span class="tag-auto-table' + (rw ? ' rw' : '') + '" title="' + detail +
+      '">' + pre + '自動回復-表格命中' + (rw ? '·改寫' : '') + '</span>';
+  }
+  return '';
+}
+
+/* ---------- 由自動回復引擎給出回復（右鍵，單筆；結果填進回覆框不直接送出） ---------- */
+
+// 引擎支援的渠道＋場景（與後端 config.AUTOREPLY_SCOPES 一致；微信沒有客服消息權限故不支援）
+const ENGINE_SUPPORTED = { whatsapp: ['dm'], ig: ['dm', 'comment'], fb: ['dm', 'comment'] };
+
+function engineSupported(channel, scope) {
+  return (ENGINE_SUPPORTED[channel] || []).indexOf(scope) >= 0;
+}
+
+function findConversation(cid) {
+  return (state.byPlatform[state.platform] || []).find(
+    c => (c.conversation_id || c.conversation_key) === cid) || null;
+}
+
+// 這則會話是否「未回覆」（有未處理的客戶來訊）→ 決定右鍵要不要出現引擎選項
+function conversationPending(c) {
+  return !!c && ((c.unread_count || 0) > 0 || (c.auto_miss_count || 0) > 0);
+}
+
+async function engineDraft(channel, scope, payload) {
+  const res = await apiJson('/console/autoreply/draft',
+    Object.assign({ channel: channel, scope: scope }, payload));
+  if (res.status >= 400) throw new Error(res.data.error || ('HTTP ' + res.status));
+  return res.data;
+}
+
+// 記住「這個回覆框的內容是引擎產生的、哪一層」→ 送出時告訴後端要標什麼
+function setEngineTier(key, tier) {
+  state.engineTier = state.engineTier || {};
+  if (tier) state.engineTier[key] = tier; else delete state.engineTier[key];
+}
+
+function takeEngineTier(key) {
+  const tier = (state.engineTier || {})[key] || '';
+  setEngineTier(key, '');
+  return tier;
+}
+
+// 引擎未命中 → 彈窗提醒。
+// 以前是把「引擎答不出來…」寫進輸入框的 placeholder，那行字會一直掛在聊天框裡；
+// 改成彈窗後，使用者按 OK（或關閉／點外面／按 Esc）就結束，畫面上不留痕跡。
+let _engineMissOnClose = null;   // 關掉彈窗後要把焦點還給哪個輸入框
+
+function showEngineMiss(d, onClose) {
+  const overlay = document.getElementById('engineMissOverlay');
+  if (!overlay) return;
+  const q = ((d && d.question) || '').trim();
+  const qEl = document.getElementById('engineMissQ');
+  if (qEl) {
+    if (q) { qEl.textContent = '客戶問的是：' + q; qEl.style.display = 'block'; }
+    else { qEl.style.display = 'none'; }
+  }
+  const rEl = document.getElementById('engineMissReason');
+  if (rEl) rEl.textContent = '原因：' + (((d && (d.detail || d.reason))) || '未命中');
+  _engineMissOnClose = (typeof onClose === 'function') ? onClose : null;
+  overlay.classList.add('open');
+  const ok = document.getElementById('engineMissOk');
+  setTimeout(function () { if (ok) ok.focus(); }, 30);
+}
+
+function closeEngineMiss() {
+  const overlay = document.getElementById('engineMissOverlay');
+  if (overlay) overlay.classList.remove('open');
+  const cb = _engineMissOnClose;
+  _engineMissOnClose = null;
+  if (cb) { try { cb(); } catch (e) {} }
+}
+
+// Esc / Enter 關閉（只在彈窗開著時生效）
+document.addEventListener('keydown', function (e) {
+  const overlay = document.getElementById('engineMissOverlay');
+  if (!overlay || !overlay.classList.contains('open')) return;
+  if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); closeEngineMiss(); }
+});
+
+async function engineReplyForComment(commentId) {
+  hideCtxMenu();
+  showReplyBox(commentId, '', false);
+  const ta = document.getElementById('reply-text-' + commentId);
+  if (ta) { ta.disabled = true; ta.placeholder = '自動回復引擎產生中…（不會自動送出）'; }
+  try {
+    const d = await engineDraft(state.platform, 'comment', { comment_id: commentId });
+    if (!ta) return;
+    ta.disabled = false;
+    if (d && d.would_send && d.text) {
+      ta.value = d.text;
+      ta.placeholder = '回覆這則留言…（Enter 送出）';
+      setEngineTier('c:' + commentId, d.tier);
+      ta.focus();
+    } else {
+      ta.value = '';
+      ta.placeholder = '回覆這則留言…（Enter 送出）';   // 不再把那行字寫進輸入框
+      showEngineMiss(d, function () { ta.focus(); });   // 改成彈窗提醒，關掉即結束
+    }
+  } catch (e) {
+    if (ta) { ta.disabled = false; ta.placeholder = '引擎產生失敗：' + e.message; }
+  }
+}
+
+// 聊天框訊息氣泡右鍵：只對「未回覆的客戶來訊」出現，且只回這一則。
+// 上下文由後端處理 —— 以這一則為界、往上取最近幾則（規則同自動回復）。
+function showMsgMenu(event, idx) {
+  event.preventDefault();
+  event.stopPropagation();
+  const m = (state.msgs || [])[idx];
+  if (!msgReplyable(m)) return;
+  const menu = document.getElementById('ctxMenu');
+  menu.innerHTML =
+    '<div class="ctx-item" onclick="engineReplyForMessage(' + idx + ')">由自動回復引擎回覆這一則</div>';
+  menu.style.display = 'block';
+  const x = Math.min(event.clientX, window.innerWidth - 240);
+  const y = Math.min(event.clientY, window.innerHeight - 60);
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+}
+
+async function engineReplyForMessage(idx) {
+  hideCtxMenu();
+  const m = (state.msgs || [])[idx];
+  if (!msgReplyable(m)) return;
+  const ta = document.getElementById('textInput');
+  if (!ta) return;
+  const prevPh = ta.placeholder;
+  ta.disabled = true; ta.placeholder = '自動回復引擎產生中…（不會自動送出）';
+  try {
+    const d = await engineDraft(state.platform, 'dm', {
+      conversation_key: state.activeCid,       // 用 conversation_key（＝會話 id），不是 sender_id
+      message_id: m.message_id,                // 錨點：就回這一則
+      text: m.text || '',
+    });
+    ta.disabled = false;
+    if (d && d.would_send && d.text) {
+      ta.value = d.text;
+      ta.placeholder = prevPh;
+      setEngineTier('dm:' + state.activeCid, d.tier);
+      ta.focus();
+    } else {
+      ta.value = '';
+      ta.placeholder = prevPh;                          // 不再把那行字寫進輸入框
+      showEngineMiss(d, function () { ta.focus(); });   // 改成彈窗提醒，關掉即結束
+    }
+  } catch (e) {
+    ta.disabled = false; ta.placeholder = prevPh;
+    alert('引擎產生失敗：' + e.message);
+  }
+}
+
+async function engineReplyForConversation(cid) {
+  hideCtxMenu();
+  if (state.activeCid !== cid) await openConversation(cid);   // 回覆框在聊天頁，先打開該會話
+  const ta = document.getElementById('textInput');
+  if (!ta) return;
+  const prevPh = ta.placeholder;
+  ta.disabled = true; ta.placeholder = '自動回復引擎產生中…（不會自動送出）';
+  try {
+    const d = await engineDraft(state.platform, 'dm',
+      { conversation_key: state.activeSender || cid });
+    ta.disabled = false;
+    if (d && d.would_send && d.text) {
+      ta.value = d.text;
+      ta.placeholder = prevPh;
+      setEngineTier('dm:' + cid, d.tier);
+      ta.focus();
+    } else {
+      ta.value = '';
+      ta.placeholder = prevPh;                          // 不再把那行字寫進輸入框
+      showEngineMiss(d, function () { ta.focus(); });   // 改成彈窗提醒，關掉即結束
+    }
+  } catch (e) {
+    ta.disabled = false; ta.placeholder = prevPh;
+    alert('引擎產生失敗：' + e.message);
+  }
+}
+
+/* ---------- 自動回復未命中 → 手動回完後，問要不要把這次回覆存進 FAQ 庫 ---------- */
+
+let _faqCtx = null;          // 這個小視窗是為了哪個渠道＋場景開的
+let _toastTimer = null;
+
+function showToast(text, ms) {
+  const el = document.getElementById('appToast');
+  const t = document.getElementById('appToastText');
+  if (!el || !t) return;
+  t.textContent = text;
+  el.style.display = 'flex';
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(function () { el.style.display = 'none'; }, ms || 3400);
+}
+
+async function fetchMissInfo(channel, scope, target) {
+  const qs = new URLSearchParams({ channel: channel, scope: scope });
+  if (scope === 'comment') qs.set('comment_id', (target && target.comment_id) || String(target || ''));
+  else qs.set('conversation_key', (target && target.conversation_key) || String(target || ''));
+  return await api('/console/autoreply/miss-info?' + qs.toString());
+}
+
+// 客服手動回完一則之後呼叫：只有「那則是自動回復未命中」才彈視窗
+async function maybeOfferFaq(channel, scope, target, answerText) {
+  let info;
+  try {
+    info = await fetchMissInfo(channel, scope, target);
+  } catch (e) {
+    return;   // 不支援的渠道（例如微信）或後端沒有這支 API → 安靜略過
+  }
+  if (!info || !info.miss) return;
+  openFaqDialog(channel, scope, {
+    question: (info.question || '').trim(),
+    answer: (answerText || '').trim(),
+    rewritten: (info.rewritten_query || '').trim(),
+  });
+}
+
+function openFaqDialog(channel, scope, data) {
+  _faqCtx = { channel: channel, scope: scope };
+  document.getElementById('faqQ').value = data.question || '';
+  document.getElementById('faqA').value = data.answer || '';
+  document.getElementById('faqK').value = '';
+  document.getElementById('faqEnabled').checked = true;
+  const rwWrap = document.getElementById('faqRewriteWrap');
+  if (data.rewritten) {
+    document.getElementById('faqRewrite').textContent = data.rewritten;
+    rwWrap.style.display = 'block';
+  } else {
+    rwWrap.style.display = 'none';
+  }
+  document.getElementById('faqErr').style.display = 'none';
+  document.getElementById('faqScopeNote').textContent = targetLabel(channel, scope) + ' 的 FAQ';
+  const overlay = document.getElementById('faqOverlay');
+  overlay.classList.add('open');
+  setTimeout(function () { document.getElementById('faqQ').focus(); }, 30);
+}
+
+function closeFaqDialog() {
+  document.getElementById('faqOverlay').classList.remove('open');
+  _faqCtx = null;
+}
+
+async function saveFaqDialog() {
+  if (!_faqCtx) return;
+  const q = (document.getElementById('faqQ').value || '').trim();
+  const a = (document.getElementById('faqA').value || '').trim();
+  const k = (document.getElementById('faqK').value || '').trim();
+  const enabled = !!document.getElementById('faqEnabled').checked;
+  const err = document.getElementById('faqErr');
+  if (!q || !a) {
+    err.textContent = '問題與答案都不可為空';
+    err.style.display = 'block';
+    return;
+  }
+  const btn = document.getElementById('faqSaveBtn');
+  btn.disabled = true; btn.textContent = '新增中…';
+  try {
+    const res = await apiJson('/console/autoreply/faq',
+      { question: q, answer: a, keywords: k, enabled: enabled });
+    if (!res.data.ok) {
+      err.textContent = res.data.error || ('新增失敗（HTTP ' + res.status + '）');
+      err.style.display = 'block';
+      return;
+    }
+    closeFaqDialog();
+    showToast('已加入 FAQ 庫' + (enabled ? '（已啟用，之後同樣的問題會由自動回復回答）' : '（目前停用）'));
+    loadAutoSettings();   // 讓 FAQ 統計數字跟著更新
+    if (document.getElementById('settingsOverlay').classList.contains('open')) {
+      await loadFaqs();   // 設定面板開著就順便刷新清單（只有停在 FAQ 分頁時才會重繪）
+    }
+  } catch (e) {
+    err.textContent = '新增失敗：' + e.message;
+    err.style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = '新增至 FAQ 庫';
+  }
+}
+
+/* ---------- 導覽切換 ---------- */
+
+function renderTabs() {
+  const tabs = document.getElementById('tabs');
+  let list;
+  if (state.section === 'dm') {
+    list = ['wechat', 'whatsapp', 'ig', 'fb'];
+  } else {
+    list = ['ig', 'fb'];
+  }
+  tabs.innerHTML = list.map(p =>
+    '<div class="tab' + (state.platform === p ? ' active' : '') + '" data-platform="' + p + '" onclick="switchPlatform(\'' + p + '\')">' +
+    PLATFORM_LABEL[p] + ' <span class="badge" id="badge-' + p + '" style="display:none"></span></div>'
+  ).join('');
+}
+
+function switchSection(section) {
+  if (state.section === section) return;
+  state.section = section;
+  document.getElementById('nav-dm').classList.toggle('active', section === 'dm');
+  document.getElementById('nav-posts').classList.toggle('active', section === 'posts');
+  state.platform = section === 'dm' ? 'wechat' : 'ig';
+  state.activeCid = null;
+  state.activePost = null;
+  _convHtml = '';
+  _msgHtml = '';
+  _postListHtml = '';
+  clearPendingFile();
+  resetChat();
+  renderTabs();
+  renderBadges();
+  renderList();
+  syncLight();   // 切到貼文留言時先拉一次（貼文清單 + 當前貼文留言），新貼文立即出現
+}
+
+function switchPlatform(p) {
+  if (state.platform === p) return;
+  state.platform = p;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.platform === p));
+  state.activeCid = null;
+  state.activePost = null;
+  _convHtml = '';
+  _msgHtml = '';
+  _postListHtml = '';
+  resetChat();
+  renderBadges();
+  renderList();
+  syncLight();   // 切換平台時先拉一次
+}
+
+function onSearchInput() {
+  if (state.section === 'dm') renderConversations();
+  else renderPosts();
+}
+
+/* ---------- 私訊 ---------- */
+
+async function loadConversations() {
+  try {
+    const [wc, wa, ig, fb] = await Promise.all([
+      api('/console/conversations?platform=wechat'),
+      api('/console/conversations?platform=whatsapp'),
+      api('/console/igfb/dm/conversations?platform=ig'),
+      api('/console/igfb/dm/conversations?platform=fb'),
+    ]);
+    state.byPlatform.wechat = wc.conversations || [];
+    state.byPlatform.whatsapp = wa.conversations || [];
+    state.byPlatform.ig = ig.conversations || [];
+    state.byPlatform.fb = fb.conversations || [];
+    if (state.section === 'dm') renderConversations();
+    renderBadges();
+  } catch (e) {
+    if (state.section === 'dm') {
+      document.getElementById('convList').innerHTML = '<div class="empty">載入失敗：' + esc(e.message) + '</div>';
+    }
+  }
+}
+
+function unreadTotal(platform) {
+  return (state.byPlatform[platform] || []).reduce((s, c) => s + (c.unread_count || 0), 0);
+}
+
+function setBadge(id, n) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (n > 0) { el.style.display = 'block'; el.textContent = n > 99 ? '99+' : n; }
+  else el.style.display = 'none';
+}
+
+function renderBadges() {
+  // 平台 tab 紅點：兩個欄目的 tab 用的是同一組 id（badge-ig / badge-fb），
+  // 所以必須依「目前欄目」餵對應的數字 —— 私訊頁餵未讀私訊，貼文留言頁餵待處理留言。
+  // 否則貼文留言頁的 FB / IG tab 會顯示私訊的未讀數，兩邊互相污染。
+  if (state.section === 'dm') {
+    for (const p of ['wechat', 'whatsapp', 'ig', 'fb']) setBadge('badge-' + p, unreadTotal(p));
+  } else {
+    for (const p of ['ig', 'fb']) setBadge('badge-' + p, state.pendingComments[p] || 0);
+  }
+  // 一級導覽紅點：該欄目下的待處理總數
+  setBadge('nav-badge-dm', ['wechat', 'whatsapp', 'ig', 'fb'].reduce((s, p) => s + unreadTotal(p), 0));
+  setBadge('nav-badge-posts', (state.pendingComments.ig || 0) + (state.pendingComments.fb || 0));
+}
+
+async function loadPendingComments() {
+  try {
+    const d = await api('/console/igfb/comment/pending');
+    state.pendingComments = { ig: d.ig || 0, fb: d.fb || 0 };
+    renderBadges();
+  } catch (e) { /* 忽略輪詢錯誤 */ }
+}
+
+function renderConversations() {
+  const list = document.getElementById('convList');
+  const kw = (document.getElementById('search').value || '').trim().toLowerCase();
+  const items = (state.byPlatform[state.platform] || []).filter(c =>
+    !kw || (c.name || '').toLowerCase().includes(kw) || (c.sender_id || '').toLowerCase().includes(kw));
+
+  const html = items.length
+    ? items.map(c => {
+        const cid = c.conversation_id || c.conversation_key;
+        const active = cid === state.activeCid;
+        // 統一的未讀紅點：固定右上角、大小一致，1 條也顯示數字
+        const badge = c.unread_count > 0
+          ? '<span class="conv-badge">' + (c.unread_count > 99 ? '99+' : c.unread_count) + '</span>'
+          : '';
+        // 自動回復未命中：列表上直接標出來，讓客服知道要人工接手
+        const arMiss = c.auto_miss_count > 0
+          ? '<span class="tag-auto-miss" title="有 ' + c.auto_miss_count + ' 則自動回復未命中，待人工處理">未命中 ' + c.auto_miss_count + '</span>'
+          : '';
+        return '<div class="conv' + (active ? ' active' : '') + '" data-cid="' + esc(cid) + '" ' +
+          'onclick="openConversation(\'' + esc(cid) + '\')" ' +
+          'oncontextmenu="showConvMenu(event, \'' + esc(cid) + '\')">' +
+          badge +
+          '<div class="avatar">' + esc(avatarChar(c.name)) + '</div>' +
+          '<div class="conv-meta">' +
+            '<div class="conv-row1"><span class="conv-name">' + esc(c.name) + '</span>' + arMiss + '</div>' +
+            '<div class="conv-row2"><span class="conv-preview">' + (c.last_direction === 'outbound' ? '我：' : '') + esc(c.last_preview) + '</span></div>' +
+            '<span class="conv-time">' + fmtTime(c.last_time) + '</span>' +
+          '</div>' +
+        '</div>';
+      }).join('')
+    : '<div class="empty">' + (kw ? '沒有符合的用戶' : '尚無訊息') + '</div>';
+
+  if (html === _convHtml) return;
+  const prevTop = list.scrollTop;
+  list.innerHTML = html;
+  list.scrollTop = prevTop;
+  _convHtml = html;
+}
+
+async function openConversation(cid) {
+  state.activeCid = cid;
+  renderConversations();
+  let data;
+  try {
+    if (state.platform === 'ig' || state.platform === 'fb') {
+      data = await api('/console/igfb/dm/messages?platform=' + state.platform + '&conversation_key=' + encodeURIComponent(cid));
+      state.activeSender = data.sender_id;
+      state.activeName = data.name;
+      renderChatHead(data);
+      renderMessages((data.messages || []).map(m => igfbMsgToCommon(m)), true);
+    } else {
+      data = await api('/console/conversation/' + state.platform + '/' + encodeURIComponent(cid) + '/messages');
+      state.activeSender = data.sender_id;
+      state.activeName = data.name;
+      renderChatHead(data);
+      renderMessages(data.messages || [], true);
+    }
+  } catch (e) {
+    showMessagesError(e.message);
+  }
+}
+
+// 右鍵選單：標為已處理（消除紅點，不發送）
+function showConvMenu(event, cid) {
+  event.preventDefault();
+  event.stopPropagation();
+  const menu = document.getElementById('ctxMenu');
+  const conv = findConversation(cid);
+  // 「由自動回復引擎給出回復」只對「未回覆」的會話出現（自動回復關著也能用，只影響這一則）
+  const engineItem = (conversationPending(conv) && engineSupported(state.platform, 'dm'))
+    ? '<div class="ctx-item" onclick="engineReplyForConversation(\'' + esc(cid) + '\')">由自動回復引擎給出回復</div>'
+    : '';
+  menu.innerHTML = engineItem +
+    '<div class="ctx-item" onclick="markRead(\'' + esc(cid) + '\')">標為已處理</div>';
+  menu.style.display = 'block';
+  // 定位，避免超出視窗
+  const x = Math.min(event.clientX, window.innerWidth - 180);
+  const y = Math.min(event.clientY, window.innerHeight - 60);
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+}
+
+async function markRead(cid) {
+  hideCtxMenu();
+  try {
+    const url = state.platform === 'ig' || state.platform === 'fb'
+      ? '/console/igfb/dm/read?platform=' + state.platform + '&conversation_key=' + encodeURIComponent(cid)
+      : '/console/conversation/read?platform=' + state.platform + '&conversation_id=' + encodeURIComponent(cid);
+    await fetch(url, { method: 'POST' });
+    await loadConversations();
+  } catch (e) {
+    console.error('標為已處理失敗', e);
+  }
+}
+
+function hideCtxMenu() {
+  document.getElementById('ctxMenu').style.display = 'none';
+}
+
+// 點其他地方關閉選單
+document.addEventListener('click', hideCtxMenu);
+document.addEventListener('scroll', hideCtxMenu, true);
+
+// 把 IG/FB 私訊訊息格式轉成既有私訊渲染格式（files[]）
+function igfbMsgToCommon(m) {
+  const files = (m.attachments || []).map(a => {
+    const url = a.url || '';
+    const isImage = a.type === 'image' || url.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)($|\?)/);
+    return {
+      url: url, filename: url.split('/').pop().split('?')[0] || (a.type || '檔案'),
+      mimeType: '', fileSize: a.fileSize || 0, isImage: isImage,
+      sticker: a.type === 'sticker', sticker_id: a.sticker_id || '',
+    };
+  });
+  return {
+    direction: m.direction,
+    type: m.type,
+    text: m.text || '',
+    files: files,
+    time: m.time,
+    status: m.status,
+    message_id: m.message_id || '',
+    is_handled: m.is_handled === true,
+    auto_reply_state: m.auto_reply_state || '',
+    auto_reply_tier: m.auto_reply_tier || '',
+    auto_reply_detail: m.auto_reply_detail || '',
+  };
+}
+
+function renderChatHead(data) {
+  const tag = PLATFORM_LABEL[state.platform];
+  document.getElementById('chatHead').innerHTML =
+    '<div class="avatar">' + esc(avatarChar(data.name)) + '</div>' +
+    '<div class="who"><div class="name">' + esc(data.name) + '</div><div class="sub">' + esc(data.sender_id) + '</div></div>' +
+    '<div class="spacer"></div>' +
+    '<span class="platform-tag ' + PLATFORM_TAG_CLASS[state.platform] + '">' + tag + '</span>';
+  document.getElementById('messages').style.display = 'block';
+  document.getElementById('postDetail').style.display = 'none';
+  document.getElementById('composer').style.display = 'block';
+}
+
+function renderMessages(list, forceBottom) {
+  const box = document.getElementById('messages');
+  // 記住目前畫面這串訊息，供「在聊天框右鍵某一則 → 只回那一則」取用
+  state.msgs = list || [];
+  const html = list.length ? list.map((m, i) => msgHtml(m, i)).join('') : '<div class="empty">尚無訊息</div>';
+
+  if (html === _msgHtml && !forceBottom) return;
+
+  const prevTop = box.scrollTop;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+
+  box.innerHTML = html;
+  _msgHtml = html;
+
+  box.scrollTop = (forceBottom || atBottom) ? box.scrollHeight : prevTop;
+}
+
+// 這一則能否「右鍵 → 由引擎回覆」：必須是客戶來訊、還沒被回覆（未處理），
+// 且該渠道支援 dm 場景。微信/WhatsApp 的訊息沒有 message_id → 自動不顯示，不會壞。
+function msgReplyable(m) {
+  return !!m && m.direction === 'inbound' && !!m.message_id && m.is_handled === false
+    && engineSupported(state.platform, 'dm');
+}
+
+function msgHtml(m, idx) {
+  const inbound = m.direction === 'inbound';
+  let content = '';
+  if (m.files && m.files.length) {
+    content = m.files.map(f => {
+      if (f.sticker) {
+        return '<div class="img-broken">[貼圖' + (f.sticker_id ? ' ' + esc(f.sticker_id) : '') + ']</div>';
+      }
+      if (f.isImage) {
+        if (f.url) return '<img class="img-thumb" src="' + esc(f.url) + '" onerror="this.outerHTML=\'<div class=img-broken>圖片無法載入</div>\'" onclick="window.open(this.src)">';
+        return '<div class="img-broken">[圖片]</div>';
+      }
+      const size = fmtSize(f.fileSize);
+      return '<div class="file-card"><div class="file-icon">📄</div><div class="file-info">' +
+        '<div class="fname">' + esc(f.filename || '檔案') + '</div>' +
+        (size ? '<div class="fsize">' + size + '</div>' : '') +
+        (f.url ? '<a href="' + esc(f.url) + '" target="_blank">下載 / 開啟</a>' : '') +
+        '</div></div>';
+    }).join('');
+  }
+  if (m.text) content += '<div class="text">' + esc(m.text) + '</div>';
+
+  const fail = (!inbound && m.status === 'failed') ? '<span class="status-fail">● 發送失敗</span>' : '';
+  const at = autoTag(m);
+  const meta = '<div class="meta">' + fail + at + '<span>' + fmtTime(m.time) + '</span></div>';
+
+  const ctx = msgReplyable(m)
+    ? ' oncontextmenu="showMsgMenu(event,' + idx + ')" title="右鍵：由自動回復引擎回覆這一則"'
+    : '';
+  return '<div class="msg-row ' + (inbound ? 'inbound' : 'outbound') + '"' + ctx + '>' +
+    '<div class="bubble">' + content + meta + '</div></div>';
+}
+
+/* ---------- 貼文 / 留言 ---------- */
+
+async function loadPosts(reset) {
+  if (state.postsLoading) return;
+  state.postsLoading = true;
+  try {
+    if (reset) {
+      state.posts[state.platform] = [];
+      state.postsOffset[state.platform] = 0;
+      state.postsHasMore[state.platform] = false;
+    }
+    const offset = state.postsOffset[state.platform];
+    const data = await api('/console/igfb/posts?platform=' + state.platform + '&offset=' + offset + '&limit=10');
+    if (reset) state.posts[state.platform] = data.posts || [];
+    else state.posts[state.platform] = state.posts[state.platform].concat(data.posts || []);
+    state.postsOffset[state.platform] = offset + (data.posts || []).length;
+    state.postsHasMore[state.platform] = !!data.has_more;
+    if (state.section === 'posts') renderPosts();
+  } catch (e) {
+    if (state.section === 'posts') {
+      document.getElementById('convList').innerHTML = '<div class="empty">載入失敗：' + esc(e.message) + '</div>';
+    }
+  } finally {
+    state.postsLoading = false;
+  }
+}
+
+/* ---------- 左側貼文列表：就地更新，不做整塊重繪 ----------
+   為什麼要這樣寫：
+     Meta 每次同步都會回傳「同一個檔案、不同簽名參數」的圖片網址（_nc_ohc 簽章會換），
+     照著資料重畫 innerHTML 會把 <img> 全部重建 → 瀏覽器重新下載/重畫 → 每 10 秒閃一次。
+   做法：
+     1) stableMediaUrl()：同一個檔案就沿用畫面上正在用的網址（簽名到期前都有效），
+        這樣圖片節點完全不會被動到。
+     2) 每個貼文一張卡片（data-pid），只就地改「真的有變」的文字／class；
+        集合或順序真的變了才搬動節點（搬動既有節點不會讓圖片重新載入）。 */
+
+const _mediaUrlCache = {};      // post_id → 目前畫面上使用的圖片網址
+
+function mediaAssetKey(url) {
+  try {
+    return new URL(url, location.origin).pathname;   // 路徑含檔案 id，忽略網域與簽名參數
+  } catch (e) {
+    return String(url).split('?')[0];
+  }
+}
+
+function stableMediaUrl(postId, url) {
+  if (!url) return '';
+  const key = String(postId || '');
+  const cached = _mediaUrlCache[key];
+  if (cached && mediaAssetKey(cached) === mediaAssetKey(url)) return cached;
+  _mediaUrlCache[key] = url;
+  return url;
+}
+
+function dropMediaUrl(postId) {
+  delete _mediaUrlCache[String(postId || '')];
+}
+
+// 縮圖載入失敗（簽名過期或被刪）：清掉快取的網址，下一輪就用新的簽名網址重試
+function onThumbError(postId, el) {
+  dropMediaUrl(postId);
+  const box = el && el.parentNode;
+  if (box) box.innerHTML = '<span style="font-size:20px">📄</span>';
+}
+
+let _postListSig = '';
+let _postListPlatform = '';   // 目前畫面上的列表是哪個平台（切平台才允許清空重畫）
+
+function buildPostCard(pid) {
+  const card = document.createElement('div');
+  card.className = 'post-card';
+  card.dataset.pid = pid;
+  card.innerHTML =
+    '<div class="post-thumb"></div>' +
+    '<div class="post-meta">' +
+      '<div class="post-name"></div>' +
+      '<div class="post-sub"><span class="pc-count"></span><span class="pc-time"></span></div>' +
+    '</div>' +
+    '<span class="post-badge new" style="display:none"></span>';
+  card.onclick = function () { openPost(pid); };
+  return card;
+}
+
+function updatePostCard(card, p) {
+  const active = !!(state.activePost && state.activePost.post_id === p.post_id);
+  if (card.classList.contains('active') !== active) card.classList.toggle('active', active);
+
+  const thumbBox = card.querySelector('.post-thumb');
+  const url = stableMediaUrl(p.post_id, p.media_url);
+  const img = thumbBox.querySelector('img');
+  if (url) {
+    if (!img) {
+      thumbBox.innerHTML = '';
+      const im = document.createElement('img');
+      im.onerror = function () { onThumbError(p.post_id, this); };
+      im.src = url;
+      thumbBox.appendChild(im);
+    } else if (img.getAttribute('src') !== url) {
+      img.src = url;
+    }
+  } else if (img) {
+    thumbBox.innerHTML = '<span style="font-size:20px">📄</span>';
+  } else if (!thumbBox.firstChild) {
+    thumbBox.innerHTML = '<span style="font-size:20px">📄</span>';
+  }
+
+  const nameEl = card.querySelector('.post-name');
+  const nameTxt = p.name || '(無文字貼文)';
+  if (nameEl.textContent !== nameTxt) nameEl.textContent = nameTxt;
+
+  const countEl = card.querySelector('.pc-count');
+  const countTxt = '💬 ' + (p.comments_count || 0);
+  if (countEl.textContent !== countTxt) countEl.textContent = countTxt;
+
+  const timeEl = card.querySelector('.pc-time');
+  const timeTxt = fmtTime(p.created_at);
+  if (timeEl.textContent !== timeTxt) timeEl.textContent = timeTxt;
+
+  const badge = card.querySelector('.post-badge');
+  const n = p.new_comments || 0;
+  if (n > 0) {
+    if (badge.style.display === 'none') badge.style.display = '';
+    const t = n + ' 新';
+    if (badge.textContent !== t) badge.textContent = t;
+  } else if (badge.style.display !== 'none') {
+    badge.style.display = 'none';
+  }
+}
+
+function renderPosts() {
+  const list = document.getElementById('convList');
+  const kw = (document.getElementById('search').value || '').trim().toLowerCase();
+  const posts = (state.posts[state.platform] || []).filter(p =>
+    !kw || (p.name || '').toLowerCase().includes(kw));
+
+  if (!posts.length) {
+    // 資料「暫時」是空的（例如 loadPosts(true) 正在重置、或同步還沒回來）時不要清掉畫面，
+    // 否則使用者會看到一次「閃一下變空白、再長回來」。只有切換平台、或真的完全沒有貼文才顯示佔位。
+    if (list.querySelector('.post-card') && _postListPlatform === state.platform) return;
+    const html = '<div class="empty">' + (kw ? '沒有符合的貼文' : '尚無貼文，點右上角同步或稍後再試') + '</div>';
+    if (list.innerHTML !== html) list.innerHTML = html;
+    _postListSig = '';
+    _postListPlatform = state.platform;
+    return;
+  }
+
+  const hasMore = !!state.postsHasMore[state.platform];
+  const sig = posts.map(p => [p.post_id, p.name, p.comments_count, p.created_at,
+                              p.new_comments, stableMediaUrl(p.post_id, p.media_url)].join('|')).join('~')
+    + '#' + (hasMore ? '1' : '0') + '#' + kw;
+  if (sig === _postListSig) return;   // 連資料都一樣 → 完全不碰 DOM
+  _postListSig = sig;
+
+  // 殘留清理：#convList 與私訊清單共用容器，切換欄目時可能還留著上一個欄目的節點
+  // （.conv 私訊項目、.empty 佔位）。就地更新只搬動／刪除 .post-card，
+  // 非貼文節點必須在此主動移除，否則會殘留在貼文清單上方。
+  Array.prototype.slice.call(list.children).forEach(function (el) {
+    if (el.classList && (el.classList.contains('post-card') || el.classList.contains('list-foot'))) return;
+    el.remove();
+  });
+
+  const prevTop = list.scrollTop;
+  const byId = {};
+  Array.prototype.forEach.call(list.children, function (el) {
+    if (el.classList && el.classList.contains('post-card') && el.dataset.pid) byId[el.dataset.pid] = el;
+  });
+
+  const ordered = posts.map(function (p) {
+    const pid = String(p.post_id);
+    const card = byId[pid] || buildPostCard(pid);
+    delete byId[pid];
+    updatePostCard(card, p);
+    return card;
+  });
+
+  // 只更新有變的卡片；順序／集合沒變就完全不動結構
+  const current = Array.prototype.filter.call(list.children, function (el) {
+    return el.classList && el.classList.contains('post-card');
+  });
+  const sameOrder = current.length === ordered.length &&
+    ordered.every(function (c, i) { return c === current[i]; });
+  const foot = list.querySelector('.list-foot');
+  const wantFoot = hasMore;
+  const footOk = (!!foot === wantFoot);
+
+  if (!sameOrder || !footOk) {
+    const frag = document.createDocumentFragment();
+    ordered.forEach(function (c) { frag.appendChild(c); });   // 搬動既有節點，圖片不會重新載入
+    let footEl = foot;
+    if (wantFoot) {
+      if (!footEl) {
+        footEl = document.createElement('div');
+        footEl.className = 'list-foot';
+        footEl.innerHTML = '<button class="load-more">載入更多</button>';
+        footEl.querySelector('button').onclick = function () { loadPosts(false); };
+      }
+      frag.appendChild(footEl);
+    }
+    list.appendChild(frag);
+  }
+  // 清掉已經不在清單裡的卡片（例如搜尋過濾掉、或後端刪掉）
+  Object.keys(byId).forEach(function (pid) { byId[pid].remove(); });
+  list.scrollTop = prevTop;
+  _postListPlatform = state.platform;
+}
+
+async function openPost(postId) {
+  state.activePost = { platform: state.platform, post_id: postId };
+  renderPosts();
+  try {
+    const data = await api('/console/igfb/post/' + state.platform + '/' + encodeURIComponent(postId));
+    renderPostDetail(data);
+  } catch (e) {
+    document.getElementById('postDetail').style.display = 'block';
+    document.getElementById('postDetail').innerHTML = '<div class="empty">載入失敗：' + esc(e.message) + '</div>';
+  }
+}
+
+/* ---------- 貼文詳情的重繪原則 ----------
+   1) 內容沒變就不動 DOM（沿用 _postDetailHtml 快取），避免輪詢時畫面跳動。
+   2) 有新資料就直接更新，不再「編輯中先排隊＋提示列」——那個提示會打斷正在打字的人。
+      你已經打進去的字仍然一定保留：collectOpenReplies / restoreOpenReplies 會把
+      有內容的回覆框連字帶游標搬回原位。
+   3) 唯一會暫停更新的情況：留言回覆正在送出中（樂觀氣泡「送出中…」還在畫面上）。
+      這段期間不能重繪，否則那個氣泡會被資料庫的舊資料蓋掉，使用者會以為沒送出去。 */
+
+function hasSendingComment(box) {
+  // 只認「最近 60 秒內開始送」的氣泡：萬一有非預期例外讓氣泡沒被清掉，
+  // 也不會讓貼文詳情從此停止更新（保險絲）。
+  const nodes = box.querySelectorAll('.comment-sending');
+  const now = Date.now();
+  for (const n of nodes) {
+    const t = Number(n.dataset.startedAt || 0);
+    if (!t || now - t < 60000) return true;
+  }
+  return false;
+}
+
+// 把樂觀氣泡拿掉（成功時用；失敗時要留著讓使用者看出哪一則沒送出）
+function removeBubble(node) {
+  if (!node || !node.parentNode) return;
+  const box = node.parentNode;
+  node.remove();
+  if (box.classList && box.classList.contains('comment-replies') && !box.children.length) box.remove();
+}
+
+function renderPostDetail(post) {
+  const box = document.getElementById('postDetail');
+  // 圖片網址先穩定化：Meta 每次同步只換簽名參數，沿用畫面上正在用的網址才不會重新載入
+  const heroUrl = stableMediaUrl(post.post_id, post.media_url);
+  const media = heroUrl
+    ? '<img src="' + esc(heroUrl) + '" onerror="this.parentNode.innerHTML=\'<div class=no-media>媒體無法載入</div>\'">'
+    : '<div class="no-media">無媒體</div>';
+  const comments = post.comments || [];
+
+  const commentsHtml = comments.length
+    ? comments.map(c => commentHtml(c, post.platform || state.platform, true)).join('')
+    : '<div class="empty">尚無留言</div>';
+
+  const html =
+    '<div class="post-body">' +
+      '<div class="post-card-head">' +
+        '<div class="post-head">' +
+          '<div class="avatar">' + esc(PLATFORM_LABEL[state.platform].charAt(0)) + '</div>' +
+          '<div><div class="ph-name">' + esc(PLATFORM_LABEL[state.platform]) + ' 貼文</div>' +
+          '<div class="ph-sub">' + fmtTime(post.created_at) + '</div></div>' +
+          '<div class="spacer"></div>' +
+          (post.permalink ? '<button class="btn-outline" onclick="window.open(\'' + esc(post.permalink) + '\')">在 ' + esc(PLATFORM_LABEL[state.platform]) + ' 查看</button>' : '') +
+        '</div>' +
+        '<div class="post-media">' + media + '</div>' +
+        (post.name ? '<div class="post-caption"><div class="caption">' + esc(post.name) + '</div></div>' : '') +
+        '<div class="post-stats"><span>💬 <b>' + (post.comments_count || 0) + '</b> 則留言</span></div>' +
+        '<div class="post-actions">' +
+          '<button class="btn-outline primary" onclick="syncNow()">同步最新資料</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="comment-section">' +
+        '<h3>留言（' + comments.length + '）</h3>' +
+        commentsHtml +
+      '</div>' +
+    '</div>';
+
+  // 留言回覆正在送出（樂觀氣泡還在）→ 先不重繪，免得把氣泡蓋掉讓人以為沒送出
+  if (hasSendingComment(box)) return;
+
+  // 內容沒變就不重繪，避免輪詢時整頁重灌、把正在打字的回覆框清掉
+  if (html === _postDetailHtml && box.style.display === 'block') return;
+
+  const prevScroll = box.scrollTop;
+  const openReplies = collectOpenReplies(box);   // 先記下已打開／正在打字的留言回覆框
+  const prevHero = box.querySelector('.post-media img');   // 已載入的大圖，等一下盡量沿用
+  const prevHeroSrc = prevHero ? prevHero.getAttribute('src') : '';
+  box.innerHTML = html;
+  if (prevHero && prevHeroSrc) {
+    const newHero = box.querySelector('.post-media img');
+    // 同一個網址就換回「同一個節點」：瀏覽器不會重新解碼/重畫 → 不會閃
+    if (newHero && newHero.getAttribute('src') === prevHeroSrc) newHero.replaceWith(prevHero);
+  }
+  restoreOpenReplies(box, openReplies);          // 打進去的字一定搬回來，不會被自動刪除
+  restoreFailedReplies(box);                     // 送出失敗的氣泡也要畫回來（看得出哪一則沒送出）
+  box.scrollTop = prevScroll;
+  _postDetailHtml = html;
+
+  // 貼文模式佔用右側主區：填上標頭，取代「選擇左側…」佔位
+  document.getElementById('chatHead').innerHTML =
+    '<div class="who"><div class="name">' + esc(PLATFORM_LABEL[state.platform]) + ' 貼文留言</div>' +
+    '<div class="sub">' + esc((post.name || '').slice(0, 40) || post.post_id || '') + '</div></div>' +
+    '<div class="spacer"></div>' +
+    '<span class="platform-tag ' + PLATFORM_TAG_CLASS[state.platform] + '">' + esc(PLATFORM_LABEL[state.platform]) + '</span>';
+
+  document.getElementById('messages').style.display = 'none';
+  document.getElementById('composer').style.display = 'none';
+  box.style.display = 'block';
+}
+
+function commentHtml(c, platform, isRoot) {
+  const replies = (c.replies || []).map(r => commentHtml(r, platform, false)).join('');
+  // 狀態標記只在頂層留言顯示（狀態屬於整個討論串）：已回 / 已忽略 / 待處理
+  let tag = '';
+  if (isRoot) {
+    if (c.replied) tag = '<span class="tag-replied">已回</span>';
+    else if (c.is_handled) tag = '<span class="tag-ignored">已忽略</span>';
+    else tag = '<span class="tag-pending">待處理</span>';
+    tag += autoTag(c);
+  }
+  // 只有「待處理」的頂層留言能右鍵標為已處理；已回／已忽略不給選
+  const ctx = (isRoot && !c.replied && !c.is_handled)
+    ? ' oncontextmenu="showCommentMenu(event, \'' + esc(c.comment_id) + '\')"' : '';
+  return '<div class="comment" data-cid="' + esc(c.comment_id) + '"' + ctx + '>' +
+    '<div class="comment-head">' +
+      '<div class="avatar">' + esc(avatarChar(c.from_name)) + '</div>' +
+      '<div><div class="c-name">' + esc(c.from_name || '用戶') + '</div>' +
+      '<div class="c-time">' + fmtTime(c.time) + '</div></div>' +
+      '<div class="spacer"></div>' + tag +
+    '</div>' +
+    '<div class="comment-text">' + esc(c.text || '') + '</div>' +
+    '<div class="comment-foot">' +
+      '<button class="reply-btn" onclick="showReplyBox(\'' + esc(c.comment_id) + '\')">回覆</button>' +
+    '</div>' +
+    '<div class="reply-slot" id="slot-' + esc(c.comment_id) + '"></div>' +
+    (replies ? '<div class="comment-replies">' + replies + '</div>' : '') +
+  '</div>';
+}
+
+// 留言右鍵選單：標為已處理（不回覆，標「已忽略」）
+function showCommentMenu(event, commentId) {
+  event.preventDefault();
+  event.stopPropagation();
+  const menu = document.getElementById('ctxMenu');
+  // 這個選單只在「未回覆的頂層留言」上出現（commentHtml 已篩選），自動回復關著也能用
+  const engineItem = engineSupported(state.platform, 'comment')
+    ? '<div class="ctx-item" onclick="engineReplyForComment(\'' + esc(commentId) + '\')">由自動回復引擎給出回復</div>'
+    : '';
+  menu.innerHTML = engineItem +
+    '<div class="ctx-item" onclick="markCommentHandled(\'' + esc(commentId) + '\')">標為已處理（忽略）</div>';
+  menu.style.display = 'block';
+  const x = Math.min(event.clientX, window.innerWidth - 200);
+  const y = Math.min(event.clientY, window.innerHeight - 60);
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+}
+
+async function markCommentHandled(commentId) {
+  hideCtxMenu();
+  const res = await apiJson('/console/igfb/comment/handle', {
+    platform: state.platform, comment_id: commentId,
+  });
+  if (res.data.ok) await refreshPost();
+  else console.error('標為已處理失敗', res.status, res.data);
+}
+
+function showReplyBox(commentId, value, focus) {
+  const slot = document.getElementById('slot-' + commentId);
+  if (!slot) return;
+  slot.innerHTML =
+    '<div class="reply-box">' +
+      '<textarea id="reply-text-' + esc(commentId) + '" rows="1" placeholder="回覆這則留言…（Enter 送出）"></textarea>' +
+      '<button class="send-btn" onclick="sendCommentReply(\'' + esc(commentId) + '\')">回覆</button>' +
+    '</div>';
+  const ta = document.getElementById('reply-text-' + commentId);
+  if (value) ta.value = value;
+  if (focus !== false) ta.focus();
+  ta.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCommentReply(commentId); }
+  });
+}
+
+// 輪詢重繪貼文詳情前，先把「已經打開、裡面有字或正在打字」的留言回覆框記下來，
+// 重繪後再把它們放回去（含游標位置），避免打到一半被 3 秒輪詢清掉。
+function collectOpenReplies(box) {
+  const out = [];
+  box.querySelectorAll('.reply-slot').forEach(function (slot) {
+    const ta = slot.querySelector('textarea');
+    if (!ta) return;
+    const focused = ta === document.activeElement;
+    if (!ta.value && !focused) return;   // 空的又沒在打字 → 不還原，維持乾淨畫面
+    out.push({
+      cid: slot.id.replace(/^slot-/, ''), value: ta.value, focused: focused,
+      start: ta.selectionStart, end: ta.selectionEnd,
+    });
+  });
+  return out;
+}
+
+function restoreOpenReplies(box, list) {
+  (list || []).forEach(function (o) {
+    if (!box.querySelector('.comment[data-cid="' + o.cid + '"]')) return;   // 該留言已不在畫面上
+    showReplyBox(o.cid, o.value, o.focused);
+    const ta = document.getElementById('reply-text-' + o.cid);
+    if (!ta) return;
+    try { ta.setSelectionRange(o.start, o.end); } catch (e) { /* 忽略 */ }
+  });
+}
+
+/* ---------- 送出：網路異常自動重試（1s → 2s → 4s，共三次） ----------
+   為什麼要重試：Meta 建立留言本來就要數秒，網路抖一下就會整個失敗；
+   使用者在等待期間一直看到「送出中…」，重試成功就當沒事。
+   4xx（權限／參數錯誤）不重試——重試也不會變成功。 */
+
+const SEND_RETRY_DELAYS = [1000, 2000, 4000];
+
+function sleepMs(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
+// 回傳 {resp} 或 {networkError: '原因'}（三次重試都失敗）
+async function fetchWithRetry(url, opts, onRetry) {
+  let attempt = 0;
+  for (;;) {
+    try {
+      const resp = await fetch(url, opts);
+      if (resp.status >= 500 && attempt < SEND_RETRY_DELAYS.length) {
+        attempt += 1;
+        if (onRetry) onRetry(attempt, '伺服器無回應（HTTP ' + resp.status + '）');
+        await sleepMs(SEND_RETRY_DELAYS[attempt - 1]);
+        continue;
+      }
+      return { resp: resp, networkError: '' };
+    } catch (e) {
+      const why = (e && e.message) || '網路連線失敗';
+      if (attempt >= SEND_RETRY_DELAYS.length) return { resp: null, networkError: why };
+      attempt += 1;
+      if (onRetry) onRetry(attempt, why);
+      await sleepMs(SEND_RETRY_DELAYS[attempt - 1]);
+    }
+  }
+}
+
+// 送出中的樂觀氣泡（failedMsg 有值＝失敗狀態）
+function optimisticReplyNode(text, failedMsg) {
+  const tmp = document.createElement('div');
+  tmp.className = 'comment ' + (failedMsg ? 'comment-failed' : 'comment-sending');
+  tmp.dataset.startedAt = String(Date.now());
+  tmp.innerHTML =
+    '<div class="comment-head">' +
+      '<div class="avatar">我</div>' +
+      '<div><div class="c-name">我方（客服）</div></div>' +
+      '<div class="spacer"></div>' +
+      '<span class="' + (failedMsg ? 'tag-failed' : 'tag-sending') + '">' +
+        esc(failedMsg || '送出中…') + '</span>' +
+    '</div>' +
+    '<div class="comment-text">' + esc(text) + '</div>';
+  return tmp;
+}
+
+function repliesBoxFor(holder) {
+  let box = holder.querySelector('.comment-replies');
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'comment-replies';
+    holder.appendChild(box);
+  }
+  return box;
+}
+
+// 失敗的氣泡要能被輪詢重繪後再畫回來（不然三秒後就消失，看不出哪一則失敗）
+function markSendFailed(commentId, bubble, text, msg) {
+  state.failedReplies = state.failedReplies || {};
+  state.failedReplies[commentId] = { text: text, msg: msg };
+  if (!bubble) return;
+  bubble.className = 'comment comment-failed';
+  const tagEl = bubble.querySelector('.tag-sending, .tag-failed');
+  if (tagEl) { tagEl.className = 'tag-failed'; tagEl.textContent = msg; }
+}
+
+function clearSendFailed(commentId) {
+  if (state.failedReplies) delete state.failedReplies[commentId];
+}
+
+function restoreFailedReplies(box) {
+  const map = state.failedReplies || {};
+  Object.keys(map).forEach(function (cid) {
+    const holder = box.querySelector('.comment[data-cid="' + cid + '"]');
+    if (!holder) return;
+    if (holder.querySelector('.tag-replied')) {   // 串頭已標「已回」→ 回覆終究進去了
+      delete map[cid];
+      return;
+    }
+    if (holder.querySelector('.comment-failed')) return;   // 已經畫在畫面上
+    repliesBoxFor(holder).appendChild(optimisticReplyNode(map[cid].text, map[cid].msg));
+  });
+}
+
+async function sendCommentReply(commentId) {
+  const ta = document.getElementById('reply-text-' + commentId);
+  if (!ta) return;
+  const text = ta.value.trim();
+  if (!text) return;
+
+  // 樂觀顯示：一按送出就立刻畫在留言下方（虛線、半透明、標「送出中…」），不等 Meta 回應。
+  // 這段期間輪詢不會重繪貼文詳情（見 hasSendingComment），氣泡會一直留著：
+  //   成功 → refreshPost 換成資料庫真實回覆，串頭標「已回」
+  //   失敗 → 氣泡變紅色錯誤狀態＋輸入框拿回你打的字
+  clearSendFailed(commentId);
+  const holder = document.querySelector('.comment[data-cid="' + commentId + '"]');
+  const tmp = optimisticReplyNode(text, '');
+  if (holder) repliesBoxFor(holder).appendChild(tmp);
+  const slot = document.getElementById('slot-' + commentId);
+  if (slot) slot.innerHTML = '';
+
+  const payload = { platform: state.platform, comment_id: commentId, text: text };
+  // 這則內容是右鍵請引擎產生的 → 帶上層級，讓後端標成「人工確認的自動回復-…命中」
+  const tier = takeEngineTier('c:' + commentId);
+  if (tier) payload.auto_tier = tier;
+
+  const r = await fetchWithRetry('/console/igfb/comment/reply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }, function (attempt) {
+    const tagEl = tmp.querySelector('.tag-sending, .tag-failed');
+    if (tagEl) tagEl.textContent = '送出中…（重試 ' + attempt + '/3）';
+  });
+
+  if (r.networkError) {
+    if (tier) setEngineTier('c:' + commentId, tier);   // 重送時仍算人工確認
+    markSendFailed(commentId, tmp, text, '網絡異常，請稍後重新發送');
+    showReplyBox(commentId, text);                     // 把字還回輸入框，不白打
+    alert('回覆送出失敗：網絡異常，請稍後重新發送\n\n（已自動重試 3 次，内容已放回輸入框，可直接重送）');
+    return;
+  }
+
+  let data = {};
+  try { data = await r.resp.json(); } catch (e) { data = {}; }
+  if (data.ok) {
+    removeBubble(tmp);   // 先清掉樂觀氣泡，否則 refreshPost 會被「送出中就不重繪」的守門擋住
+    await refreshPost();           // 以資料庫的真實資料重繪（含剛落地的回覆，串頭標「已回」）
+    // 這則原本是「自動回復未命中」的話，問客服要不要把這次回覆存進 FAQ（送出成功才問）
+    await maybeOfferFaq(state.platform, 'comment', { comment_id: commentId }, text);
+  } else {
+    if (tier) setEngineTier('c:' + commentId, tier);
+    markSendFailed(commentId, tmp, text, '發送失敗，請稍後重新發送');
+    showReplyBox(commentId, text);
+    alert('回覆失敗：' + (data.hint ? data.hint + '\n\n' : '') +
+      (data.body || data.error || ('status ' + r.resp.status)));
+  }
+}
+
+async function refreshPost() {
+  if (!state.activePost) return;
+  const pid = state.activePost.post_id;
+  await loadPosts(true);   // 一併刷新貼文列表（含「N 新」與留言數）
+  await openPost(pid);
+}
+
+async function syncNow() {
+  // 參數必須放 query string，後端 sync 端點是以 query 參數接收的
+  const res = await apiPost('/console/igfb/sync?platform=' + state.platform + '&scope=posts');
+  if (res.data.ok) {
+    await loadPosts(true);
+    await loadPendingComments();
+    if (state.activePost) await openPost(state.activePost.post_id);
+  } else {
+    alert('同步失敗：' + (res.data.error || ''));
+  }
+}
+
+/* ---------- 共用的清單渲染入口 ---------- */
+
+function renderList() {
+  if (state.section === 'dm') {
+    renderConversations();
+  } else {
+    if (!state.posts[state.platform].length) loadPosts(true);
+    else renderPosts();
+  }
+  renderAutoBar();
+}
+
+/* ---------- 回覆 / 檔案 ---------- */
+
+function resetChat() {
+  state.activeCid = null;
+  state.activeSender = null;
+  state.activeName = '';
+  state.activePost = null;
+  _convHtml = '';
+  _msgHtml = '';
+  _postDetailHtml = '';
+  _postListPlatform = '';   // 換平台／重置後允許列表重畫
+  _postListSig = '';
+  clearPendingFile();
+  document.getElementById('chatHead').innerHTML =
+    '<div class="chat-placeholder" style="flex:1; flex-direction:row; gap:16px;"><span class="big">💬</span><p>選擇左側一位用戶或一篇貼文開始查看</p></div>';
+  document.getElementById('messages').style.display = 'none';
+  document.getElementById('postDetail').style.display = 'none';
+  document.getElementById('composer').style.display = 'none';
+}
+
+function showMessagesError(msg) {
+  const box = document.getElementById('messages');
+  box.style.display = 'block';
+  document.getElementById('postDetail').style.display = 'none';
+  box.innerHTML = '<div class="empty">載入失敗：' + esc(msg) + '</div>';
+}
+
+function onFilePicked(input) {
+  if (input.files && input.files.length) {
+    state.pendingFile = input.files[0];
+    document.getElementById('pfName').textContent = state.pendingFile.name + '（' + fmtSize(state.pendingFile.size) + '）';
+    document.getElementById('pendingFile').style.display = 'flex';
+  }
+  input.value = '';
+}
+
+function clearPendingFile() {
+  state.pendingFile = null;
+  document.getElementById('pendingFile').style.display = 'none';
+  document.getElementById('pfName').textContent = '';
+}
+
+async function sendReply() {
+  if (state.sending || !state.activeCid) return;
+  const text = document.getElementById('textInput').value.trim();
+  if (!text && !state.pendingFile) return;
+
+  const fd = new FormData();
+  fd.append('platform', state.platform);
+  fd.append('to', state.activeSender);
+  fd.append('text', text);
+  if (state.pendingFile) fd.append('file', state.pendingFile);
+  // 內容是右鍵請引擎產生的 → 帶上層級，送出後由後端標成「人工確認的自動回復-…命中」
+  const engineKey = 'dm:' + state.activeCid;
+  const tier = takeEngineTier(engineKey);
+  if (tier) fd.append('auto_tier', tier);
+
+  state.sending = true;
+  const btn = document.getElementById('sendBtn');
+  btn.disabled = true; btn.textContent = '送出中…';
+  try {
+    const isIgFb = state.platform === 'ig' || state.platform === 'fb';
+    const url = isIgFb ? '/console/igfb/dm/reply' : '/console/reply';
+    // 網路異常自動重試 1s → 2s → 4s（期間一直顯示「送出中…」，輸入框內容不會被清掉）
+    const r = await fetchWithRetry(url, { method: 'POST', body: fd }, function (attempt) {
+      btn.textContent = '送出中…（重試 ' + attempt + '/3）';
+    });
+    if (r.networkError) {
+      setEngineTier(engineKey, tier);
+      alert('送出失敗：網絡異常，請稍後重新發送\n\n（已自動重試 3 次，內容還在輸入框，可直接重送）');
+      return;
+    }
+    let data = {};
+    try { data = await r.resp.json(); } catch (e) { data = {}; }
+    if (data.ok) {
+      document.getElementById('textInput').value = '';
+      clearPendingFile();
+      await openConversation(state.activeCid);
+      await loadConversations();
+      // 這則原本是「自動回復未命中」的話，問客服要不要把這次回覆存進 FAQ（送出成功才問）
+      await maybeOfferFaq(state.platform, 'dm',
+        { conversation_key: state.activeSender || state.activeCid }, text);
+    } else {
+      if (tier) setEngineTier(engineKey, tier);   // 送出失敗 → 層級留著，重試仍算人工確認
+      alert('回覆失敗：' + (data.hint ? data.hint + '\n\n' : '') +
+        (data.error || data.body || ('status ' + r.resp.status)));
+    }
+  } catch (e) {
+    setEngineTier(engineKey, tier);
+    alert('回覆失敗：' + e.message);
+  } finally {
+    state.sending = false;
+    btn.disabled = false; btn.textContent = '送出';
+  }
+}
+
+document.getElementById('textInput').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); }
+});
+
+/* ---------- 輪詢 ---------- */
+
+async function poll() {
+  if (state.sending || state.postsLoading) return;
+  await loadPendingComments();   // 導覽紅點（私訊 + 貼文兩塊都要）
+  if (state.section === 'dm') {
+    await loadConversations();
+    if (state.activeCid) {
+      try {
+        let data;
+        if (state.platform === 'ig' || state.platform === 'fb') {
+          data = await api('/console/igfb/dm/messages?platform=' + state.platform + '&conversation_key=' + encodeURIComponent(state.activeCid));
+          renderMessages((data.messages || []).map(igfbMsgToCommon), false);
+        } else {
+          data = await api('/console/conversation/' + state.platform + '/' + encodeURIComponent(state.activeCid) + '/messages');
+          renderMessages(data.messages || [], false);
+        }
+      } catch (e) { /* 忽略輪詢錯誤 */ }
+    }
+  } else {
+    // 貼文模式：靜默刷新列表（有新留言數）與當前貼文
+    try {
+      const data = await api('/console/igfb/posts?platform=' + state.platform + '&offset=0&limit=10');
+      state.posts[state.platform] = data.posts || [];
+      renderPosts();
+    } catch (e) { /* 忽略 */ }
+    if (state.activePost) {
+      try {
+        const data = await api('/console/igfb/post/' + state.platform + '/' + encodeURIComponent(state.activePost.post_id));
+        renderPostDetail(data);
+      } catch (e) { /* 忽略 */ }
+    }
+  }
+}
+
+/* ---------- 定時同步（三種頻率） ----------
+   為什麼要分開：
+     * 新貼文沒有 webhook（我們的 extract_events 只收留言/私訊），只能主動拉清單。
+     * IG 留言的 webhook 訂閱不一定開著；而且服務或隧道斷線期間 Meta 不會補送，
+       光靠 webhook 一定會漏，所以仍要有低頻的主動拉取當保險。
+     * 後端對同一組 platform+scope 有冷卻（feed/comments 5 秒、全量 15 秒），
+       前端間隔不要低於那個值，否則會被 skipped。
+   頻率：
+     * 開頁面：全量掃一次（貼文清單 + 所有貼文留言 + 私訊會話/名稱）
+     * 每 10 秒：輕量（兩個平台的貼文清單 + 當前打開那篇的留言）
+     * 每 60 秒：補私訊使用者名稱（webhook 不帶名字）+ 更新會話列表紅點 */
+
+async function syncOne(p, scope, postId) {
+  try {
+    let url = '/console/igfb/sync?platform=' + p + '&scope=' + scope;
+    if (postId) url += '&post_id=' + encodeURIComponent(postId);
+    return await apiPost(url);
+  } catch (e) {
+    return null;   // 同步失敗不影響畫面（輪詢仍會讀到既有資料）
+  }
+}
+
+// 開頁面／切換渠道時的全量補撈
+async function syncFullOnce() {
+  if (state.sending) return;
+  for (const p of ['ig', 'fb']) {
+    await syncOne(p, 'all');
+    await loadPendingComments();
+  }
+  await loadConversations();
+  if (state.section === 'posts') {
+    await loadPosts(true);
+    if (state.activePost) await openPost(state.activePost.post_id);
+  }
+}
+
+// 每 10 秒：只把「新東西」拉進 DB；畫面由 poll() 每 3 秒從 DB 重讀，兩者分工
+async function syncLight() {
+  if (state.sending || state.postsLoading) return;
+  for (const p of ['ig', 'fb']) await syncOne(p, 'feed');
+  const pid = state.activePost ? state.activePost.post_id : null;
+  if (state.section === 'posts' && pid) {
+    await syncOne(state.platform, 'comments', pid);
+  }
+}
+
+// 每 60 秒：私訊使用者名稱 + 會話列表（新會話約 1 秒內就有名字）
+async function syncNames() {
+  if (state.sending) return;
+  for (const p of ['ig', 'fb']) await syncOne(p, 'names');
+  await loadPendingComments();
+  await loadConversations();
+}
+
+/* ==================================================================
+   AI 自動回復：開關、FAQ、業務表格、紀錄
+   ================================================================== */
+
+// 目前主畫面看的是哪個渠道＋場景（＝一把開關）
+function currentTarget() {
+  const channel = state.platform;
+  const scope = state.section === 'dm' ? 'dm' : 'comment';
+  return { channel, scope };
+}
+
+function targetLabel(channel, scope) {
+  return AR_CHANNEL_LABEL[channel] + ' ' + (scope === 'dm' ? '私訊' : '貼文留言');
+}
+
+// 該渠道＋場景是否為可自動回復的組合（微信不在支援清單內）
+function targetSupported(channel, scope) {
+  if (!arState.settings) return false;
+  return arState.settings.scopes.some(s => s.channel === channel && s.scope === scope);
+}
+
+function findScope(channel, scope) {
+  if (!arState.settings) return null;
+  return arState.settings.scopes.find(s => s.channel === channel && s.scope === scope) || null;
+}
+
+async function loadAutoSettings() {
+  try {
+    const d = await api('/console/autoreply/settings');
+    // 後端若回傳非預期內容（例如舊版服務沒有這支 API），不要讓它污染狀態
+    arState.settings = (d && Array.isArray(d.scopes)) ? d : null;
+  } catch (e) {
+    arState.settings = null;
+  }
+  renderAutoBar();
+  if (arState.settings && document.getElementById('settingsOverlay').classList.contains('open')) {
+    renderSettingsTab();
+  }
+}
+
+function renderAutoBar() {
+  const s = arState.settings;
+  const bar = document.getElementById('arBar');
+  const btn = document.getElementById('arBtn');
+  const label = document.getElementById('arLabel');
+  if (!btn) return;
+
+  const { channel, scope } = currentTarget();
+
+  // 設定還沒拿到（或這支 API 不存在）時，一定要給出終態，不能停在「載入中…」
+  if (!s) {
+    label.textContent = targetLabel(channel, scope) + ' 自動回復';
+    btn.textContent = '無法讀取';
+    btn.title = '讀不到自動回復設定，請確認後端已重啟且 /console/autoreply/settings 正常回應';
+    btn.disabled = true;
+    btn.className = 'ar-btn off';
+    bar.className = 'ar-bar';
+    return;
+  }
+  btn.title = '';
+
+  if (!targetSupported(channel, scope)) {
+    label.textContent = targetLabel(channel, scope) + ' 自動回復';
+    btn.textContent = '不支援';
+    btn.title = '此渠道無法主動發送訊息，故不提供自動回復';
+    btn.disabled = true;
+    btn.className = 'ar-btn off';
+    bar.className = 'ar-bar';
+    return;
+  }
+
+  const sc = findScope(channel, scope);
+  const on = sc && sc.effective;
+  label.textContent = targetLabel(channel, scope) + ' 自動回復';
+  btn.disabled = false;
+  if (!s.global && on) {
+    // 全域關閉時個別開關沒有意義，提示出來
+    btn.textContent = '已開啟（全域關閉中）';
+    btn.className = 'ar-btn off';
+    bar.className = 'ar-bar';
+    return;
+  }
+  btn.textContent = on ? '已開啟' : '已關閉';
+  btn.className = 'ar-btn ' + (on ? 'on' : 'off');
+  bar.className = 'ar-bar' + (on ? ' on' : '');
+}
+
+// 側邊欄那顆按鈕：切換目前渠道＋場景的自動回復
+async function toggleAutoReply() {
+  const { channel, scope } = currentTarget();
+  if (!arState.settings) {
+    alert('讀不到自動回復設定。\n\n請確認後端已用最新程式碼重啟，且 /console/autoreply/settings 能正常回應。');
+    return;
+  }
+  if (!targetSupported(channel, scope)) {
+    alert(targetLabel(channel, scope) + ' 不支援自動回復');
+    return;
+  }
+  const sc = findScope(channel, scope);
+  const next = !(sc && sc.effective);
+  let turnedOnGlobal = false;
+  if (next && !arState.settings.global) {
+    if (!confirm('全域自動回復目前是關閉的。\n要同時開啟「全域自動回復」嗎？\n\n（確定 = 一起開啟，取消 = 只開這一個開關）')) {
+      await setScope(channel, scope, true, true);
+      await offerBackfill([{ channel: channel, scope: scope }]);
+      return;
+    }
+    await setGlobal(true, true);
+    turnedOnGlobal = true;
+  }
+  await setScope(channel, scope, next, true);
+  // 只有「開啟」才問要不要補做；關閉時不用
+  if (next) {
+    await offerBackfill(turnedOnGlobal ? null : [{ channel: channel, scope: scope }]);
+  }
+}
+
+async function setScope(channel, scope, enabled, quiet) {
+  const res = await apiJson('/console/autoreply/settings/scope', { channel, scope, enabled });
+  if (res.data.error) { alert('設定失敗：' + res.data.error); return; }
+  await loadAutoSettings();
+  if (enabled && !quiet) await offerBackfill([{ channel: channel, scope: scope }]);
+}
+
+async function setGlobal(enabled, quiet) {
+  const res = await apiJson('/console/autoreply/settings/global', { enabled });
+  if (res.data.error) { alert('設定失敗：' + res.data.error); return; }
+  await loadAutoSettings();
+  if (enabled && !quiet) await offerBackfill(null);   // 全域 → 列出全部渠道的未處理數
+}
+
+/* ---------- 開啟自動回復時：問要不要一併補做未處理訊息 ----------
+   targets = null 表示全域開關（列出所有渠道）；否則只問指定的渠道＋場景。
+   只有「有未處理訊息」才會打擾；多則未回覆的客戶會逐一彈窗問逐條回或只回最後一則。 */
+
+async function offerBackfill(targets) {
+  let info;
+  try {
+    info = await api('/console/autoreply/pending');
+  } catch (e) {
+    return;   // 舊版後端沒有這支 API 時安靜略過，不影響開關本身
+  }
+  const pending = (info.scopes || []).filter(s => s.supported && s.total > 0);
+  const wanted = pending.filter(s => !targets
+    || targets.some(t => t.channel === s.channel && t.scope === s.scope));
+  if (!wanted.length) return;
+
+  const lines = wanted.map(s => '・' + s.label + '：' + s.total + ' 則未處理');
+  const ok = confirm('偵測到還沒回覆的客戶訊息：\n\n' + lines.join('\n') + '\n\n' +
+    '要現在由自動回復引擎一併處理嗎？\n' +
+    '（會「直接發送」給客戶；引擎答不出來的仍標成待處理，等人工接手）\n\n' +
+    '確定 = 開始處理　取消 = 先不處理');
+  if (!ok) return;
+
+  const planTargets = [];
+  for (const s of wanted) {
+    const plan = {};
+    for (const m of (s.multi || [])) {
+      const all = confirm('客戶「' + m.name + '」有 ' + m.count + ' 條未回覆消息。\n\n' +
+        '要逐條回覆嗎？\n\n確定 = 逐條回復　取消 = 僅回復最後一條');
+      plan[m.key] = all ? 'all' : 'last';
+    }
+    planTargets.push({ channel: s.channel, scope: s.scope, plan: plan });
+  }
+
+  let job;
+  try {
+    const res = await apiJson('/console/autoreply/backfill', { targets: planTargets });
+    if (!res.data.ok) { alert('批次處理失敗：' + (res.data.error || ('HTTP ' + res.status))); return; }
+    job = res.data;
+  } catch (e) {
+    alert('批次處理失敗：' + e.message);
+    return;
+  }
+  if (!job.total) { await refreshAfterBackfill(); return; }
+  await watchBackfill(job.job_id, job.total);
+}
+
+let _backfillTimer = null;
+
+function showBackfillToast(text) {
+  const el = document.getElementById('backfillToast');
+  if (!el) return;
+  const t = document.getElementById('bfText');
+  if (t) t.textContent = text;
+  el.style.display = 'flex';
+}
+
+function hideBackfillToast() {
+  const el = document.getElementById('backfillToast');
+  if (el) el.style.display = 'none';
+}
+
+async function watchBackfill(jobId, total) {
+  if (_backfillTimer) { clearInterval(_backfillTimer); _backfillTimer = null; }
+  showBackfillToast('自動回復處理中… 0/' + total);
+  await new Promise(function (resolve) {
+    _backfillTimer = setInterval(async function () {
+      let d;
+      try {
+        d = await api('/console/autoreply/backfill/' + jobId);
+      } catch (e) {
+        clearInterval(_backfillTimer); _backfillTimer = null;
+        hideBackfillToast(); resolve(); return;
+      }
+      showBackfillToast('自動回復處理中… ' + d.done + '/' + d.total +
+        '（命中 ' + d.hit + '、未命中 ' + d.miss + '、失敗 ' + d.failed + '、略過 ' + d.skipped + '）');
+      if (d.finished) {
+        clearInterval(_backfillTimer); _backfillTimer = null;
+        hideBackfillToast();
+        alert('一併處理完成：\n命中 ' + d.hit + '、未命中 ' + d.miss +
+          '、送出失敗 ' + d.failed + '、略過 ' + d.skipped + '（共 ' + d.total + ' 則）\n\n' +
+          '未命中的仍標成待處理，已列在導覽紅點與列表上。');
+        await refreshAfterBackfill();
+        resolve();
+      }
+    }, 2000);
+  });
+}
+
+async function refreshAfterBackfill() {
+  try {
+    await loadPendingComments();
+    await loadConversations();
+    if (state.section === 'posts') {
+      await loadPosts(true);
+      if (state.activePost) await openPost(state.activePost.post_id);
+    } else if (state.activeCid) {
+      await openConversation(state.activeCid);
+    }
+    await loadAutoSettings();
+  } catch (e) { /* 忽略 */ }
+}
+
+/* ---------- 設定面板 ---------- */
+
+function openSettings(tab) {
+  document.getElementById('settingsOverlay').classList.add('open');
+  switchSettingsTab(tab || arState.tab);
+}
+
+function closeSettings() {
+  document.getElementById('settingsOverlay').classList.remove('open');
+}
+
+function switchSettingsTab(tab) {
+  arState.tab = tab;
+  document.querySelectorAll('.sp-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === tab));
+  renderSettingsTab();
+}
+
+/* ----- 設定面板：防「定時重繪把正在打的字清掉」 -----
+   症狀：在「試跑」輸入框打字打到一半，內容突然被清空（實測每 30 秒一次）。
+   根因：setInterval(loadAutoSettings, 30000) → renderSettingsTab() → body.innerHTML
+        整塊重繪，輸入框、下拉選單、分析結果全部回到初始值。
+   解法（兩層）：
+     1. 內容沒變就完全不動 DOM（沿用 _convHtml / _postDetailHtml 的快取手法）。
+     2. 真的要重繪時，先把「使用者改過 / 正在打字」的欄位值與焦點記下來，重繪後搬回去。 */
+
+// 這兩個區塊的內容是使用者操作後才產生的（不在產生的 html 裡），重繪時要一起搬回來
+const SP_LIVE_NODES = ['arTestResult', 'dsResult'];
+
+function spFieldKey(el, i) {
+  if (el.id) return '#' + el.id;
+  // FAQ 表格的 textarea 沒有 id，用「列 id + 欄序」當 key，列增刪也不會錯位
+  const tr = el.closest ? el.closest('tr[data-id]') : null;
+  if (tr) {
+    const fields = Array.prototype.slice.call(tr.querySelectorAll('input,textarea,select'));
+    return 'tr' + tr.dataset.id + ':' + fields.indexOf(el);
+  }
+  return el.tagName + ':' + i;
+}
+
+function spSnapshot(root) {
+  const active = document.activeElement;
+  const out = [];
+  Array.prototype.forEach.call(root.querySelectorAll('input,textarea,select'), function (el, i) {
+    const checkable = el.type === 'checkbox' || el.type === 'radio';
+    const dirty = checkable ? (el.checked !== el.defaultChecked) : (el.value !== el.defaultValue);
+    const focused = el === active;
+    // 沒改過又沒在打字的欄位不記：讓新 html 顯示伺服器最新值
+    if (!dirty && !focused) return;
+    out.push({
+      key: spFieldKey(el, i), tag: el.tagName, checkable: checkable,
+      value: checkable ? null : el.value, checked: el.checked,
+      focused: focused, start: el.selectionStart, end: el.selectionEnd,
+    });
+  });
+  const live = {};
+  SP_LIVE_NODES.forEach(function (id) {
+    const n = document.getElementById(id);
+    if (n && n.innerHTML) live[id] = n.innerHTML;
+  });
+  return { fields: out, live: live };
+}
+
+function spRestore(root, snap) {
+  if (!snap) return;
+  const byKey = {};
+  Array.prototype.forEach.call(root.querySelectorAll('input,textarea,select'), function (el, i) {
+    byKey[spFieldKey(el, i)] = el;
+  });
+  snap.fields.forEach(function (s) {
+    const el = byKey[s.key];
+    if (!el || el.tagName !== s.tag) return;
+    if (s.checkable) el.checked = s.checked;
+    else el.value = s.value;
+    if (s.focused) {
+      el.focus();
+      try { el.setSelectionRange(s.start, s.end); } catch (e) { /* 某些型別不支援選取範圍 */ }
+    }
+  });
+  Object.keys(snap.live).forEach(function (id) {
+    const n = document.getElementById(id);
+    if (n) n.innerHTML = snap.live[id];
+  });
+}
+
+// 唯一寫入 #spBody 的入口
+function renderSettingsBody(html) {
+  const body = document.getElementById('spBody');
+  if (!body) return false;
+  if (html === _spHtml && _spTab === arState.tab) return false;   // 沒變就不動 DOM
+  const snap = spSnapshot(body);
+  body.innerHTML = html;
+  _spHtml = html;
+  _spTab = arState.tab;
+  spRestore(body, snap);
+  return true;
+}
+
+function renderSettingsTab() {
+  if (!arState.settings) {
+    renderSettingsBody('<div class="card"><h3>讀不到自動回復設定</h3>' +
+      '<div class="hint">後端沒有回應 /console/autoreply/settings。' +
+      '請確認：① 服務已用最新程式碼重啟（改完後端要重啟）② 這個 API 回傳 200 JSON。' +
+      '服務啟動時 console 應出現「自動回復資料表就緒（platform_forwarder）」。' +
+      '若方便，請把瀏覽器開發者工具 Console 分頁的紅色錯誤貼給我。</div>' +
+      '<div class="row"><button class="btn primary" onclick="loadAutoSettings()">重新讀取</button></div></div>');
+    refreshDeepseekPill();
+    return;
+  }
+  let html, after = null;
+  if (arState.tab === 'autoreply') {
+    html = autoreplyTabHtml();
+    after = loadStats;
+  } else if (arState.tab === 'faq') {
+    html = faqTabHtml();
+    after = function () { if (!arState.faqs.length) loadFaqs(); };
+  } else if (arState.tab === 'table') {
+    html = tableTabHtml();
+    after = function () { if (!arState.tables.length) loadTables(true); };
+  } else {
+    html = logsTabHtml();
+    after = function () { if (!arState.logs.length) loadLogs(); };
+  }
+
+  if (renderSettingsBody(html)) {
+    if (after) after();
+  } else if (arState.tab === 'autoreply') {
+    loadStats();   // 沒重繪時只更新唯讀的成效統計，絕不碰輸入框
+  }
+  refreshDeepseekPill();
+}
+
+function refreshDeepseekPill() {
+  const el = document.getElementById('spDeepseek');
+  const s = arState.settings;
+  if (!el || !s) return;
+  const ok = s.deepseek.configured;
+  el.className = 'pill ' + (ok ? 'on' : 'off');
+  el.textContent = ok ? 'DeepSeek 已設定' : 'DeepSeek 未設定';
+  el.title = s.deepseek.model + ' · ' + s.deepseek.base_url;
+}
+
+/* ----- 分頁一：自動回復開關 ----- */
+
+function autoreplyTabHtml() {
+  const s = arState.settings;
+  if (!s) return '<div class="empty-note">設定載入中…</div>';
+
+  const scopeRows = s.scopes.map(sc => {
+    const follow = sc.stored === null || sc.stored === undefined;
+    const eff = sc.effective;
+    return '<div class="switch-row' + (eff ? ' on' : '') + '">' +
+      '<span class="sr-name">' + esc(sc.label) +
+        '<span class="sr-sub">' + (follow ? '跟隨全域設定' : '已單獨設定') +
+        ' · 目前實際：' + (eff ? '開啟' : '關閉') + '</span>' +
+      '</span>' +
+      '<button class="btn sm" onclick="setScope(\'' + sc.channel + '\',\'' + sc.scope + '\',true)">開啟</button>' +
+      '<button class="btn sm" onclick="setScope(\'' + sc.channel + '\',\'' + sc.scope + '\',false)">關閉</button>' +
+      (follow ? '' : '<button class="btn sm" onclick="clearScopeOverride(\'' + sc.channel + '\',\'' + sc.scope + '\')" title="改回跟隨全域">跟隨全域</button>') +
+      '</div>';
+  }).join('');
+
+  return '' +
+    '<div class="card">' +
+      '<h3>總開關</h3>' +
+      '<div class="hint">關閉後，所有渠道都不會自動回復（個別開關保留設定，重新開啟即恢復）。</div>' +
+      '<div class="row">' +
+        '<button class="btn ' + (s.global ? 'danger' : 'primary') + '" onclick="setGlobal(' + (!s.global) + ')">' +
+          (s.global ? '關閉全域自動回復' : '開啟全域自動回復') + '</button>' +
+        '<span class="pill ' + (s.global ? 'on' : 'off') + '">全域：' + (s.global ? '開啟' : '關閉') + '</span>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<h3>各渠道的自動回復</h3>' +
+      '<div class="hint">每個渠道的「私訊」與「貼文留言」各自一把開關。' +
+      '未單獨設定時跟隨全域。</div>' +
+      scopeRows +
+    '</div>' +
+
+    '<div class="card">' +
+      '<h3>兩層資料的停啟用</h3>' +
+      '<div class="hint">停用後，在自動回復開啟的前提下直接跳到下一層。' +
+      '兩層都停用（或都未命中）＝ 降級人工回復，該則訊息會標為「自動回復未命中，待處理」。</div>' +
+      '<div class="switch-row' + (s.faq_layer ? ' on' : '') + '">' +
+        '<span class="sr-name">第一層：FAQ 問答對' +
+          '<span class="sr-sub">共 ' + s.faq_count + ' 組，啟用中 ' + s.faq_enabled_count + ' 組</span>' +
+        '</span>' +
+        '<button class="btn sm" onclick="setLayer(\'faq\',' + (!s.faq_layer) + ')">' +
+          (s.faq_layer ? '停用' : '啟用') + '</button>' +
+        '<span class="pill ' + (s.faq_layer ? 'on' : 'off') + '">' + (s.faq_layer ? '啟用' : '停用') + '</span>' +
+      '</div>' +
+      '<div class="switch-row' + (s.table_layer ? ' on' : '') + '">' +
+        '<span class="sr-name">第二層：業務表格（DeepSeek 理解）' +
+          '<span class="sr-sub">共 ' + s.table_count + ' 張表、' + s.row_count + ' 列資料</span>' +
+        '</span>' +
+        '<button class="btn sm" onclick="setLayer(\'table\',' + (!s.table_layer) + ')">' +
+          (s.table_layer ? '停用' : '啟用') + '</button>' +
+        '<span class="pill ' + (s.table_layer ? 'on' : 'off') + '">' + (s.table_layer ? '啟用' : '停用') + '</span>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<h3>DeepSeek</h3>' +
+      '<div class="hint">API Key 由 .env 的 <code>DEEPSEEK_API_KEY</code> 提供；' +
+      '第二層業務表格匹配與 FAQ 問句改寫都靠它。</div>' +
+      '<div class="row">' +
+        '<span class="pill ' + (s.deepseek.configured ? 'on' : 'off') + '">' +
+          (s.deepseek.configured ? esc(s.deepseek.masked_key) : '未設定 Key') + '</span>' +
+        '<span class="hint" style="margin:0">模型 <b>' + esc(s.deepseek.model) + '</b>' +
+        ' · 改寫模式 <b>' + esc(s.deepseek.rewrite_mode) + '</b>' +
+        ' · FAQ 門檻 <b>' + s.deepseek.threshold + '</b></span>' +
+        '<div class="spacer" style="flex:1"></div>' +
+        '<button class="btn sm" onclick="testDeepseek()">測試連線</button>' +
+      '</div>' +
+      '<div id="dsResult"></div>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<h3>防護</h3>' +
+      '<div class="hint">避免同一會話被自動回復洗版。改 .env 後重啟服務生效。</div>' +
+      '<div class="hint">同一會話冷卻：<b>' + s.guards.cooldown_seconds + '</b> 秒' +
+      ' · 每日每會話上限：<b>' + (s.guards.max_per_day || '不限') + '</b> 則</div>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<h3>試跑（不會發送任何訊息）</h3>' +
+      '<div class="hint">輸入一句客戶可能說的話，看看會走哪一層。</div>' +
+      '<div class="row">' +
+        '<input type="text" id="arTestText" placeholder="例如：你們營業到幾點？" ' +
+          'style="flex:1;min-width:220px;padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
+        '<select id="arTestTarget" style="padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
+          s.scopes.map(sc => '<option value="' + sc.channel + '|' + sc.scope + '">' + esc(sc.label) + '</option>').join('') +
+        '</select>' +
+        '<button class="btn primary" onclick="testEngine()">試跑</button>' +
+      '</div>' +
+      '<div id="arTestResult"></div>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<h3>各渠道成效</h3>' +
+      '<div class="hint">自動回復送出與未命中的累計次數（未命中且未處理的會顯示為待處理）。</div>' +
+      '<div id="arStats"><div class="empty-note">載入中…</div></div>' +
+    '</div>';
+}
+
+async function clearScopeOverride(channel, scope) {
+  const res = await apiJson('/console/autoreply/settings/scope', { channel, scope, enabled: null });
+  if (res.data.error) { alert('設定失敗：' + res.data.error); return; }
+  await loadAutoSettings();
+}
+
+async function setLayer(layer, enabled) {
+  const res = await apiJson('/console/autoreply/settings/layer', { layer, enabled });
+  if (res.data.error) { alert('設定失敗：' + res.data.error); return; }
+  await loadAutoSettings();
+}
+
+async function testDeepseek() {
+  const box = document.getElementById('dsResult');
+  if (box) box.innerHTML = '<div class="test-result">測試中…</div>';
+  try {
+    const d = await api('/console/autoreply/deepseek/test');
+    if (box) box.innerHTML = '<div class="test-result">' + (d.ok ? '✅ ' : '❌ ') + esc(d.message) + '</div>';
+  } catch (e) {
+    if (box) box.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+async function testEngine() {
+  const box = document.getElementById('arTestResult');
+  const text = (document.getElementById('arTestText').value || '').trim();
+  const sel = (document.getElementById('arTestTarget').value || '|').split('|');
+  if (!text) { alert('請先輸入測試訊息'); return; }
+  box.innerHTML = '<div class="test-result">分析中…（第二層會呼叫 DeepSeek，約需數秒）</div>';
+  try {
+    const res = await apiJson('/console/autoreply/test/engine',
+      { text: text, channel: sel[0], scope: sel[1] });
+    const d = res.data;
+    if (d.error) { box.innerHTML = '<div class="test-result">❌ ' + esc(d.error) + '</div>'; return; }
+    box.innerHTML = '<div class="test-result">' +
+      '<b>' + esc(d.label) + '</b>（tier=' + esc(d.tier) + '）\n' +
+      '是否會發送：' + (d.would_send ? '是' : '否（降級人工回復）') + '\n' +
+      (d.detail ? '說明：' + esc(d.detail) + '\n' : '') +
+      (d.matched_question ? '命中問法：' + esc(d.matched_question) + '\n' : '') +
+      (d.score != null ? '分數：' + d.score + '\n' : '') +
+      (d.rewritten_query ? '改寫後問句：' + esc(d.rewritten_query) +
+        (d.history_used ? '（帶入 ' + d.history_used + ' 則對話）' : '') + '\n' : '') +
+      ((d.history && d.history.length)
+        ? '參考的對話：\n' + d.history.map(h =>
+            '  ' + (h.direction === 'outbound' ? '客服' : '客戶') + '：' + esc(h.text)).join('\n') + '\n'
+        : '（沒有更早的對話可參考）\n') +
+      (d.text ? '\n回覆內容：\n' + esc(d.text) : '') +
+      '</div>';
+  } catch (e) {
+    box.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+async function loadStats() {
+  try {
+    const d = await api('/console/autoreply/stats');
+    const box = document.getElementById('arStats');
+    if (!box) return;
+    box.innerHTML = '<table class="data-table"><thead><tr>' +
+      '<th>渠道</th><th>場景</th><th>開關</th><th>FAQ 命中</th><th>表格命中</th>' +
+      '<th title="業務表格第一次沒查到、帶對話改寫 query 後才命中">改寫救回</th>' +
+      '<th>未命中</th><th>待處理</th></tr></thead><tbody>' +
+      d.scopes.map(s => '<tr>' +
+        '<td>' + esc(AR_CHANNEL_LABEL[s.channel] || s.channel) + '</td>' +
+        '<td>' + (s.scope === 'dm' ? '私訊' : '貼文留言') + '</td>' +
+        '<td><span class="pill ' + (s.enabled ? 'on' : 'off') + '">' + (s.enabled ? '開' : '關') + '</span></td>' +
+        '<td>' + s.faq + '</td><td>' + s.table + '</td>' +
+        '<td>' + (s.rewritten || 0) + '</td>' +
+        '<td>' + s.miss + '</td>' +
+        '<td>' + (s.pending_miss ? '<span class="pill miss">' + s.pending_miss + '</span>' : '0') + '</td>' +
+      '</tr>').join('') + '</tbody></table>' +
+      '<div class="hint" style="margin-top:8px">「改寫救回」＝業務表格第一次沒查到，' +
+      '帶入最近對話讓模型改寫問句後才命中（這些原本會降級人工）。' +
+      '累計 ' + (d.rewritten_total || 0) + ' 次。</div>';
+  } catch (e) { /* 忽略 */ }
+}
+
+/* ----- 分頁二：FAQ ----- */
+
+function faqTabHtml() {
+  const rows = arState.faqs.length
+    ? arState.faqs.map(f => faqRowHtml(f)).join('')
+    : '<tr><td colspan="6"><div class="empty-note">尚無 FAQ。可新增、貼上 JSON，或上傳 Excel / CSV。</div></td></tr>';
+  return '' +
+    '<div class="card">' +
+      '<h3>FAQ 問答對（第一層）</h3>' +
+      '<div class="hint">規則匹配：繁簡正規化 + 分詞 + 字元相似度加權打分，達門檻即直接回覆，不呼叫 AI。' +
+      '每個問答對可單獨停啟用；「關鍵詞」欄可填同一問題的其他問法（逗號分隔），會一起參與匹配。</div>' +
+      '<div class="row">' +
+        '<button class="btn primary" onclick="addFaq()">＋ 新增一組</button>' +
+        '<button class="btn" onclick="saveAllFaqs()">儲存全部修改</button>' +
+        '<label class="btn" style="cursor:pointer">匯入 Excel / CSV' +
+          '<input type="file" accept=".xlsx,.xlsm,.csv" style="display:none" onchange="importFaq(this)"></label>' +
+        '<select id="faqImportMode" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+          '<option value="replace">匯入時：清空後匯入</option>' +
+          '<option value="append">匯入時：附加到現有</option>' +
+        '</select>' +
+        '<button class="btn" onclick="location.href=\'/console/autoreply/faq/template?fmt=xlsx\'">下載範本 xlsx</button>' +
+        '<button class="btn" onclick="location.href=\'/console/autoreply/faq/template?fmt=csv\'">下載範本 csv</button>' +
+        '<button class="btn" onclick="location.href=\'/console/autoreply/faq/export\'">匯出目前 FAQ</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="card">' +
+      '<div class="tbl-wrap"><table class="data-table"><thead><tr>' +
+        '<th style="width:46px">啟用</th><th style="width:24%">問題</th><th>答案</th>' +
+        '<th style="width:18%">關鍵詞</th><th style="width:64px">命中</th><th style="width:60px">操作</th>' +
+      '</tr></thead><tbody id="faqBody">' + rows + '</tbody></table></div>' +
+      '<div id="faqImportNote"></div>' +
+    '</div>';
+}
+
+function faqRowHtml(f) {
+  return '<tr data-id="' + f.id + '" class="' + (f.enabled ? '' : 'off') + '">' +
+    '<td style="text-align:center"><input type="checkbox" ' + (f.enabled ? 'checked' : '') +
+      ' onchange="markFaqDirty(this)"></td>' +
+    '<td><textarea rows="2" oninput="markFaqDirty(this)">' + esc(f.question) + '</textarea></td>' +
+    '<td><textarea rows="2" oninput="markFaqDirty(this)">' + esc(f.answer) + '</textarea></td>' +
+    '<td><textarea rows="2" oninput="markFaqDirty(this)">' + esc(f.keywords || '') + '</textarea></td>' +
+    '<td style="text-align:center">' + (f.hit_count || 0) + '</td>' +
+    '<td style="text-align:center"><button class="btn sm danger" onclick="deleteFaq(' + f.id + ')">刪除</button></td>' +
+  '</tr>';
+}
+
+function markFaqDirty() { /* 目前改動即時收集，這裡只作為 oninput 掛勾 */ }
+
+function collectFaqs() {
+  const out = [];
+  document.querySelectorAll('#faqBody tr').forEach(tr => {
+    const id = Number(tr.dataset.id);
+    if (!id) return;
+    const tas = tr.querySelectorAll('textarea');
+    out.push({
+      id: id,
+      enabled: tr.querySelector('input[type="checkbox"]').checked,
+      question: tas[0].value.trim(),
+      answer: tas[1].value.trim(),
+      keywords: tas[2].value.trim(),
+    });
+  });
+  return out;
+}
+
+async function loadFaqs() {
+  try {
+    const d = await api('/console/autoreply/faq');
+    arState.faqs = d.faqs || [];
+  } catch (e) {
+    arState.faqs = [];
+  }
+  if (arState.tab === 'faq') {
+    renderSettingsBody(faqTabHtml());
+    refreshDeepseekPill();
+  }
+}
+
+async function saveAllFaqs() {
+  const items = collectFaqs();
+  let ok = 0, bad = 0;
+  for (const it of items) {
+    if (!it.question || !it.answer) { bad++; continue; }
+    const res = await apiJson('/console/autoreply/faq/update', it);
+    if (res.data.ok) ok++; else bad++;
+  }
+  alert('已儲存 ' + ok + ' 組' + (bad ? '，' + bad + ' 組有問題（問題與答案不可為空）' : ''));
+  await loadFaqs();
+}
+
+async function addFaq() {
+  const res = await apiJson('/console/autoreply/faq', {
+    question: '（請填寫問題）', answer: '（請填寫答案）', keywords: '', enabled: false,
+  });
+  if (res.data.error) { alert('新增失敗：' + res.data.error); return; }
+  await loadFaqs();
+}
+
+async function deleteFaq(id) {
+  if (!confirm('確定刪除這組 FAQ？')) return;
+  const res = await apiJson('/console/autoreply/faq/delete', { ids: [id] });
+  if (res.data.error) { alert('刪除失敗：' + res.data.error); return; }
+  await loadFaqs();
+}
+
+async function importFaq(input) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  const mode = document.getElementById('faqImportMode').value;
+  const note = document.getElementById('faqImportNote');
+  const fd = new FormData();
+  fd.append('mode', mode);
+  fd.append('file', file);
+  note.innerHTML = '<div class="test-result">匯入中…</div>';
+  try {
+    const r = await fetch('/console/autoreply/faq/import', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.error) { note.innerHTML = '<div class="test-result">❌ ' + esc(d.error) + '</div>'; return; }
+    note.innerHTML = '<div class="test-result">✅ 已寫入 ' + d.written + ' 組，目前共 ' + d.total + ' 組。</div>';
+    await loadFaqs();
+    await loadAutoSettings();
+  } catch (e) {
+    note.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+/* ----- 分頁三：業務表格 ----- */
+
+function tableTabHtml() {
+  const tables = arState.tables.length
+    ? arState.tables.map(t => tableCardHtml(t)).join('')
+    : '<div class="card"><div class="empty-note">尚無業務表格。可新增一張，或直接上傳 Excel / CSV（第一列為欄位名）。</div></div>';
+
+  return '' +
+    '<div class="card">' +
+      '<h3>業務表格（第二層）</h3>' +
+      '<div class="hint">FAQ 未命中時，把這裡的表格內容交給 DeepSeek 理解後回答；' +
+      '模型判斷表格答不出來時，直接降級人工回復。' +
+      '表格與資料列都可單獨停啟用；整個功能可在「自動回復」分頁停用。</div>' +
+      '<div class="row">' +
+        '<button class="btn primary" onclick="createTable()">＋ 新增空白表格</button>' +
+        '<label class="btn" style="cursor:pointer">上傳 Excel / CSV 建新表' +
+          '<input type="file" accept=".xlsx,.xlsm,.csv" style="display:none" onchange="importTable(this,0)"></label>' +
+        '<button class="btn" onclick="location.href=\'/console/autoreply/table/template?fmt=xlsx\'">下載範本 xlsx</button>' +
+        '<button class="btn" onclick="location.href=\'/console/autoreply/table/template?fmt=csv\'">下載範本 csv</button>' +
+      '</div>' +
+      '<div id="tableImportNote"></div>' +
+    '</div>' + tables;
+}
+
+function tableCardHtml(t) {
+  const cols = t.columns || [];
+  const rows = t.rows || [];
+  const open = arState.openTableId === t.id;
+
+  const head = '<div class="row" style="margin-bottom:8px">' +
+    '<input type="text" value="' + esc(t.name) + '" onchange="updateTable(' + t.id + ',{name:this.value})" ' +
+      'style="font-weight:700;font-size:14px;padding:6px 9px;border:1px solid var(--border);border-radius:8px;min-width:180px">' +
+    '<input type="text" value="' + esc(t.description || '') + '" placeholder="說明（會一起給模型參考）" ' +
+      'onchange="updateTable(' + t.id + ',{description:this.value})" ' +
+      'style="flex:1;min-width:200px;padding:6px 9px;border:1px solid var(--border);border-radius:8px">' +
+    '<span class="pill ' + (t.enabled ? 'on' : 'off') + '">' + (t.enabled ? '啟用' : '停用') + '</span>' +
+    '<button class="btn sm" onclick="updateTable(' + t.id + ',{enabled:' + (!t.enabled) + '})">' +
+      (t.enabled ? '停用' : '啟用') + '</button>' +
+    '<button class="btn sm" onclick="toggleTableRows(' + t.id + ')">' + (open ? '收起' : '展開資料列（' + t.row_count + '）') + '</button>' +
+    '<button class="btn sm" onclick="location.href=\'/console/autoreply/table/export?table_id=' + t.id + '\'">匯出</button>' +
+    '<label class="btn sm" style="cursor:pointer">匯入' +
+      '<input type="file" accept=".xlsx,.xlsm,.csv" style="display:none" onchange="importTable(this,' + t.id + ')"></label>' +
+    '<button class="btn sm danger" onclick="deleteTable(' + t.id + ')">刪除表</button>' +
+    '</div>' +
+    '<div class="hint">欄位：' + (cols.length ? esc(cols.join('、')) : '（未設定，匯入檔案時自動建立）') + '</div>';
+
+  let bodyHtml = '';
+  if (open) {
+    const th = cols.map(c => '<th>' + esc(c) + '</th>').join('');
+    const trs = rows.length
+      ? rows.map(r => '<tr>' +
+          cols.map(c => '<td><input type="text" value="' + esc((r.data || {})[c] || '') +
+            '" onchange="updateRow(' + r.id + ',' + t.id + ',' + JSON.stringify(c) + ',this.value)"></td>').join('') +
+          '<td style="text-align:center"><button class="btn sm danger" onclick="deleteRow(' + r.id + ',' + t.id + ')">刪</button></td>' +
+        '</tr>').join('')
+      : '<tr><td colspan="' + (cols.length + 1) + '"><div class="empty-note">尚無資料列</div></td></tr>';
+
+    bodyHtml = '<div class="tbl-wrap"><table class="data-table"><thead><tr>' + th +
+      '<th style="width:52px">操作</th></tr></thead><tbody>' + trs + '</tbody></table></div>' +
+      '<div class="row" style="margin-top:8px">' +
+        '<button class="btn sm" onclick="addRow(' + t.id + ')">＋ 新增一列</button>' +
+        '<button class="btn sm" onclick="editColumns(' + t.id + ')">編輯欄位</button>' +
+      '</div>';
+  }
+
+  return '<div class="card">' + head + bodyHtml + '</div>';
+}
+
+async function loadTables(keepOpen) {
+  try {
+    const d = await api('/console/autoreply/table?rows=1');
+    arState.tables = d.tables || [];
+  } catch (e) {
+    arState.tables = [];
+  }
+  if (!keepOpen) arState.openTableId = arState.openTableId;
+  if (arState.tab === 'table') {
+    renderSettingsBody(tableTabHtml());
+    refreshDeepseekPill();
+  }
+}
+
+function toggleTableRows(id) {
+  arState.openTableId = arState.openTableId === id ? null : id;
+  renderSettingsBody(tableTabHtml());
+}
+
+async function createTable() {
+  const name = prompt('新表格名稱：', '業務表格');
+  if (!name) return;
+  const res = await apiJson('/console/autoreply/table/create', { name: name, columns: [] });
+  if (res.data.error) { alert('新增失敗：' + res.data.error); return; }
+  await loadTables();
+  await loadAutoSettings();
+}
+
+async function updateTable(id, fields) {
+  const res = await apiJson('/console/autoreply/table/update', Object.assign({ id: id }, fields));
+  if (res.data.error) { alert('更新失敗：' + res.data.error); return; }
+  await loadTables();
+  await loadAutoSettings();
+}
+
+async function deleteTable(id) {
+  if (!confirm('確定刪除這張表？底下的資料列會一併刪除。')) return;
+  const res = await apiJson('/console/autoreply/table/delete', { id: id });
+  if (res.data.error) { alert('刪除失敗：' + res.data.error); return; }
+  if (arState.openTableId === id) arState.openTableId = null;
+  await loadTables();
+  await loadAutoSettings();
+}
+
+async function addRow(tableId) {
+  const t = arState.tables.find(x => x.id === tableId);
+  if (!t) return;
+  if (!(t.columns || []).length) { alert('請先編輯欄位（設定欄位名稱）'); return; }
+  const data = {};
+  (t.columns || []).forEach(c => { data[c] = ''; });
+  const res = await apiJson('/console/autoreply/table/row', { action: 'create', table_id: tableId, data: data });
+  if (res.data.error) { alert('新增失敗：' + res.data.error); return; }
+  await loadTables();
+}
+
+async function updateRow(rowId, tableId, column, value) {
+  const t = arState.tables.find(x => x.id === tableId);
+  const row = t && (t.rows || []).find(r => r.id === rowId);
+  const data = Object.assign({}, (row && row.data) || {});
+  data[column] = value;
+  const res = await apiJson('/console/autoreply/table/row', { action: 'update', id: rowId, data: data });
+  if (res.data.error) alert('更新失敗：' + res.data.error);
+}
+
+async function deleteRow(rowId, tableId) {
+  const res = await apiJson('/console/autoreply/table/row', { action: 'delete', id: rowId });
+  if (res.data.error) { alert('刪除失敗：' + res.data.error); return; }
+  await loadTables();
+  await loadAutoSettings();
+}
+
+async function editColumns(tableId) {
+  const t = arState.tables.find(x => x.id === tableId);
+  if (!t) return;
+  const cur = (t.columns || []).join(', ');
+  const input = prompt('欄位名稱（用逗號分隔）：', cur);
+  if (input === null) return;
+  const cols = input.split(',').map(s => s.trim()).filter(Boolean);
+  const res = await apiJson('/console/autoreply/table/update', { id: tableId, columns: cols });
+  if (res.data.error) { alert('更新失敗：' + res.data.error); return; }
+  await loadTables();
+}
+
+async function importTable(input, tableId) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  const note = document.getElementById('tableImportNote');
+  let mode = 'replace';
+  if (tableId) {
+    mode = confirm('要「附加」到現有資料列嗎？\n\n確定 = 附加（保留原有資料）\n取消 = 覆寫（清空後匯入）')
+      ? 'append' : 'replace';
+  }
+  const fd = new FormData();
+  fd.append('table_id', String(tableId || 0));
+  fd.append('name', file.name.replace(/\.[^.]+$/, ''));
+  fd.append('mode', mode);
+  fd.append('file', file);
+  if (note) note.innerHTML = '<div class="test-result">匯入中…</div>';
+  try {
+    const r = await fetch('/console/autoreply/table/import', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.error) {
+      if (note) note.innerHTML = '<div class="test-result">❌ ' + esc(d.error) + '</div>';
+      return;
+    }
+    if (note) {
+      note.innerHTML = '<div class="test-result">✅ 已寫入 ' + d.written + ' 列，欄位：' +
+        esc((d.columns || []).join('、')) + '</div>';
+    }
+    arState.openTableId = d.table_id;
+    await loadTables();
+    await loadAutoSettings();
+  } catch (e) {
+    if (note) note.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+/* ----- 分頁四：紀錄 ----- */
+
+function logsTabHtml() {
+  const s = arState.settings;
+  const opts = s ? s.scopes.map(sc =>
+    '<option value="' + sc.channel + '|' + sc.scope + '">' + esc(sc.label) + '</option>').join('') : '';
+  const items = arState.logs.length
+    ? arState.logs.map(logItemHtml).join('')
+    : '<div class="empty-note">尚無自動回復紀錄</div>';
+
+  return '' +
+    '<div class="card">' +
+      '<h3>自動回復紀錄</h3>' +
+      '<div class="hint">每次自動回復的處置都會留痕：命中哪一層、未命中的原因、送出結果。</div>' +
+      '<div class="row">' +
+        '<select id="logChannel" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+          '<option value="">全部渠道</option>' + opts + '</select>' +
+        '<select id="logTier" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+          '<option value="">全部結果</option>' +
+          '<option value="faq">FAQ 命中</option>' +
+          '<option value="table">表格命中</option>' +
+          '<option value="miss">未命中</option>' +
+        '</select>' +
+        '<button class="btn primary" onclick="loadLogs()">查詢</button>' +
+        '<span id="logTotal" class="hint" style="margin:0"></span>' +
+      '</div>' +
+    '</div>' +
+    '<div id="logList">' + items + '</div>';
+}
+
+function logItemHtml(r) {
+  const tierTag = r.tier === 'faq'
+    ? '<span class="tag-auto-faq">自動回復-FAQ命中</span>'
+    : (r.tier === 'table'
+      ? '<span class="tag-auto-table' + (r.rewrote ? ' rw' : '') + '">自動回復-表格命中' +
+        (r.rewrote ? '·改寫' : '') + '</span>'
+      : '<span class="tag-auto-miss">自動回復未命中</span>');
+  const sendTag = r.send_status === 'sent'
+    ? '<span class="pill on">已送出</span>'
+    : (r.send_status === 'failed' ? '<span class="pill miss">送出失敗</span>'
+      : '<span class="pill off">未送出</span>');
+  const label = AR_CHANNEL_LABEL[r.channel] || r.channel;
+  return '<div class="log-item">' +
+    '<div class="lg-head">' + tierTag + sendTag +
+      '<b>' + esc(label) + ' ' + (r.reply_scope === 'dm' ? '私訊' : '貼文留言') + '</b>' +
+      '<span class="lg-time">' + fmtTime(r.created_at) + '</span>' +
+    '</div>' +
+    (r.question ? '<div class="lg-q">客戶：' + esc(r.question) + '</div>' : '') +
+    (r.rewritten_query && r.rewritten_query !== r.question
+      ? '<div class="lg-q">改寫問句：' + esc(r.rewritten_query) +
+        (r.history_used ? '（帶入 ' + r.history_used + ' 則對話）' : '') + '</div>' : '') +
+    (r.answer ? '<div>回覆：' + esc(r.answer) + '</div>' : '') +
+    (r.detail ? '<div class="lg-q">' + esc(r.detail) + '</div>' : '') +
+    (r.reason && r.reason !== 'sent' ? '<div class="lg-q">原因：' + esc(r.reason) + '</div>' : '') +
+  '</div>';
+}
+
+async function loadLogs() {
+  const box = document.getElementById('logList');
+  const sel = document.getElementById('logChannel');
+  const tier = document.getElementById('logTier');
+  const parts = (sel && sel.value) ? sel.value.split('|') : ['', ''];
+  const qs = new URLSearchParams();
+  if (parts[0]) qs.set('channel', parts[0]);
+  if (parts[1]) qs.set('scope', parts[1]);
+  if (tier && tier.value) qs.set('tier', tier.value);
+  qs.set('limit', '100');
+  if (box) box.innerHTML = '<div class="empty-note">載入中…</div>';
+  try {
+    const d = await api('/console/autoreply/logs?' + qs.toString());
+    arState.logs = d.logs || [];
+    if (box) box.innerHTML = arState.logs.length
+      ? arState.logs.map(logItemHtml).join('')
+      : '<div class="empty-note">沒有符合條件的紀錄</div>';
+    const tot = document.getElementById('logTotal');
+    if (tot) tot.textContent = '共 ' + d.total + ' 筆';
+  } catch (e) {
+    if (box) box.innerHTML = '<div class="empty-note">載入失敗：' + esc(e.message) + '</div>';
+  }
+}
+
+/* ==================================================================
+   啟動
+   ⚠ 一律留在檔案最後：前面所有 const / function 都已初始化完畢，
+     不會踩到 const 的暫時性死區（TDZ）。之前把啟動寫在中段，
+     導致 renderList() → renderAutoBar() 讀到尚未初始化的 arState，
+     整段啟動中斷，自動回復開關列就永遠停在「載入中…」。
+   ================================================================== */
+
+function boot() {
+  try {
+    renderTabs();
+    renderList();
+    loadConversations();
+    loadPendingComments();
+    loadAutoSettings();
+    syncFullOnce();                  // 開頁面全量掃一次（貼文清單 + 所有留言 + 私訊名稱）
+    setInterval(poll, 3000);               // 每 3 秒從 DB 重讀畫面（不打 Meta）
+    setInterval(syncLight, 10000);         // 每 10 秒拉新貼文 + 當前貼文留言
+    setInterval(syncNames, 60000);         // 每 60 秒補私訊名稱
+    setInterval(loadAutoSettings, 30000);  // 開關狀態同步（別的頁面改了也跟得上）
+  } catch (e) {
+    // 啟動任何一步失敗都不要讓整個工作台跟著死掉
+    console.error('工作台啟動失敗', e);
+    const btn = document.getElementById('arBtn');
+    if (btn) {
+      btn.textContent = '啟動失敗';
+      btn.title = '工作台啟動時發生錯誤，請看瀏覽器 Console：' + e.message;
+      btn.classList.remove('on');
+      btn.classList.add('off');
+    }
+  }
+}
+
+boot();
+</script>
+<div class="ctx-menu" id="ctxMenu"></div>
+
+<!-- 批次補做（開啟自動回復後一併處理未處理訊息）的進度 -->
+<div class="bf-toast" id="backfillToast" style="display:none">
+  <span class="bf-dot"></span><span id="bfText"></span>
+</div>
+
+<!-- 右下角狀態提示 -->
+<div class="bf-toast center" id="appToast" style="display:none">
+  <span id="appToastText"></span>
+</div>
+
+<!-- 自動回復未命中 → 客服手動回完後，問要不要把這次回覆存進 FAQ 庫 -->
+<div class="faq-overlay" id="faqOverlay" onclick="if(event.target===this)closeFaqDialog()">
+  <div class="faq-box">
+    <div class="sp-head">
+      <h2>加入 FAQ 庫</h2>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="closeFaqDialog()" title="關閉">✕</button>
+    </div>
+    <div class="fm-body">
+      <div class="fm-hint">
+        這則是「<b>自動回復未命中</b>」的客戶訊息。把它存成 FAQ 之後，
+        同樣（或類似）的問法就會由 FAQ 直接回答，不必再人工處理。問題與答案都可以修改再存。
+      </div>
+      <label class="fm-label">問題（客戶的問法）</label>
+      <textarea id="faqQ" rows="2"></textarea>
+      <div class="fm-rewrite" id="faqRewriteWrap" style="display:none">
+        引擎當時改寫成的問句：<span id="faqRewrite"></span>（僅供參考，不會存進 FAQ）
+      </div>
+      <label class="fm-label">答案（要回給客戶的內容）</label>
+      <textarea id="faqA" rows="4"></textarea>
+      <label class="fm-label">關鍵詞（同一個問題的其他問法，用逗號分隔，可留空）</label>
+      <input type="text" id="faqK" placeholder="例如：運費多少, 運費怎麼算">
+      <label class="fm-check"><input type="checkbox" id="faqEnabled" checked> 啟用（新增後立刻由自動回復使用）</label>
+      <div class="fm-err" id="faqErr" style="display:none"></div>
+    </div>
+    <div class="fm-foot">
+      <span class="hint" style="margin:0" id="faqScopeNote"></span>
+      <div class="spacer"></div>
+      <button class="btn" onclick="closeFaqDialog()">取消</button>
+      <button class="btn primary" id="faqSaveBtn" onclick="saveFaqDialog()">新增至 FAQ 庫</button>
+    </div>
+  </div>
+</div>
+
+<!-- 由引擎回覆但未命中 → 彈窗提醒（按 OK／關閉／Esc 即消失，不再留在聊天框） -->
+<div class="engmiss-overlay" id="engineMissOverlay" onclick="if(event.target===this)closeEngineMiss()">
+  <div class="engmiss-box">
+    <div class="engmiss-head">
+      <span class="engmiss-icon">!</span>
+      <h2>引擎答不出這一則</h2>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="closeEngineMiss()" title="關閉">✕</button>
+    </div>
+    <div class="engmiss-body">
+      <p>自動回復引擎沒有命中，請自行輸入回覆。</p>
+      <div class="engmiss-q" id="engineMissQ" style="display:none"></div>
+      <div class="engmiss-reason" id="engineMissReason"></div>
+    </div>
+    <div class="engmiss-foot">
+      <span class="hint">已寫入紀錄（設定 → 紀錄 可查）</span>
+      <div class="spacer"></div>
+      <button class="btn primary" id="engineMissOk" onclick="closeEngineMiss()">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== AI 自動回復設定面板 ========== -->
+<div class="settings-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
+  <div class="settings-panel">
+    <div class="sp-head">
+      <h2>AI 自動回復設定</h2>
+      <span class="pill off" id="spDeepseek">DeepSeek</span>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="closeSettings()" title="關閉">✕</button>
+    </div>
+    <div class="sp-tabs">
+      <div class="sp-tab active" data-tab="autoreply" onclick="switchSettingsTab('autoreply')">自動回復</div>
+      <div class="sp-tab" data-tab="faq" onclick="switchSettingsTab('faq')">FAQ 問答對</div>
+      <div class="sp-tab" data-tab="table" onclick="switchSettingsTab('table')">業務表格</div>
+      <div class="sp-tab" data-tab="logs" onclick="switchSettingsTab('logs')">紀錄</div>
+    </div>
+    <div class="sp-body" id="spBody"></div>
+  </div>
+</div>
+</body>
+</html>
