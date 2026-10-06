@@ -1,0 +1,40 @@
+# ===== 環境與憑證（絕不可提交）=====
+.env
+.env.local
+.env.*.local
+.venv/
+venv/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# ===== 執行期資料 / 快取 =====
+# media/ 是對外 /files 的靜態目錄
+media/
+# jieba 詞典快取（jieba 實際讀 %TEMP%，根目錄那份是殘留）
+jieba.cache
+# edition_change 的執行期狀態，每次檢查都會變
+meta_occ_snapshot.json
+*.log
+
+# ===== 二進位工具（體積大，不進版控）=====
+ngrok.exe
+chromedriver/
+
+# ===== pip / node 殘留 =====
+_pip/
+.piptmp/
+.pnpm-store/
+node_modules/
+package.json
+pnpm-lock.yaml
+
+# ===== 編輯器 / 系統 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
