@@ -23,10 +23,10 @@ WECHAT_ENCRYPT_MODE = _get("WECHAT_ENCRYPT_MODE", "plain")
 # 安全/兼容模式的加密金鑰（後台「伺服器配置」頁點隨機生成的 43 字元）
 WECHAT_ENCODING_AES_KEY = _get("WECHAT_ENCODING_AES_KEY")
 
-# 目標系統給的轉發目標
-TARGET_WEBHOOK_URL = _get("TARGET_WEBHOOK_URL", "http://202.64.83.117:9033/webhook")
+# 註：本服務已不再轉發任何外部系統（原 TARGET_WEBHOOK_URL 指向的 9033 已切斷），
+#     微信 / WhatsApp 來訊一律只落地本機 DB，由客服工作台讀取。
 
-# 目標系統的 channel 標識（暫時用範例值，正式要跟目標系統方確認換成微信渠道專屬值）
+# 寫進來訊 payload 的渠道標識（純識別用，不再外送）
 CHANNEL = _get("CHANNEL", "epro-web")
 CHANNEL_IDENTITY_ID = _get("CHANNEL_IDENTITY_ID", "62ea24d2-adcb-48a2-a013-9b2a10d2ebcf")
 
@@ -46,7 +46,7 @@ WHATSAPP_ACCESS_TOKEN = _get("WHATSAPP_ACCESS_TOKEN")
 # 發送 WhatsApp 消息用（Meta 後台 WhatsApp > API Setup 的 Phone Number ID）
 WHATSAPP_PHONE_NUMBER_ID = _get("WHATSAPP_PHONE_NUMBER_ID")
 
-# WhatsApp 渠道在目標系統的標識（暫時用範例值，正式要跟目標系統方確認換成 WhatsApp 專屬值）
+# WhatsApp 渠道標識（純識別用，不再外送）
 WHATSAPP_CHANNEL = _get("WHATSAPP_CHANNEL", "epro-web")
 WHATSAPP_CHANNEL_IDENTITY_ID = _get("WHATSAPP_CHANNEL_IDENTITY_ID", "62ea24d2-adcb-48a2-a013-9b2a10d2ebcf")
 

@@ -89,7 +89,7 @@ def _extract_message_id(msg: dict) -> int:
 
 
 def convert(msg: dict, cfg: dict) -> dict | None:
-    """把微信消息 dict 轉成目標 webhook 需要的 JSON。不支援的類型回傳 None。
+    """把微信消息 dict 轉成正規化 payload。不支援的類型回傳 None。
 
     cfg 需包含 channel、channel_identity_id 兩個鍵。
     """

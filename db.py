@@ -67,7 +67,7 @@ def build_record(
 ) -> dict:
     """從轉發 payload 組出一筆 forward_log 記錄。
 
-    direction：inbound = 客戶來訊（客戶→中轉→目標系統）；outbound = 回覆（目標系統→中轉→客戶）。
+    direction：inbound = 客戶來訊（客戶 → 中轉 → 本機 DB）；outbound = 我方回覆（工作台 → 中轉 → 客戶）。
     """
     sender = payload.get("webClientSender") or {}
     return {
