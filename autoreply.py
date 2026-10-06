@@ -386,7 +386,11 @@ async def handle_inbound(
         if scope == "comment":
             new_id = ""
             try:
-                import json
+                # ⚠️ 不要在這裡寫 `import json`：一旦函式內出現 import json，
+                # json 就會被當成 handle_inbound 的「區域變數」（作用域是整個函式），
+                # 走 else（whatsapp / wechat）分支時那段 import 根本沒執行 →
+                # json.dumps() 直接拋 UnboundLocalError，變成「訊息送出去了、
+                # 但沒落地」，web 客服平台看不到這則自動回覆。用模組頂層的 json 即可。
                 new_id = str(json.loads(result.get("body") or "{}").get("id") or "")
             except Exception:
                 new_id = ""
