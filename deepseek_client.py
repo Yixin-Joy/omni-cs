@@ -152,21 +152,26 @@ class DeepSeekClient:
 
     async def answer_with_table(self, question: str, table_context: str,
                                 flavor: str = "dm", post_context: str = "") -> str:
-        """把業務表格當上下文回答；答不出來時回傳含 NO_ANSWER_SENTINEL 的字串。"""
-        messages = [
-            {"role": "system", "content": config.DEEPSEEK_SYSTEM_PROMPT},
-        ]
+        """把業務表格當上下文回答；答不出來時回傳含 NO_ANSWER_SENTINEL 的字串。
+
+        ⚠️ 多段 system 指示一律**合併成單一 system message**，不可拆成連續多則。
+        部分 OpenAI 相容閘道的 prompt 模板（實測 LiteLLM proxy）要求 system
+        只能是最前面那一則，連續多個 system 會直接回 HTTP 500
+        （`Jinja Exception: System message must be at the beginning`）。
+        合併後語意完全相同（都是 system 層級指示），DeepSeek 官方也照樣接受。
+        """
+        parts = [config.DEEPSEEK_SYSTEM_PROMPT]
         if flavor == "comment":
-            messages.append({"role": "system", "content": config.DEEPSEEK_COMMENT_PROMPT})
+            parts.append(config.DEEPSEEK_COMMENT_PROMPT)
         if post_context:
-            messages.append({"role": "system", "content": post_context})
-        messages.append({
-            "role": "system",
-            "content": config.DEEPSEEK_TABLE_PROMPT.format(
-                context=table_context, sentinel=NO_ANSWER_SENTINEL
-            ),
-        })
-        messages.append({"role": "user", "content": question})
+            parts.append(post_context)
+        parts.append(config.DEEPSEEK_TABLE_PROMPT.format(
+            context=table_context, sentinel=NO_ANSWER_SENTINEL
+        ))
+        messages = [
+            {"role": "system", "content": "\n\n".join(parts)},
+            {"role": "user", "content": question},
+        ]
         return (await self.complete(messages, temperature=0.2)).strip()
 
 
