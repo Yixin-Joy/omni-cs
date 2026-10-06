@@ -336,7 +336,7 @@ async def reply(
         with open(saved_path, "wb") as f:
             f.write(await file.read())
 
-    # 組出記錄用 body（跟 /whatsapp/reply 的 _reply_record 一致）
+    # 組出記錄用 body（格式與來訊 payload 的 messageType / messageContent / uploadedFiles 一致）
     uploaded_files = []
     if saved_path:
         uploaded_files = [{

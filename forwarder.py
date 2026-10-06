@@ -1,4 +1,8 @@
-"""把 payload 轉發到目標 webhook；語音/視頻等用 media_id 下載媒體檔。"""
+"""媒體檔下載：微信 media_id / WhatsApp Graph API → 本機 media/ 目錄。
+
+訊息本身不再對外轉發（原 TARGET_WEBHOOK_URL 已移除），
+下載回來的檔案由客服工作台的 /files/ 靜態路徑取用。
+"""
 import httpx
 
 
@@ -43,10 +47,3 @@ async def download_whatsapp_media(
         file_resp.raise_for_status()
         with open(save_path, "wb") as f:
             f.write(file_resp.content)
-
-
-async def forward(payload: dict, target_url: str, timeout: float = 5.0) -> tuple[int, str]:
-    """POST JSON 到目標 webhook，回傳 (status_code, body)。"""
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(target_url, json=payload)
-        return resp.status_code, resp.text

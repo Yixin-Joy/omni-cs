@@ -1,11 +1,14 @@
-"""微信公眾號 / WhatsApp 消息 → 目標 webhook 的中轉服務。
+"""微信公眾號 / WhatsApp / IG / FB 消息 → 客服工作台的中轉服務。
+
+收到訊息後一律**只落地本機資料庫**（`forward_log` / `igfb_dm`），
+由客服工作台（`/console`）統一查看與回覆；不轉發任何外部系統。
 
 端點：
   GET  /wechat           微信接入驗證（回傳 echostr）
-  POST /wechat           接收微信消息（XML），轉成目標 JSON 後轉發
-  GET  /whatsapp/webhook WhatsApp webhook 驗證（回傳 challenge）
-  POST /whatsapp/webhook 接收 WhatsApp 消息（JSON），轉成目標 JSON 後轉發
-  GET  /files/*          語音/視頻/圖片下載後的靜態檔案（供目標端下載）
+  POST /wechat           接收微信消息（XML），落地本機 DB
+  GET  /whatsapp/webhook WhatsApp / IG / FB webhook 驗證（回傳 challenge）
+  POST /whatsapp/webhook 接收 Meta 消息（JSON），落地本機 DB
+  GET  /files/*          語音 / 視頻 / 圖片下載後的靜態檔案
   GET  /console         客服工作台 UI（查看 / 回覆 / 未讀紅點 / 檔案傳輸）
   GET/POST /console/*   客服工作台後台接口（見 console.py）
 """
@@ -14,11 +17,9 @@ import hashlib
 import hmac
 import json
 import logging
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -34,7 +35,6 @@ import autoreply_db
 import token_refresh
 import wechat
 import whatsapp
-import whatsapp_send
 import console
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -80,6 +80,19 @@ def _cfg() -> dict:
         "channel": config.CHANNEL,
         "channel_identity_id": config.CHANNEL_IDENTITY_ID,
     }
+
+
+async def _land_local(platform: str, payload: dict, raw_content: str) -> None:
+    """把一則客戶來訊落地到本機 `forward_log`（客服工作台讀的就是這張表）。
+
+    本服務已不再轉發任何外部系統，落地即完成，因此 `forward_status` 一律記 `local`。
+    """
+    await db.insert_forward_log(db.build_record(
+        platform=platform,
+        payload=payload,
+        raw_content=raw_content,
+        forward_status="local",
+    ))
 
 
 @app.get("/wechat")
@@ -138,26 +151,8 @@ async def receive(request: Request):
     except Exception as e:
         log.warning("文件處理失敗（將帶空 url 轉發）: %s", e)
 
-    try:
-        status, body = await forwarder.forward(payload, config.TARGET_WEBHOOK_URL)
-        log.info("已轉發 -> %s 回應 %s", config.TARGET_WEBHOOK_URL, status)
-        await db.insert_forward_log(db.build_record(
-            platform="wechat",
-            payload=payload,
-            raw_content=json.dumps(msg, ensure_ascii=False),
-            forward_status="success",
-            target_http_status=status,
-            target_response=body,
-        ))
-    except Exception as e:
-        log.error("轉發失敗: %s", e)
-        await db.insert_forward_log(db.build_record(
-            platform="wechat",
-            payload=payload,
-            raw_content=json.dumps(msg, ensure_ascii=False),
-            forward_status="failed",
-            error_message=str(e),
-        ))
+    # 只落地本機 DB，供客服工作台查看 / 回覆（不轉發任何外部系統）
+    await _land_local("wechat", payload, json.dumps(msg, ensure_ascii=False))
 
     # 無論成敗都回 success，避免微信一直重試
     # （註：微信未認證訂閱號沒有客服消息權限，自動回復會送出失敗並標記待人工）
@@ -225,7 +220,7 @@ async def whatsapp_receive(request: Request):
     body = json.loads(raw.decode("utf-8"))
     obj = body.get("object", "")
 
-    # IG / FB（私訊 + 貼文留言）：落地本機 DB，供客服工作台查看/回覆，不轉發 9033
+    # IG / FB（私訊 + 貼文留言）：落地本機 DB，供客服工作台查看 / 回覆
     if obj in ("page", "instagram"):
         try:
             _verify_igfb_signature(raw, request.headers)
@@ -257,26 +252,8 @@ async def whatsapp_receive(request: Request):
         except Exception as e:
             log.warning("WhatsApp 文件處理失敗（帶空 url 轉發）: %s", e)
 
-        try:
-            status, body = await forwarder.forward(payload, config.TARGET_WEBHOOK_URL)
-            log.info("已轉發 WhatsApp -> %s 回應 %s", config.TARGET_WEBHOOK_URL, status)
-            await db.insert_forward_log(db.build_record(
-                platform="whatsapp",
-                payload=payload,
-                raw_content=json.dumps(m, ensure_ascii=False),
-                forward_status="success",
-                target_http_status=status,
-                target_response=body,
-            ))
-        except Exception as e:
-            log.error("WhatsApp 轉發失敗: %s", e)
-            await db.insert_forward_log(db.build_record(
-                platform="whatsapp",
-                payload=payload,
-                raw_content=json.dumps(m, ensure_ascii=False),
-                forward_status="failed",
-                error_message=str(e),
-            ))
+        # 只落地本機 DB，供客服工作台查看 / 回覆（不轉發任何外部系統）
+        await _land_local("whatsapp", payload, json.dumps(m, ensure_ascii=False))
 
         # AI 自動回復（只在已開啟該渠道＋場景時動作；非文字訊息由 autoreply 自行略過）
         sender = (payload.get("webClientSender") or {}).get("webClientUUID") or m.get("from", "")
@@ -307,106 +284,5 @@ async def _resolve_whatsapp_files(payload: dict):
         f["fileSize"] = save_path.stat().st_size
 
 
-@app.post("/whatsapp/reply")
-async def whatsapp_reply(request: Request):
-    """接收目標系統（9033）的回覆，轉發到 WhatsApp 對應用戶。
-
-    請求格式（JSON）：
-      {"to": "85200000000", "messageType": "text", "messageContent": "您好"}
-      {"to": "85200000000", "messageType": "file",
-       "uploadedFiles": [{"url": "https://...", "filename": "a.pdf", "mimeType": "application/pdf"}]}
-
-    to 就是之前轉發給目標系統時 webClientSender.webClientUUID 的值（用戶 wa_id）。
-    """
-    body = await request.json()
-    to = body.get("to", "")
-    msg_type = body.get("messageType", "text")
-
-    if not to:
-        return Response(
-            content=json.dumps({"ok": False, "error": "missing 'to'"}, ensure_ascii=False),
-            media_type="application/json", status_code=400,
-        )
-
-    result = None
-    try:
-        if msg_type == "text":
-            content = body.get("messageContent", "")
-            result = await whatsapp_send.send_text(to, content)
-        elif msg_type == "file":
-            files = body.get("uploadedFiles") or []
-            if not files:
-                return Response(
-                    content=json.dumps({"ok": False, "error": "missing uploadedFiles"}, ensure_ascii=False),
-                    media_type="application/json", status_code=400,
-                )
-            f = files[0]
-            file_url = f.get("url", "")
-            filename = f.get("filename", "file")
-            mime = f.get("mimeType", "application/octet-stream")
-            save_path = await _download_reply_file(file_url, filename)
-            media_id = await whatsapp_send.upload_media(save_path, mime, filename)
-            if mime.startswith("image/"):
-                result = await whatsapp_send.send_image(to, media_id)
-            else:
-                result = await whatsapp_send.send_document(to, media_id, filename)
-        else:
-            return Response(
-                content=json.dumps({"ok": False, "error": f"unsupported messageType: {msg_type}"}, ensure_ascii=False),
-                media_type="application/json", status_code=400,
-            )
-    except Exception as e:
-        log.error("WhatsApp 回覆失敗: %s", e)
-        await db.insert_forward_log(_reply_record(body, to, msg_type, "failed", None, None, str(e)))
-        return Response(
-            content=json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False),
-            media_type="application/json", status_code=500,
-        )
-
-    ok = result["status"] == 200
-    log.info("WhatsApp 回覆 -> %s 回應 %s", to, result["status"])
-    await db.insert_forward_log(_reply_record(
-        body, to, msg_type,
-        "success" if ok else "failed",
-        result["status"],
-        result["body"],
-        None if ok else result["body"],
-    ))
-    return Response(
-        content=json.dumps({"ok": ok, "status": result["status"], "body": result["body"][:500]}, ensure_ascii=False),
-        media_type="application/json", status_code=200 if ok else 502,
-    )
-
-
-def _reply_record(body: dict, to: str, msg_type: str, forward_status: str,
-                  target_http_status: int | None, target_response: str | None,
-                  error_message: str | None) -> dict:
-    return {
-        "platform": "whatsapp",
-        "message_id": "",
-        "sender_id": to,
-        "conversation_id": wechat.openid_to_conversation_id(to),
-        "message_type": msg_type,
-        "raw_content": json.dumps(body, ensure_ascii=False),
-        "forwarded_payload": {
-            "to": to,
-            "messageType": msg_type,
-            "messageContent": body.get("messageContent", ""),
-        },
-        "forward_status": forward_status,
-        "target_http_status": target_http_status,
-        "target_response": (target_response or "")[:1000],
-        "error_message": (error_message or "")[:500] or None,
-        "message_time": None,
-        "direction": "outbound",
-    }
-
-
-async def _download_reply_file(url: str, filename: str) -> str:
-    """下載客服工作台給的文件，存到 media/ 下，回傳本地路徑。"""
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        save_path = Path(config.MEDIA_DIR) / f"reply_{int(time.time())}_{filename}"
-        save_path.write_bytes(resp.content)
-        return str(save_path)
+# 註：原 `POST /whatsapp/reply`（接收目標系統 9033 的回覆並轉發給客戶）已移除。
+#     回覆客戶一律走客服工作台 `POST /console/reply`（見 console.py）。

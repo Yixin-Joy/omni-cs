@@ -1,6 +1,6 @@
 """WhatsApp（Meta Cloud API）webhook 的解析與格式轉換。
 
-把 Meta 推來的消息 JSON 轉成目標 webhook 需要的 JSON（跟微信端同一格式）。
+把 Meta 推來的消息 JSON 轉成正規化 payload（跟微信端同一格式），再落地本機 DB。
 """
 import time
 from datetime import datetime, timezone
@@ -83,9 +83,9 @@ def _media_of(msg: dict) -> tuple[str, str, str] | None:
 
 
 def convert(msg: dict, cfg: dict, profile_name: str = "") -> dict | None:
-    """把單條 WhatsApp message 轉成目標 JSON。不支援的類型回傳 None。
+    """把單條 WhatsApp message 轉成正規化 payload。不支援的類型回傳 None。
 
-    cfg 需包含 channel、channel_identity_id。
+    cfg 需包含 channel、channel_identity_id（寫進 payload 的渠道標識）。
     """
     msg_type = msg.get("type", "")
     from_user = msg.get("from", "")

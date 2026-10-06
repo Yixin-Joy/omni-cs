@@ -1,4 +1,4 @@
-"""把目標系統的回覆，透過 WhatsApp Cloud API 發送給對應的用戶聊天窗口。"""
+"""把客服工作台的回覆，透過 WhatsApp Cloud API 發送給對應的用戶聊天窗口。"""
 import logging
 from pathlib import Path
 
