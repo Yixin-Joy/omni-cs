@@ -1244,7 +1244,8 @@ function msgHtml(m, idx) {
   if (m.text) content += '<div class="text">' + esc(m.text) + '</div>';
 
   const fail = (!inbound && m.status === 'failed') ? '<span class="status-fail">● 發送失敗</span>' : '';
-  const at = autoTag(m);
+  // 命中標記只掛在「客戶來訊」上；我方回覆氣泡不標（回覆內容本身已說明結果）
+  const at = inbound ? autoTag(m) : '';
   const meta = '<div class="meta">' + fail + at + '<span>' + fmtTime(m.time) + '</span></div>';
 
   const ctx = msgReplyable(m)
