@@ -818,9 +818,11 @@ def dm_history_forward_log(platform: str, sender_id: str, limit: int,
         if r["direction"] == "outbound":
             # 我方回覆的內容記在 raw_content（回覆請求的 JSON）
             try:
-                text = (json.loads(r.get("raw_content") or "{}") or {}).get("messageContent", "")
+                rc = json.loads(r.get("raw_content") or "{}")
             except Exception:
-                text = ""
+                rc = {}
+            # raw_content 不保證是物件（純數字會解析成 int），一律收斂成 dict
+            text = rc.get("messageContent", "") if isinstance(rc, dict) else ""
             if not text:
                 text = (r.get("forwarded_payload") or {}).get("messageContent", "")
         else:
