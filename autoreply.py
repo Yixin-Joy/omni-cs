@@ -9,6 +9,7 @@
 """
 import asyncio
 import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -399,15 +400,19 @@ async def handle_inbound(
             await asyncio.to_thread(igfb_db.mark_handled, channel, to)
         else:
             conversation_id = wechat.openid_to_conversation_id(to)
+            reply_payload = {"to": to, "messageType": "text",
+                             "messageContent": answer.text, "autoReply": label}
             await db.insert_forward_log({
                 "platform": channel,
                 "message_id": "",
                 "sender_id": to,
                 "conversation_id": conversation_id,
                 "message_type": "text",
-                "raw_content": answer.text,
-                "forwarded_payload": {"to": to, "messageType": "text",
-                                      "messageContent": answer.text, "autoReply": label},
+                # raw_content 必須與其他寫入端一致＝「回覆請求的 JSON 字串」。
+                # 從前這裡直接寫 answer.text（純文字），當答案剛好是純數字（例如 "1280"）
+                # 時 json.loads 會解析成 int，讀取端 .get() 直接爆 → 整個會話列表 500。
+                "raw_content": json.dumps(reply_payload, ensure_ascii=False),
+                "forwarded_payload": reply_payload,
                 "forward_status": "success",
                 "target_http_status": result.get("status"),
                 "target_response": str(result.get("body"))[:1000],

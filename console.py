@@ -104,7 +104,9 @@ def _norm_file(f: dict) -> dict:
 
 def _row_to_message(row: dict) -> dict:
     """把一筆 forward_log 正規化成 UI 可顯示的 message dict。"""
-    payload = row.get("forwarded_payload") or {}
+    payload = row.get("forwarded_payload")
+    if not isinstance(payload, dict):
+        payload = {}
     direction = row.get("direction", "inbound")
     text = ""
     files: list[dict] = []
@@ -114,6 +116,11 @@ def _row_to_message(row: dict) -> dict:
         try:
             rc = json.loads(row.get("raw_content") or "{}")
         except Exception:
+            rc = {}
+        # raw_content 不一定合法／一定是物件（歷史上自動回復曾寫入純文字，
+        # 若內容剛好是純數字如 "1280"，json.loads 會回 int）。這裡一律收斂成 dict，
+        # 避免一筆壞資料讓整個會話列表 500。
+        if not isinstance(rc, dict):
             rc = {}
         text = rc.get("messageContent", "") or payload.get("messageContent", "")
         src_files = (rc.get("uploadedFiles") or []) or (payload.get("uploadedFiles") or [])
@@ -166,9 +173,11 @@ def _sender_name(rows: list[dict]) -> str:
     for row in reversed(rows):
         if row.get("direction") != "inbound":
             continue
-        payload = row.get("forwarded_payload") or {}
+        payload = row.get("forwarded_payload")
+        if not isinstance(payload, dict):
+            continue
         sender = payload.get("webClientSender") or {}
-        if sender.get("name"):
+        if isinstance(sender, dict) and sender.get("name"):
             return sender["name"]
     for row in reversed(rows):
         if row.get("sender_id"):
