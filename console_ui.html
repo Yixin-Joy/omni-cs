@@ -2651,7 +2651,7 @@ function autoreplyTabHtml() {
         '<span class="pill ' + (s.deepseek.configured ? 'on' : 'off') + '">' +
           (s.deepseek.configured ? esc(s.deepseek.masked_key) : '未設定 Key') + '</span>' +
         '<span class="hint" style="margin:0">模型 <b>' + esc(s.deepseek.model) + '</b>' +
-        ' · 改寫模式 <b>' + esc(s.deepseek.rewrite_mode) + '</b>' +
+        ' · 查詢改寫 <b>' + (s.deepseek.query_rewrite ? '開' : '關') + '</b>' +
         ' · FAQ 門檻 <b>' + s.deepseek.threshold + '</b></span>' +
         '<div class="spacer" style="flex:1"></div>' +
         '<button class="btn sm" onclick="testDeepseek()">測試連線</button>' +
@@ -4201,7 +4201,7 @@ function hittestTabHtml() {
           ' onchange="arState.ktNoHistory=this.checked">' +
           '不要把該會話的最近對話帶進來（表格／知識庫的 query 改寫會用到）</label>' +
         '<label class="hint" style="margin:0;display:flex;align-items:center;gap:6px">' +
-          '知識庫查詢改寫' +
+          '查詢改寫（三層共用）' +
           '<select onchange="arState.ktRewrite=this.value" ' +
             'style="padding:4px 7px;border:1px solid var(--border);border-radius:7px">' +
             '<option value=""' + (arState.ktRewrite === '' ? ' selected' : '') +
@@ -4215,8 +4215,10 @@ function hittestTabHtml() {
       '<div class="hint" style="margin-top:6px">' +
         '勾選的層會<b>依固定順序</b>由上而下嘗試（FAQ → 表格 → 知識庫）；全部取消勾選 = 直接看「降級人工」。' +
         '預設照「自動回復」分頁的實際開關，改勾選只影響這一次。<br>' +
-        '「知識庫查詢改寫」＝檢索前先請模型把問句改寫成 2 條（修同音錯別字、補齊「這個」的指代），' +
-        '與原問句一起檢索再取高分。上方選單可以只這一次開／關，方便比較差別 —— 不改知識庫的正式設定。' +
+        '「查詢改寫」＝規則層（FAQ）沒命中時，請模型把問句改寫成 2 條' +
+        '（修同音錯別字、補齊「這個」的指代、並保留一條客戶原話版），' +
+        '<b>這一組查詢三層共用</b>：FAQ 再匹配一次、業務表格拿去問、知識庫拿去檢索 —— ' +
+        '<b>整個流程只呼叫模型一次</b>。上方選單可以只這一次開／關，方便比較差別，不改正式設定。' +
       '</div>' +
       '<div class="row" style="margin-top:8px">' +
         '<button class="btn sm" onclick="ktAllLayers(true)">全選</button>' +
@@ -4290,7 +4292,7 @@ function ktResultHtml(d) {
         (d.rewritten_query ? '改寫後問句：' + esc(d.rewritten_query) +
           (d.history_used ? '（帶入 ' + d.history_used + ' 則對話）' : '') + '\n' : '') +
         ((Array.isArray(d.rag_queries) && d.rag_queries.length > 1)
-          ? '知識庫實際檢索的查詢（共 ' + d.rag_queries.length + ' 條）：\n' +
+          ? '本次共用的查詢（共 ' + d.rag_queries.length + ' 條，三層共用）：\n' +
             d.rag_queries.map((q, i) => '　' + (i === 0 ? '原句 ' : '改寫' + i + ' ') +
               esc(q)).join('\n') + '\n' : '') +
         (d.rag_threshold != null
@@ -4437,8 +4439,7 @@ function renderMatchedRows(rows, showAll) {
   const head = '<div class="hint" style="margin:0 0 6px">召回 ' + rows.length + ' 塊，' +
     '實際送進模型 ' + picked.length + ' 塊' +
     (picked.length ? '' : '（沒有任何一塊過門檻）') +
-    (multi ? '　· 多查詢檢索：每塊標出是被哪一條查詢撈到的' : '') + '</div>';
-  // 沒入選的只顯示前 12 筆，避免洗版；要看全部就把 showAll 帶上
+    (multi ? '　· 多查詢檢索：每塊標出是被哪一條查詢撈到的' : '') + '</div>';  // 沒入選的只顯示前 12 筆，避免洗版；要看全部就把 showAll 帶上
   const tailLimit = showAll ? rest.length : 12;
   const tail = rest.slice(0, tailLimit);
   const more = rest.length > tail.length

@@ -568,8 +568,8 @@ has(tabsHtml, '照目前開關重設', '有「照目前開關重設」');
 has(tabsHtml, '目前開關：', '顯示實際開關狀態');
 has(tabsHtml, 'ktTarget', '有渠道 / 場景選擇');
 has(tabsHtml, '不會發送任何訊息、不會改上面的開關、也不寫任何紀錄', '明講不會有副作用');
-// 知識庫查詢改寫：三態選擇（跟隨設定 / 這次強制開 / 這次強制關）
-has(tabsHtml, '知識庫查詢改寫', '有查詢改寫的選擇');
+// 查詢改寫：三態選擇（跟隨設定 / 這次強制開 / 這次強制關）
+has(tabsHtml, '查詢改寫（三層共用）', '有查詢改寫的選擇（標明三層共用）');
 has(tabsHtml, '依知識庫設定', '查詢改寫預設「依知識庫設定」');
 has(tabsHtml, 'arState.ktRewrite=this.value', '選擇會寫進 arState.ktRewrite');
 ck(arState.ktRewrite === '', '查詢改寫預設不覆寫（不影響正式設定）',
@@ -629,11 +629,11 @@ const withQ = ktResultHtml(Object.assign({}, FX.test_rag_hit, {
   rag_candidates: 8, tier: 'rag', label: '自動回復-知識庫命中', would_send: true,
 }));
 ok(withQ, 'ktResultHtml(帶 rag_queries)', 150);
-has(withQ, '知識庫實際檢索的查詢', '多查詢時列出實際用的查詢');
+has(withQ, '本次共用的查詢', '多查詢時列出實際用的查詢（標明三層共用）');
 has(withQ, '原句', '標出哪一條是原問句');
 has(withQ, '改寫1', '標出改寫句');
 ck(ktResultHtml(Object.assign({}, FX.test_rag_hit, { rag_queries: ['只有一句'] }))
-     .indexOf('知識庫實際檢索的查詢') < 0,
+     .indexOf('本次共用的查詢') < 0,
    '單查詢時不列查詢清單（不洗版）');
 
 console.log('\n[6] 召回明細渲染（紀錄頁 / 命中測試共用）');
