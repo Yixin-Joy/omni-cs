@@ -41,3 +41,6 @@ pnpm-lock.yaml
 .idea/
 .DS_Store
 Thumbs.db
+
+# RAG 驗證用臨時資料（每次跑驗證重建，不入庫）
+_p1_samples/
