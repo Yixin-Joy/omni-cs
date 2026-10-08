@@ -10,9 +10,11 @@
    （`pg_available_extensions` 查無），萬級塊用 `REAL[]` + numpy 完全夠（< 20ms）。
    索引有 5 秒 TTL 快取，另提供 `invalidate()` 讓「剛上線的文件」立刻可搜。
 
-2. **參數按知識庫各別套用。** 全域檢索時每個知識庫用自己的 `top_k` / `min_score`
-   各自召回，再合併排序 —— 這樣「A 庫嚴格、B 庫寬鬆」的設定才真的有意義，
-   而不是被其中一個庫的數字蓋掉。
+2. **檢索參數是全域的（2026-10-08 定案）。** `top_k` / `min_score` / `max_per_doc` /
+   `max_context_chars` 所有知識庫共用一組，存在 `kb_param` 的 `collection_id IS NULL` 那批。
+   舊版「每庫用自己的參數各自召回、再合併排序」有兩個問題：最終參數其實由
+   **doc_id 最小的那個庫**決定（其他庫的設定等於白設），而且同一問句換批資料就換結果。
+   分塊參數才按知識庫分開設（`kb_db.load_params(cid)`）。
 
 3. **字面分數是「查詢詞覆蓋率」+ `faq_matcher.score_pair` 的混合。**
    `score_pair` 是為「短問句 vs 短問句」設計的；拿它直接對 500 字的知識塊打分，
@@ -56,7 +58,11 @@ def invalidate() -> None:
 # ---------- 參數 ----------
 
 def params_for(collection_id: int | None) -> dict:
-    """該知識庫的執行時參數（DB 覆寫優先），5 秒 TTL。"""
+    """執行時參數（DB 覆寫優先），5 秒 TTL。
+
+    檢索用的那幾個（top_k / min_score / …）都是**全域**的，與 `collection_id` 無關；
+    這裡仍帶 cid 是因為回傳的是整包參數（含分塊那組），方便呼叫端一次拿齊。
+    """
     key = str(collection_id or 0)
     now = time.time()
     with _lock:
@@ -282,7 +288,8 @@ def search(query: str, *, collection_id: int | None = None,
            rerank_enabled: bool | None = None) -> SearchResult:
     """混合檢索。
 
-    `collection_id=None` → 搜尋「所有啟用的知識庫」，每個庫用自己的參數各自召回再合併。
+    `collection_id=None` → 搜尋「所有啟用的知識庫」（候選池是全部啟用庫的塊）。
+    檢索參數（top_k / min_score / …）一律用**全域**那一組，與 collection_id 無關。
     顯式給的 top_k / min_score / … 會**覆蓋**參數（命中測試頁用）。
     """
     t0 = time.time()
@@ -296,7 +303,7 @@ def search(query: str, *, collection_id: int | None = None,
     rows_all, mat_all, pre_all = idx["rows"], idx["mat"], idx["pre"]
     if not rows_all:
         res.reason = "empty_index"
-        res.params = params_for(collection_id)
+        res.params = params_for(None)
         res.elapsed_ms = int((time.time() - t0) * 1000)
         return res
 
@@ -315,49 +322,43 @@ def search(query: str, *, collection_id: int | None = None,
     for i, r in enumerate(rows_all):
         groups.setdefault(r.get("collection_id"), []).append(i)
 
+    # ★ 檢索參數一律取**全域**那一組（所有知識庫共用）——
+    #   以前是「每庫用自己的 top_k / min_score 各自召回」，結果最終參數其實
+    #   由 `load_ready_chunks` 的 ORDER BY c.doc_id 決定（誰的 doc_id 小就聽誰）。
+    p = dict(params or params_for(None))
+    if top_k is not None:
+        p["top_k"] = top_k
+    if min_score is not None:
+        p["min_score"] = min_score
+    if max_per_doc is not None:
+        p["max_per_doc"] = max_per_doc
+    if max_context_chars is not None:
+        p["max_context_chars"] = max_context_chars
+    if rerank_enabled is not None:
+        p["rerank_enabled"] = rerank_enabled
+
+    thr = float(p.get("min_score") or 0.0)
     merged: list[Hit] = []
     per_collection = []
-    any_passed = False
-    base_params: dict = {}
-    thresholds: list[float] = []
 
     for cid, idxs in groups.items():
-        p = dict(params or params_for(cid))
-        if top_k is not None:
-            p["top_k"] = top_k
-        if min_score is not None:
-            p["min_score"] = min_score
-        if max_per_doc is not None:
-            p["max_per_doc"] = max_per_doc
-        if max_context_chars is not None:
-            p["max_context_chars"] = max_context_chars
-        if rerank_enabled is not None:
-            p["rerank_enabled"] = rerank_enabled
-        if not base_params:
-            base_params = p
-
         sub_rows = [rows_all[i] for i in idxs]
         sub_pre = [pre_all[i] for i in idxs]
         sub_mat = mat_all[idxs] if mat_all.size else mat_all
-        sub_q = qvec
 
-        best = _score_group(sub_rows, sub_pre, sub_mat, cid, sub_q, nu, ut, p)
+        best = _score_group(sub_rows, sub_pre, sub_mat, cid, qvec, nu, ut, p)
         if not best:
             continue
-        sub_top1 = best[0].final
-        thr = float(p.get("min_score") or 0.0)
-        # 這裡先只算「該庫自己是否過門檻」，最終仍以合併後的最佳分為準
-        thresholds.append(thr)
+        # per_collection 純統計：「每個庫各自的最佳分數長怎樣」，不再參與參數決策
         per_collection.append({
             "collection_id": cid, "chunks": len(sub_rows),
-            "top1": round(sub_top1, 4), "threshold": thr,
-            "passed": sub_top1 >= thr,
+            "top1": round(best[0].final, 4), "threshold": thr,
+            "passed": best[0].final >= thr,
         })
-        any_passed = any_passed or (sub_top1 >= thr)
         merged += best
 
     merged.sort(key=lambda h: -h.final)
-    res.params = base_params or params_for(collection_id)
+    res.params = p
     res.candidates = merged
     res.top1 = merged[0].final if merged else 0.0
     res.threshold = float(res.params.get("min_score") or 0.0)

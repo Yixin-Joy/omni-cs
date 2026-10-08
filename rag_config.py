@@ -66,9 +66,11 @@ RAG_PROMPT = _get(
 
 
 # ---------- 參數規格（單一真相：UI 渲染 / 後端驗證 / 預設值都讀這裡） ----------
-# group: retrieval = 概覽頁「參數配置」彈窗（改完立即生效）
-#        chunk     = 向導分塊步驟就地調（改了要重建）
+# group: retrieval = 檢索參數 → **全域**（存在 kb_param 的 collection_id IS NULL，
+#                   所有知識庫共用同一組；2026-10-08 定案，改完約 5 秒生效）
+#        chunk     = 分塊參數 → **按知識庫**（在分塊配置界面單獨設；未分組文件用全域那批）
 # rebuild: True 表示改動後需要「重新切塊 + 重跑 embedding」
+# 分派規則的唯一實作在 `kb_db._param_target()`（set / load 共用同一套）。
 PARAM_SPECS: dict[str, dict] = {
     # ── A. 檢索參數（5 秒生效，不用重啟、不用重建）──
     "top_k": dict(

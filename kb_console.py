@@ -6,8 +6,8 @@
   POST /console/kb/collections/create       新增知識庫
   POST /console/kb/collections/update       更新知識庫（名稱 / 說明 / 停啟用 / 排序）
   POST /console/kb/collections/delete       刪除知識庫
-  GET  /console/kb/params                   參數規格 + 目前值（概覽頁「參數配置」）
-  POST /console/kb/params                   寫入參數覆寫（改完 5 秒生效）
+  GET  /console/kb/params                   參數規格 + 目前值（檢索=全域、分塊=該知識庫）
+  POST /console/kb/params                   寫入參數覆寫（檢索存全域／分塊存該庫，5 秒生效）
   POST /console/kb/upload                   上傳文件（可多檔）
   GET  /console/kb/documents                文件列表
   GET  /console/kb/document                 文件詳情（含分塊）
@@ -159,10 +159,18 @@ async def collection_delete(body: dict):
 # ======================================================================
 
 def _params_payload(collection_id: int | None) -> dict:
-    overrides = kb_db.get_param_overrides(collection_id) if collection_id else {}
+    """參數規格 + 目前值。
+
+    ⚠️ 檢索那組（group='retrieval'）**永遠是全域值**、不隨 collection_id 變動；
+    分塊那組才是這個知識庫的（collection_id 空 → 未分組文件用的全域預設）。
+    `scope` 欄位讓前端知道「這一項改到哪一層」。
+    """
+    glob = kb_db.get_global_param_overrides()
+    own = kb_db.get_param_overrides(collection_id) if collection_id else {}
     items = []
     for key, spec in rag_config.PARAM_SPECS.items():
-        raw = overrides.get(key)
+        is_global = spec["group"] == "retrieval"
+        raw = (glob if (is_global or not collection_id) else own).get(key)
         value = rag_config.coerce(key, raw if raw not in (None, "") else spec["default"])
         items.append({
             "key": key, "label": spec["label"], "group": spec["group"],
@@ -174,6 +182,7 @@ def _params_payload(collection_id: int | None) -> dict:
             "env": spec["env"],
             "overridden": raw not in (None, ""),
             "rebuild": spec["rebuild"],
+            "scope": "global" if is_global else ("library" if collection_id else "unassigned"),
         })
     return {
         "collection_id": collection_id,
@@ -187,14 +196,18 @@ def _params_payload(collection_id: int | None) -> dict:
 @router.get("/params")
 async def get_params(collection_id: str = ""):
     cid = int(collection_id) if str(collection_id).strip().isdigit() else None
-    return _ok(await asyncio.to_thread(_params_payload, cid))
+    return _ok(await asyncio.to_thread(_params_payload, cid or None))
 
 
 @router.post("/params")
 async def set_params(body: dict):
-    cid = int(body.get("collection_id") or 0)
-    if not cid:
-        return _err("缺少知識庫 id（參數是按知識庫存的）")
+    """寫參數。檢索參數一律落到全域，分塊參數落到 `collection_id` 那個知識庫。
+
+    所以 `collection_id` 可以留空 —— 那就是「只改全域檢索參數」。
+    """
+    raw_cid = body.get("collection_id")
+    cid = int(raw_cid) if str(raw_cid if raw_cid is not None else "").strip().isdigit() else None
+    cid = cid or None
     values = body.get("values") or {}
     n = await asyncio.to_thread(kb_db.set_params, cid, values)
     kb_search.invalidate()   # 參數／索引快取立即失效（不用等 5 秒）
@@ -282,7 +295,10 @@ async def document_reparse(body: dict):
                     "重新分塊會覆蓋手改內容。確定要繼續請帶 force=true。")
     params = body.get("params") or None
     if params:
-        merged = await asyncio.to_thread(kb_db.load_params, None)
+        # 分塊參數是「按知識庫」的：基準值要取這份文件所屬知識庫的，不是全域
+        # （未分組文件 collection_id 為 None，那才會落到全域那批）。
+        doc = await asyncio.to_thread(kb_db.get_document, did)
+        merged = await asyncio.to_thread(kb_db.load_params, (doc or {}).get("collection_id"))
         merged.update({k: v for k, v in params.items() if k in merged})
         params = {k: rag_config.coerce(k, v) for k, v in merged.items()}
     ok = _spawn("reparse", did, kb_ingest.parse_and_chunk, did, params)
@@ -336,7 +352,8 @@ async def document_delete(body: dict):
 async def document_move(body: dict):
     """改放到別的知識庫（`collection_id` 給 null / 0 = 未分組）。
 
-    ⚠️ 換知識庫會改變它套用的**檢索參數**，所以索引與參數快取都要失效。
+    ⚠️ 換知識庫會改變它套用的**分塊參數**（檢索參數是全庫共用的，不受影響），
+    所以索引與參數快取仍要失效。
     """
     did = int(body.get("id") or 0)
     if not did:
