@@ -262,21 +262,41 @@ class DeepSeekClient:
         )
         return clean_rewrite(out)
 
-    async def rewrite_rag_queries(self, question: str, history_text: str = "",
-                                  count: int = 2, post_context: str = "") -> list[str]:
-        """知識庫檢索前：依上下文改寫出 `count` 條查詢句（多查詢檢索用）。
+    async def rewrite_queries(self, question: str, history_text: str = "",
+                              count: int = 2, faq_questions: list | None = None,
+                              post_context: str = "") -> list[str]:
+        """**一次改寫、三層共用**：依上下文改寫出 `count` 條查詢句。
 
-        重點是**同音錯別字**與**上下文補齊**（提示詞見 `rag_config.RAG_REWRITE_PROMPT`）。
-        與 `rewrite_table_query` 一樣只送**單一 user message** —— 有些 OpenAI 相容閘道
-        （實測 LiteLLM）不接受連續多則 system，這樣寫最保險。
+        這是整個自動回復流程裡**唯一**的改寫呼叫（2026-10-08 定案）——
+        產出的查詢會同時用於：FAQ 二次匹配、業務表格生成、知識庫檢索。
+        舊做法是每層各自改寫，實測一次回覆因此吃掉 8 次模型呼叫。
+
+        重點是**同音錯別字**、**上下文補齊**、以及**留一條客戶口語版**
+        （提示詞見 `rag_config.RAG_REWRITE_PROMPT`）。
+
+        `faq_questions` 可選：現有 FAQ 問句清單，注進提示詞當「用語風格參考」，
+        讓改寫結果更容易被 FAQ 規則匹配到（會截斷，避免 prompt 膨脹）。
+
+        只送**單一 user message** —— 有些 OpenAI 相容閘道（實測 LiteLLM）不接受連續
+        多則 system，這樣寫最保險。
 
         回傳去重後、最多 `count` 條的查詢句；模型沒給出可用的東西就回空 list
         （呼叫端據此沿用原問句，不要當成錯誤）。
         """
         import rag_config
 
+        hint = ""
+        faqs = [str(q).strip() for q in (faq_questions or []) if str(q or "").strip()]
+        if faqs:
+            limit = max(0, int(rag_config.RAG_REWRITE_FAQ_HINT_MAX or 0))
+            shown = faqs[:limit] if limit else faqs
+            more = f"（另有 {len(faqs) - len(shown)} 條未列出）" if len(faqs) > len(shown) else ""
+            hint = rag_config.RAG_REWRITE_FAQ_HINT.replace(
+                "{faq_list}", "\n".join(f"- {q}" for q in shown) + more)
+
         prompt = (rag_config.RAG_REWRITE_PROMPT
                   .replace("{n}", str(max(1, int(count or 1))))
+                  .replace("{faq_hint}", hint)
                   .replace("{history}", (history_text or "").strip() or "（沒有更早的對話紀錄）")
                   .replace("{question}", question))
         if post_context:
@@ -287,6 +307,12 @@ class DeepSeekClient:
             timeout=self.aux_timeout, retries=0,
         )
         return clean_rewrite_list(out, limit=count, exclude=[question])
+
+    async def rewrite_rag_queries(self, question: str, history_text: str = "",
+                                  count: int = 2, post_context: str = "") -> list[str]:
+        """`rewrite_queries()` 的相容包裝（`/console/kb/search` 調參端點在用）。"""
+        return await self.rewrite_queries(question, history_text, count=count,
+                                          post_context=post_context)
 
     async def answer_with_table(self, question: str, table_context: str,
                                 flavor: str = "dm", post_context: str = "") -> str:

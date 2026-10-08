@@ -105,7 +105,10 @@ async def get_settings():
             "masked_key": _masked(config.DEEPSEEK_API_KEY),
             "model": config.DEEPSEEK_MODEL,
             "base_url": config.DEEPSEEK_BASE_URL,
-            "rewrite_mode": config.FAQ_REWRITE_MODE,
+            # 查詢改寫是**唯一**的改寫開關（原本另有 FAQ_REWRITE_MODE，
+            # 兩個開關會讓人搞不清「關了為什麼還在呼叫模型」，已統一）
+            "query_rewrite": reply_engine._rewrite_enabled(),
+            "aux_timeout": config.DEEPSEEK_AUX_TIMEOUT,
             "threshold": config.FAQ_MATCH_THRESHOLD,
         },
         "guards": {

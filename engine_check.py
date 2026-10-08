@@ -43,6 +43,25 @@ def check(cond, label, extra=""):
     return cond
 
 
+# 環境類失敗（閘道限流 / 逾時）——**不是程式的問題**，不該讓自檢變紅，
+# 但也不能當成通過（否則會掩蓋真的邏輯錯誤）。單獨列一區讓你看得出來。
+_ENV_HINTS = ("429", "Rate limit", "ReadTimeout", "連線失敗", "HTTP 500", "HTTP 502",
+              "HTTP 503", "HTTP 504")
+_skipped: list[str] = []
+
+
+def check_or_env(cond, label, text="", extra=""):
+    """條件成立 → PASS；不成立且 `text` 看起來是環境問題 → 標 [環境]（不算失敗）。"""
+    if cond:
+        return check(True, label, extra)
+    if any(h in (text or "") for h in _ENV_HINTS):
+        print(f"  [環境] {label}   ← 閘道限流／逾時，不是程式的問題："
+              f"{str(text)[:70]}")
+        _skipped.append(label)
+        return False
+    return check(False, label, extra)
+
+
 def body(res):
     raw = getattr(res, "content", None) or getattr(res, "body", b"")
     try:
@@ -129,7 +148,8 @@ def run() -> int:
                             json={"text": "A 款藍牙耳機多少錢？", "layers": ["rag"],
                                   "with_history": False}))
             ok = d.get("tier") == "rag" and d.get("label") == "自動回復-知識庫命中"
-            check(ok, "RAG 命中並生成回覆", f"tier={d.get('tier')} score={d.get('score')}")
+            check_or_env(ok, "RAG 命中並生成回覆", str(d.get("detail") or ""),
+                         f"tier={d.get('tier')} score={d.get('score')}")
             print(f"       回覆：{str(d.get('text'))[:80]}")
             check(bool(d.get("matched_rows")), "回傳召回明細（matched_rows）",
                   f"{len(d.get('matched_rows') or [])} 筆")
@@ -142,13 +162,14 @@ def run() -> int:
                             json={"text": "你們的藍芽耳機多少千？", "layers": ["rag"],
                                   "with_history": False, "query_rewrite": True}))
             rq = d.get("rag_queries") or []
+            det = str(d.get("detail") or "")
             print(f"       實際檢索的查詢：{rq}")
-            check(len(rq) >= 2, "原問句 + 改寫句一起檢索（多查詢）", f"{len(rq)} 條")
+            check_or_env(len(rq) >= 2, "原問句 + 改寫句一起檢索（多查詢）", det, f"{len(rq)} 條")
             check(bool(rq) and rq[0] == "你們的藍芽耳機多少千？",
                   "第 0 條固定是客戶原問句")
             check(d.get("query_rewrite") is True, "回報這次是強制開啟（不動 DB 參數）")
-            check(d.get("rewrote") is True, "標記 rewrote=True（日誌才看得出改寫過）",
-                  f"rewritten_query={str(d.get('rewritten_query'))[:40]}")
+            check_or_env(d.get("rewrote") is True, "標記 rewrote=True（日誌才看得出改寫過）",
+                         det, f"llm_errors={d.get('llm_errors')}")
             check(bool(d.get("matched_rows")), "改寫後仍帶召回明細",
                   f"{len(d.get('matched_rows') or [])} 筆")
             # 對照組：同一個問句把改寫強制關掉 → 只有一條查詢，且不標改寫
@@ -163,6 +184,40 @@ def run() -> int:
                              json={"text": "測試", "layers": ["rag"], "query_rewrite": "yes"}))
             check("error" in d1, "query_rewrite 非布林被擋下", str(d1.get("error"))[:40])
 
+            print("\n[4c] 一次改寫、三層共用（呼叫次數回歸）…")
+            # FAQ 命中：規則匹配，**完全不該呼叫模型**
+            fq = body(c.post("/console/autoreply/test/engine",
+                             json={"text": FAQ_Q, "layers": None, "with_history": False}))
+            check(int(fq.get("llm_calls") or 0) == 0 and fq.get("tier") == "faq",
+                  "FAQ 命中時 0 次模型呼叫（改寫發生在 FAQ 之後）",
+                  f"tier={fq.get('tier')} llm_calls={fq.get('llm_calls')} "
+                  f"耗時 {fq.get('elapsed_ms')}ms")
+            # 三層都開、FAQ 未命中：改寫 1 + 表格 ≤2 + 知識庫 ≤1
+            allq = body(c.post("/console/autoreply/test/engine",
+                               json={"text": "有目標系統接收你們的文字訊息的範例嗎？",
+                                     "with_history": False, "query_rewrite": True}))
+            calls = int(allq.get("llm_calls") or 0)
+            rq2 = allq.get("rag_queries") or []
+            det2 = str(allq.get("detail") or "")
+            print(f"       tier={allq.get('tier')} llm_calls={calls} "
+                  f"elapsed={allq.get('elapsed_ms')}ms")
+            print(f"       共用查詢（{len(rq2)} 條）：{rq2}")
+            check(calls <= 4, "一次回覆的模型呼叫 ≤ 4 次（改寫1＋表格≤2＋知識庫≤1）",
+                  f"實際 {calls} 次（優化前是 8 次）")
+            check_or_env(len(rq2) >= 2, "三層共用同一組查詢（原句 + 改寫句）", det2,
+                         f"{len(rq2)} 條")
+            check(int(allq.get("elapsed_ms") or 0) > 0, "回傳耗時（紀錄頁要看）",
+                  f"{allq.get('elapsed_ms')}ms")
+            check(float(allq.get("llm_seconds") or 0) >= 0, "回傳模型耗時佔比",
+                  f"{allq.get('llm_seconds')}s / {allq.get('elapsed_ms')}ms")
+            # 改寫關：不該有任何改寫（含舊的 FAQ 專用改寫 —— 已統一成一個開關）
+            nq = body(c.post("/console/autoreply/test/engine",
+                             json={"text": "有目標系統接收你們的文字訊息的範例嗎？",
+                                   "with_history": False, "query_rewrite": False}))
+            check(len(nq.get("rag_queries") or []) == 1,
+                  "改寫關 → 只有原問句（一個開關管到底）",
+                  f"{nq.get('rag_queries')}")
+
             print("\n[5] 不相關問題 → 降級人工（不硬掰）…")
             d = body(c.post("/console/autoreply/test/engine",
                             json={"text": "請問你們有賣冰箱嗎？", "layers": ["rag"],
@@ -174,8 +229,9 @@ def run() -> int:
             print("\n[6] 四層預設順序（layers 不給 = 依 DB 開關）…")
             d = body(c.post("/console/autoreply/test/engine",
                             json={"text": "A 款藍牙耳機多少錢？", "with_history": False}))
-            check(d.get("tier") in ("rag", "table"), "不指定 layers 時會依開關跑",
-                  f"tier={d.get('tier')} layers={d.get('layers')}")
+            check_or_env(d.get("tier") in ("rag", "table"), "不指定 layers 時會依開關跑",
+                         str(d.get("detail") or ""),
+                         f"tier={d.get('tier')} layers={d.get('layers')}")
 
             print("\n[7] layers 參數驗證…")
             d = body(c.post("/console/autoreply/test/engine",
@@ -277,6 +333,11 @@ def run() -> int:
             print("   ✗", f)
     else:
         print(" 結果：全部通過 ✅")
+    if _skipped:
+        print(f" （另有 {len(_skipped)} 項因閘道限流／逾時未驗證，非程式問題 —— "
+              f"額度恢復後重跑即可）")
+        for f in _skipped:
+            print("   …", f)
     print("=" * 78)
     return 1 if FAIL else 0
 
