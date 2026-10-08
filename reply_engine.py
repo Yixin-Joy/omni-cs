@@ -49,6 +49,37 @@ ALL_LAYERS = (TIER_FAQ, TIER_TABLE, TIER_RAG)
 _CACHE_TTL = 5.0
 _cache: dict[str, dict] = {}
 
+# ---------- 本次請求的模型用量統計 ----------
+# 為什麼要記：一次知識庫回覆到底呼叫幾次模型、各花多久，光看程式碼看不出來，
+# 而這正是「為什麼要一分鐘」的唯一線索（實測 8 次 / 48.9 秒）。
+# 用 contextvar 而不是全域變數 —— 自動回復是併發的，兩則訊息會同時跑，
+# 全域變數會互相蓋掉。
+import contextvars  # noqa: E402
+
+_LLM_STATS: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
+    "reply_engine_llm_stats", default=None)
+
+
+def _stats_start() -> dict:
+    st = {"calls": 0, "errors": 0, "seconds": 0.0}
+    _LLM_STATS.set(st)
+    return st
+
+
+def _stats() -> dict:
+    return _LLM_STATS.get() or {"calls": 0, "errors": 0, "seconds": 0.0}
+
+
+def _stats_note(label: str, seconds: float, ok: bool) -> None:
+    """記一次模型呼叫（由 `_calls_with_stats()` 包住實際呼叫）。"""
+    st = _LLM_STATS.get()
+    if st is None:
+        return
+    st["calls"] += 1
+    st["seconds"] += seconds
+    if not ok:
+        st["errors"] += 1
+    log.debug("模型呼叫 %s：%.2fs %s", label, seconds, "ok" if ok else "失敗")
 
 def invalidate_cache() -> None:
     """FAQ / 表格 / 開關被修改後呼叫，讓下一則訊息立刻讀到新設定。"""
@@ -197,14 +228,16 @@ class Answer:
     __slots__ = ("tier", "text", "faq_id", "score", "rewrote", "reason", "detail",
                  "matched_question", "table_context_chars", "rewritten_query",
                  "history_used", "matched_rows", "rag_threshold", "rag_candidates",
-                 "rag_queries")
+                 "rag_queries", "elapsed_ms", "llm_calls", "llm_seconds", "llm_errors")
 
     def __init__(self, tier: str, text: str = "", *, faq_id: int | None = None,
                  score: float | None = None, rewrote: bool = False, reason: str = "",
                  detail: str = "", matched_question: str = "", table_context_chars: int = 0,
                  rewritten_query: str = "", history_used: int = 0,
                  matched_rows: list | None = None, rag_threshold: float | None = None,
-                 rag_candidates: int = 0, rag_queries: list | None = None):
+                 rag_candidates: int = 0, rag_queries: list | None = None,
+                 elapsed_ms: int = 0, llm_calls: int = 0, llm_seconds: float = 0.0,
+                 llm_errors: int = 0):
         self.tier = tier
         self.text = text
         self.faq_id = faq_id
@@ -222,6 +255,11 @@ class Answer:
         self.rag_candidates = rag_candidates
         # 這次實際拿去檢索的查詢句（多查詢改寫時第 0 條是原問句，其餘是改寫句）
         self.rag_queries = rag_queries or []
+        # 這次決策的用量（寫進紀錄頁，才看得出「為什麼要一分鐘」）
+        self.elapsed_ms = int(elapsed_ms or 0)
+        self.llm_calls = int(llm_calls or 0)
+        self.llm_seconds = float(llm_seconds or 0.0)
+        self.llm_errors = int(llm_errors or 0)
 
     @property
     def hit(self) -> bool:
@@ -250,7 +288,11 @@ class Answer:
                 "matched_rows": self.matched_rows,
                 "rag_threshold": self.rag_threshold,
                 "rag_candidates": self.rag_candidates,
-                "rag_queries": self.rag_queries}
+                "rag_queries": self.rag_queries,
+                "elapsed_ms": self.elapsed_ms,
+                "llm_calls": self.llm_calls,
+                "llm_seconds": round(self.llm_seconds, 3),
+                "llm_errors": self.llm_errors}
 
 
 def _layer_on(tier: str, layers) -> bool:
@@ -277,7 +319,14 @@ async def _table_try(question: str, context: str, flavor: str, post_context: str
                       detail=f"依業務表格生成（{len(context)} 字上下文）",
                       table_context_chars=len(context)), ""
 
-    ctx_note = f"（帶入最近 {history_used} 則對話）" if history_used else "（無更早對話）"
+    # ⚠️ 改寫重試**只在有對話歷史時才做**。
+    #    改寫的唯一價值是「把指代補齊」（那這個多少錢 → 某商品多少錢）；
+    #    沒有更早的對話就沒東西可補，模型只能換句話說 → 幾乎必然再次未命中。
+    #    實測這一輪純浪費：改寫 7.4s + 再生成 2.3s（detail 自己寫著「無更早對話」）。
+    if not history_text.strip():
+        return None, "業務表格：未命中（沒有更早的對話可補指代，不做改寫重試）"
+
+    ctx_note = f"（帶入最近 {history_used} 則對話）"
     try:
         rewritten = await client.rewrite_table_query(question, history_text)
     except DeepSeekError as e:
@@ -437,7 +486,41 @@ async def answer(text: str, *, channel: str, scope: str,
 
     `query_rewrite`：知識庫層要不要做多查詢改寫。None = 依知識庫的全域參數；
     命中測試頁可傳 True / False 覆寫（同樣**不動 DB 參數**）。
+
+    這裡是**外層 wrapper**（只負責計時與統計模型用量），真正的決策在 `_answer_inner()`。
+    做成 wrapper 是為了不必在十幾個 return 上各加一次 —— 統計漏一個分支就白做了。
     """
+    import deepseek_client
+
+    t0 = time.time()
+    st = _stats_start()
+
+    def _hook(ok: bool, seconds: float, err=None) -> None:
+        _stats_note("", seconds, ok)
+
+    token = deepseek_client.set_call_hook(_hook)
+    try:
+        ans = await _answer_inner(text, channel=channel, scope=scope,
+                                  post_context=post_context, history=history,
+                                  layers=layers, query_rewrite=query_rewrite)
+    finally:
+        deepseek_client.reset_call_hook(token)
+
+    ans.elapsed_ms = int((time.time() - t0) * 1000)
+    ans.llm_calls = int(st["calls"])
+    ans.llm_seconds = float(st["seconds"])
+    ans.llm_errors = int(st["errors"])
+    log.info("引擎決策完成（%s/%s，tier=%s，%.1fs，模型 %d 次／%.1fs%s）",
+             channel, scope, ans.tier, ans.elapsed_ms / 1000, ans.llm_calls,
+             ans.llm_seconds, f"，{ans.llm_errors} 次失敗" if ans.llm_errors else "")
+    return ans
+
+
+async def _answer_inner(text: str, *, channel: str, scope: str,
+                        post_context: str = "", history: list[dict] | None = None,
+                        layers: list[str] | None = None,
+                        query_rewrite: bool | None = None) -> Answer:
+    """四層決策本體（不負責計時；見 `answer()`）。"""
     question = (text or "").strip()
     if not question:
         return Answer(TIER_MISS, reason="empty_text")

@@ -34,7 +34,9 @@ import autoreply_console
 import autoreply_db
 import kb_console
 import kb_db
+import kb_embed
 import kb_ingest
+import kb_search
 import token_refresh
 import wechat
 import whatsapp
@@ -64,10 +66,26 @@ async def lifespan(app: FastAPI):
         log.warning("知識庫啟動清理失敗: %s", e)
     # IG 登入權杖自動續期（60 天效期，每天續一次）
     task = asyncio.create_task(token_refresh.ig_token_loop())
+    # 背景預熱：把 embedding 模型與檢索索引先載好。
+    # 為什麼要：第一次查詢原本要付「載入 640MB 模型 + 全量 jieba」的成本（實測 2.3 秒），
+    # 而這筆錢是第一個客人付的。放背景跑，不擋啟動。
+    asyncio.create_task(_warmup_kb())
     try:
         yield
     finally:
         task.cancel()
+
+
+async def _warmup_kb() -> None:
+    """啟動後背景預熱知識庫（模型 + 索引）。失敗只記 log，不影響服務。"""
+    try:
+        await asyncio.to_thread(kb_embed.get_provider().warmup)
+    except Exception as e:
+        log.warning("embedding 預熱失敗（第一次查詢會較慢）: %s", e)
+    try:
+        await asyncio.to_thread(kb_search.warmup_index)
+    except Exception as e:
+        log.debug("檢索索引預熱失敗: %s", e)
 
 
 app = FastAPI(title="wechat-webhook-forwarder", lifespan=lifespan)

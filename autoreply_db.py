@@ -85,6 +85,10 @@ CREATE TABLE IF NOT EXISTS autoreply_log (
     rewritten_query TEXT,
     history_used   INTEGER NOT NULL DEFAULT 0,
     send_status    VARCHAR(20) NOT NULL DEFAULT 'not_sent',
+    -- 這次決策的用量（為什麼要一分鐘？看這兩欄就知道：模型呼叫幾次、各花多久）
+    elapsed_ms     INTEGER NOT NULL DEFAULT 0,
+    llm_calls      INTEGER NOT NULL DEFAULT 0,
+    llm_seconds    DOUBLE PRECISION NOT NULL DEFAULT 0,
     -- 一則訊息只處理一次的認領鍵（見下方唯一索引）
     claim_key      TEXT
 );
@@ -113,6 +117,10 @@ _COLUMN_MIGRATIONS = (
     ("igfb_dm", "auto_reply_state", "VARCHAR(20)"),
     ("igfb_dm", "auto_reply_tier", "VARCHAR(20)"),
     ("igfb_dm", "auto_reply_detail", "TEXT"),
+    # 用量欄位（2026-10-08）：列表／詳情都要顯示，所以用 ALTER 補進既有表
+    ("autoreply_log", "elapsed_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ("autoreply_log", "llm_calls", "INTEGER NOT NULL DEFAULT 0"),
+    ("autoreply_log", "llm_seconds", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
     ("igfb_comment", "auto_reply_state", "VARCHAR(20)"),
     ("igfb_comment", "auto_reply_tier", "VARCHAR(20)"),
     ("igfb_comment", "auto_reply_detail", "TEXT"),
@@ -521,12 +529,12 @@ _LOG_COLUMNS = (
     "claim_key", "channel", "reply_scope", "tier", "detail", "reason", "question",
     "answer", "conversation_key", "message_id", "post_id", "comment_id",
     "faq_id", "table_id", "matched_rows", "score", "rewrote", "rewritten_query",
-    "history_used", "send_status",
+    "history_used", "send_status", "elapsed_ms", "llm_calls", "llm_seconds",
 )
 
 _LOG_SQL = f"""
     INSERT INTO autoreply_log ({', '.join(_LOG_COLUMNS)})
-    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s)
 """
 
 
@@ -544,6 +552,9 @@ def _log_params(record: dict) -> tuple:
         record.get("rewritten_query") or None,
         int(record.get("history_used") or 0),
         record.get("send_status", "not_sent"),
+        int(record.get("elapsed_ms") or 0),
+        int(record.get("llm_calls") or 0),
+        float(record.get("llm_seconds") or 0),
     )
 
 
@@ -584,7 +595,8 @@ def update_claim(claim_key: str, record: dict) -> int:
             tier=%s, detail=%s, reason=%s, question=%s, answer=%s,
             conversation_key=%s, message_id=%s, post_id=%s, comment_id=%s,
             faq_id=%s, table_id=%s, matched_rows=%s::jsonb, score=%s, rewrote=%s,
-            rewritten_query=%s, history_used=%s, send_status=%s
+            rewritten_query=%s, history_used=%s, send_status=%s,
+            elapsed_ms=%s, llm_calls=%s, llm_seconds=%s
         WHERE claim_key=%s
     """, (
         record.get("tier"), record.get("detail"), record.get("reason"),
@@ -594,7 +606,11 @@ def update_claim(claim_key: str, record: dict) -> int:
         json.dumps(matched, ensure_ascii=False) if matched is not None else None,
         record.get("score"), bool(record.get("rewrote")),
         record.get("rewritten_query") or None, int(record.get("history_used") or 0),
-        record.get("send_status", "not_sent"), claim_key,
+        record.get("send_status", "not_sent"),
+        int(record.get("elapsed_ms") or 0),
+        int(record.get("llm_calls") or 0),
+        float(record.get("llm_seconds") or 0),
+        claim_key,
     ))
 
 
@@ -649,6 +665,7 @@ def list_logs(channel: str = "", scope: str = "", tier: str = "", limit: int = 1
         SELECT id, created_at, channel, reply_scope, tier, detail, reason, question,
                answer, conversation_key, message_id, post_id, comment_id,
                faq_id, table_id, score, rewrote, rewritten_query, history_used, send_status,
+               elapsed_ms, llm_calls, llm_seconds,
                (matched_rows IS NOT NULL
                 AND jsonb_typeof(matched_rows) = 'array'
                 AND jsonb_array_length(matched_rows) > 0) AS has_matched_rows
@@ -670,7 +687,7 @@ def get_log(log_id: int) -> dict | None:
         SELECT id, created_at, channel, reply_scope, tier, detail, reason, question,
                answer, conversation_key, message_id, post_id, comment_id,
                faq_id, table_id, matched_rows, score, rewrote, rewritten_query,
-               history_used, send_status
+               history_used, send_status, elapsed_ms, llm_calls, llm_seconds
         FROM autoreply_log WHERE id=%s
     """, (log_id,))
     return rows[0] if rows else None

@@ -4379,9 +4379,17 @@ function logItemHtml(r) {
       arrow +
     '</div>' +
     (r.question ? '<div class="lg-q">客戶：' + esc(r.question) + '</div>' : '') +
-    (r.rewritten_query && r.rewritten_query !== r.question
+    // 耗時與模型呼叫次數：一次知識庫回覆可能呼叫 8 次模型（實測 49 秒），
+    // 這一行是「為什麼這麼慢」最直接的答案。
+    (r.elapsed_ms
+      ? '<div class="lg-q">耗時 <b>' + (r.elapsed_ms / 1000).toFixed(1) + 's</b>' +
+        (r.llm_calls ? '，模型呼叫 <b>' + r.llm_calls + '</b> 次' +
+          (r.llm_seconds ? '（佔 ' + Number(r.llm_seconds).toFixed(1) + 's）' : '') : '') + '</div>'
+      : '') +
+    (r.rewrote && r.rewritten_query
       ? '<div class="lg-q">改寫問句：' + esc(r.rewritten_query) +
-        (r.history_used ? '（帶入 ' + r.history_used + ' 則對話）' : '') + '</div>' : '') +
+        (r.history_used ? '（帶入 ' + r.history_used + ' 則對話）' : '') + '</div>'
+      : (r.rewrote ? '<div class="lg-q">改寫後命中</div>' : '')) +
     (r.answer ? '<div>回覆：' + esc(r.answer) + '</div>' : '') +
     (r.detail ? '<div class="lg-q">' + esc(r.detail) + '</div>' : '') +
     (r.reason && r.reason !== 'sent' ? '<div class="lg-q">原因：' + esc(r.reason) + '</div>' : '') +

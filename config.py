@@ -112,8 +112,16 @@ DEEPSEEK_BASE_URL = _get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 # 模型 ID（本專案預設 deepseek-flash）
 DEEPSEEK_MODEL = _get("DEEPSEEK_MODEL", "deepseek-flash")
 
-# 單次呼叫逾時（秒）
+# 單次呼叫逾時（秒）—— 只給「必要呼叫」（生成答案）用
 DEEPSEEK_TIMEOUT = float(_get("DEEPSEEK_TIMEOUT", "30") or 30)
+
+# 輔助呼叫（改寫問句）的逾時（秒）：短、且不重試。
+# ⚠️ 實測：用 30 秒超時 + 自動重試，一次 ReadTimeout 就吃掉 60 秒，把整則回覆拖垮。
+#    改寫失敗沿用原問句即可，不值得為它等那麼久。
+DEEPSEEK_AUX_TIMEOUT = float(_get("DEEPSEEK_AUX_TIMEOUT", "5") or 5)
+
+# 同時送出的模型呼叫上限（本地排隊，避免撞上閘道的 max_parallel_requests 而被 429）
+DEEPSEEK_MAX_CONCURRENCY = int(_get("DEEPSEEK_MAX_CONCURRENCY", "2") or 2)
 
 # FAQ 改寫模式：off = 不呼叫 AI 改寫；on_miss = 規則未命中時才改寫再匹配一次
 FAQ_REWRITE_MODE = _get("FAQ_REWRITE_MODE", "on_miss").lower()
