@@ -514,10 +514,10 @@ CPU 上 cross-encoder 要對每個 (query, chunk) 跑一次完整前向。以 to
 |---|---|---|---|
 | **P0 選型＋環境** | 裝套件、下模型、建表、冒煙測試 | 對「藍牙耳機」拿到維度正確的向量 | ✅ 2026-10-08（`rag_model_check.py`：載入 2.0s、28ms/句、top-1 4/4 命中） |
 | **P1 向導與入庫** | 上傳→分塊預覽與微調→embedding→入庫（四步） | 上傳 PDF，300 秒內 `ready`；塊內容人工看過合理 | ✅ 2026-10-08（6 種格式實檔端到端；維度 768 落地 `REAL[]`） |
-| **P1.5 參數配置按鈕** | 概覽頁「🔧 參數配置」彈窗（檢索參數立即生效；分塊參數標需重建） | 改 top-k 後**不重啟**，下一則訊息就用新值；分塊參數改完不重建則不動既有塊 | ⏳（後端 `GET/POST /console/kb/params` 已完成，UI 彈窗待做） |
-| **P2 檢索與測試頁籤** | 檢索端點 + 「命中測試」子頁籤 | 5 條已知問題 top-1 命中率 ≥ 80% | ⏳ |
-| **P3 接引擎與溯源** | 第三層 + 三級開關 + 記錄詳情 + FAQ 搜尋 | 端到端：`tier=rag`、訊息送出、記錄可點開看到召回明細 | ⏳ |
-| **P4 校準** | 用真實 miss 樣本調門檻／top-k／塊長 | 誤判下降，不再出現「硬掰」回覆 | ⏳ |
+| **P1.5 參數配置按鈕** | 概覽頁「🔧 參數配置」彈窗（檢索參數立即生效；分塊參數標需重建） | 改 top-k 後**不重啟**，下一則訊息就用新值；分塊參數改完不重建則不動既有塊 | ✅ 2026-10-08（彈窗在「知識庫」分頁；分 A 檢索 / B 分塊兩組，逐項標「已覆寫」「重建」；`POST /console/kb/params` 會即時 `kb_search.invalidate()`） |
+| **P2 檢索與測試頁籤** | 檢索端點 + 「命中測試」子頁籤 | 5 條已知問題 top-1 命中率 ≥ 80% | ✅ 2026-10-08（`kb_search_check.py`：top-1 **8/8**、不相關 3/3 被擋；並用實測把 `min_score` 從 0.55 校正到 **0.28**） |
+| **P3 接引擎與溯源** | 第三層 + 三級開關 + 記錄詳情 + FAQ 搜尋 | 端到端：`tier=rag`、訊息送出、記錄可點開看到召回明細 | ✅ 2026-10-08（`engine_check.py` + `kb_api_check.py` + `ui_check.py` 三支自檢全綠；UI 六個分頁） |
+| **P4 校準** | 用真實 miss 樣本調門檻／top-k／塊長 | 誤判下降，不再出現「硬掰」回覆 | ⏳（等真實客服問句；工具已就緒：`kb_search_check.py` + 紀錄頁召回明細） |
 | **P5（之後）** | rerank、OCR、pgvector | — | ⏳ |
 
 **P1 實作檔案對照**（與 §14 接點清單的差異）：
@@ -534,6 +534,28 @@ CPU 上 cross-encoder 要對每個 (query, chunk) 跑一次完整前向。以 to
 
 > §14 原本把解析與分塊合寫成 `kb_ingest.py`，實作時拆成 `kb_parse.py` + `kb_chunk.py` + `kb_ingest.py`
 > 三層（解析不含業務邏輯、分塊可單獨重跑、編排只管狀態機），比較好測。
+
+**P2 / P3 實作檔案對照**：
+
+| 檔案 | 說明 |
+|---|---|
+| `kb_search.py` | 混合檢索（0.65×cosine + 0.35×字面）、5 秒 TTL 索引／參數快取、`invalidate()` |
+| `reply_engine.py`（擴充） | 第三層 `TIER_RAG`；`answer(..., layers=)` 可指定只跑哪幾層；`Answer.matched_rows` 帶召回明細 |
+| `deepseek_client.py`（擴充） | `answer_with_rag()`（單一 system message，與表格層同一套 sentinel 規則） |
+| `autoreply_db.py`（擴充） | `list_logs()` 多回一個 `has_matched_rows`（SQL 端 `jsonb_typeof` 判斷，列表不用撈肥 JSON）；`get_log()`；`list_faqs(q)` 參數化 ILIKE |
+| `kb_console.py`（擴充） | `GET/POST /console/kb/search`、`/index-stats`、`/document/move` |
+| `console_ui.html` | 分頁擴成六個（自動回復 / FAQ / 業務表格 / **知識庫** / **命中測試** / 紀錄）；導入向導、參數彈窗、召回明細展開、FAQ 搜尋 |
+| `kb_search_check.py` | 檢索自檢（含分數分佈，用來校正 `min_score`） |
+| `engine_check.py` | 四層引擎端到端自檢（真呼叫 DeepSeek、真寫日誌、跑完自己清乾淨） |
+| `ui_check.py` | 前端自檢：真 payload → 真渲染函式，抓 JS 例外與壞字串 |
+
+> **UI 的驗證方式與限制**：這台機器的執行環境不允許子進程建立監聽 socket
+> （chromedriver → `CreatePlatformSocket() failed / 10106`；playwright 內建的 node.exe →
+> `ncrypto::CSPRNG` abort），所以**無法跑真瀏覽器自動化**。`ui_check.py` 改成
+> 「Node + 最小 DOM 樁」把 `console_ui.html` 的整段 script 載進來，餵真實 API payload
+> 呼叫渲染函式。**已覆蓋**：後端真實資料 → 前端產生的 HTML（含空狀態、壞資料、
+> `undefined` / `[object Object]` / div 不成對）。**未覆蓋**：瀏覽器真的畫出來、CSS 版型、
+> 點擊事件真的綁上去 —— 這些請人工開一次 `/console` 確認。
 
 ---
 

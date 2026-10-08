@@ -4,7 +4,7 @@
   GET  /console/autoreply/settings                 開關總覽 + FAQ/表格層狀態 + DeepSeek 狀態
   POST /console/autoreply/settings/global          全域自動回復總開關
   POST /console/autoreply/settings/scope           單一渠道＋場景開關
-  POST /console/autoreply/settings/layer           FAQ 層 / 業務表格層 停啟用
+  POST /console/autoreply/settings/layer           FAQ 層 / 業務表格層 / 知識庫層 停啟用
   GET  /console/autoreply/faq                      FAQ 清單
   POST /console/autoreply/faq                      新增 FAQ
   POST /console/autoreply/faq/update               更新 FAQ
@@ -21,9 +21,10 @@
   POST /console/autoreply/table/import             匯入業務表格（xlsx / csv / JSON）
   GET  /console/autoreply/table/export             匯出業務表格（xlsx）
   GET  /console/autoreply/table/template           業務表格範本檔
-  POST /console/autoreply/test/engine              不發訊息，試跑三層邏輯
+  POST /console/autoreply/test/engine              不發訊息，試跑四層邏輯（可指定 layers）
   POST /console/autoreply/test/match               只試 FAQ 匹配分數（除錯用）
-  GET  /console/autoreply/logs                     自動回復日誌
+  GET  /console/autoreply/logs                     自動回復日誌（列表輕，不含召回明細）
+  GET  /console/autoreply/logs/{id}                單筆日誌詳情（含 RAG 召回明細 matched_rows）
   GET  /console/autoreply/stats                    各渠道＋場景統計與未命中數
   GET  /console/autoreply/deepseek/test            DeepSeek 連線測試
 """
@@ -98,6 +99,7 @@ async def get_settings():
         "scopes": scopes,
         "faq_layer": reply_engine.faq_layer_enabled(),
         "table_layer": reply_engine.table_layer_enabled(),
+        "rag_layer": reply_engine.rag_layer_enabled(),
         "deepseek": {
             "configured": bool(config.DEEPSEEK_API_KEY),
             "masked_key": _masked(config.DEEPSEEK_API_KEY),
@@ -114,7 +116,31 @@ async def get_settings():
         "faq_enabled_count": len(autoreply_db.list_faqs(enabled_only=True)),
         "table_count": len(autoreply_db.list_tables()),
         "row_count": len(autoreply_db.list_rows(enabled_only=True)),
+        # 第三層的規模摘要（沒有知識庫時整層會自己降級，不影響前兩層）
+        "kb": _kb_summary(),
     })
+
+
+def _kb_summary() -> dict:
+    """知識庫現況摘要（給「自動回復」頁顯示第三層有沒有料）。"""
+    try:
+        import kb_db
+        rows = kb_db.query("""
+            SELECT count(*) FILTER (WHERE status='ready')            AS ready_docs,
+                   count(*)                                          AS docs,
+                   (SELECT count(*) FROM kb_chunk
+                     WHERE embedding_status='done' AND enabled)      AS chunks
+            FROM kb_document
+        """)
+        cols = kb_db.list_collections(enabled_only=True)
+        r = rows[0] if rows else {}
+        return {"collections": len(cols), "documents": int(r.get("docs") or 0),
+                "ready_documents": int(r.get("ready_docs") or 0),
+                "chunks": int(r.get("chunks") or 0)}
+    except Exception as e:
+        log.debug("取知識庫摘要失敗: %s", e)
+        return {"collections": 0, "documents": 0, "ready_documents": 0, "chunks": 0,
+                "error": str(e)}
 
 
 def _masked(key: str) -> str:
@@ -150,8 +176,8 @@ async def set_scope(body: dict):
 @router.post("/settings/layer")
 async def set_layer(body: dict):
     layer = (body.get("layer") or "").strip().lower()
-    if layer not in ("faq", "table"):
-        return _err("layer 必須是 faq 或 table")
+    if layer not in ("faq", "table", "rag"):
+        return _err("layer 必須是 faq、table 或 rag")
     reply_engine.set_layer_enabled(layer, bool(body.get("enabled")))
     return _ok({"ok": True, "layer": layer, "enabled": bool(body.get("enabled"))})
 
@@ -159,9 +185,15 @@ async def set_layer(body: dict):
 # ---------- FAQ ----------
 
 @router.get("/faq")
-async def list_faq():
-    items = autoreply_db.list_faqs()
-    return _ok({"faqs": items, "total": len(items)})
+async def list_faq(q: str = ""):
+    """FAQ 清單。`q` 有值時對問題／答案／關鍵詞做內文檢索（客服要「用內文找」時用）。
+
+    同時回 `total`（全部筆數）與 `filtered`（這次命中的筆數），UI 才好顯示
+    「符合 N 筆 / 共 M 筆」。
+    """
+    items = autoreply_db.list_faqs(q=q)
+    total = len(autoreply_db.list_faqs()) if (q or "").strip() else len(items)
+    return _ok({"faqs": items, "total": total, "filtered": len(items), "q": q})
 
 
 @router.get("/miss-info")
@@ -532,10 +564,13 @@ async def _template(headers: list[str], rows: list[list[str]], title: str, fmt: 
 
 @router.post("/test/engine")
 async def test_engine(body: dict):
-    """不發送任何訊息，只試跑三層邏輯並回傳決策。
+    """不發送任何訊息，只試跑四層邏輯並回傳決策。
 
-    可帶 history（[{direction, text}, ...]）模擬最近對話，驗證業務表格的
+    可帶 history（[{direction, text}, ...]）模擬最近對話，驗證業務表格 / 知識庫的
     query 改寫；不帶時會自動去資料庫撈最近對話（等同真實流程）。
+
+    `layers`：只跑指定的層，例如 `["faq","rag"]`。**只影響這次呼叫，不改 DB 開關**
+    （`reply_engine.answer(layers=None)` 才是依開關的正式流程），也**不寫任何紀錄**。
     """
     text = (body.get("text") or "").strip()
     channel = (body.get("channel") or "whatsapp").strip().lower()
@@ -544,6 +579,17 @@ async def test_engine(body: dict):
         return _err("請輸入測試訊息")
     if err := _check_target(channel, scope):
         return _err(err)
+
+    layers = body.get("layers")
+    if layers is not None:
+        if not isinstance(layers, list):
+            return _err("layers 要是陣列，例如 [\"faq\",\"table\",\"rag\"]")
+        layers = [str(x).strip().lower() for x in layers]
+        bad = [x for x in layers if x not in reply_engine.ALL_LAYERS]
+        if bad:
+            return _err(f"不認得的層：{'、'.join(bad)}"
+                        f"（可用：{'、'.join(reply_engine.ALL_LAYERS)}）")
+        layers = [x for x in reply_engine.ALL_LAYERS if x in layers]   # 固定順序
 
     history = body.get("history")
     if history is None and body.get("with_history", True):
@@ -559,11 +605,12 @@ async def test_engine(body: dict):
             history = []
     try:
         answer = await reply_engine.answer(text, channel=channel, scope=scope,
-                                           history=history or [])
+                                           history=history or [], layers=layers)
     except Exception as e:
         return _err(f"引擎錯誤：{e}", 500)
     return _ok({"ok": True, "label": answer.label, **answer.as_dict(),
-                "would_send": answer.hit, "history": history or []})
+                "would_send": answer.hit, "history": history or [],
+                "layers": layers})
 
 
 @router.post("/draft")
@@ -573,11 +620,11 @@ async def draft(body: dict):
     與自動回復流程的差別：
       * 不檢查自動回復開關（關著的時候也要能用），也不套冷卻與每日上限（人工判斷優先）
       * **命中**時不寫任何標記或日誌；等客服真的按下送出，才由各回覆端點標成
-        「人工確認的自動回復-FAQ/表格命中」（autoreply.mark_manual_reply）
+        「人工確認的自動回復-FAQ／表格／知識庫命中」（autoreply.mark_manual_reply）
       * **未命中**時就在這裡寫一筆紀錄（autoreply.log_manual_miss，reason=manual_no_match）——
         記錄點＝前端跳出「引擎答不出這一則」彈窗的同一刻。不寫的話，紀錄頁看不出
-        「這一則人工丟給引擎試過、答不出來」，也就無從知道該補哪條 FAQ／表格。
-    走的是同一套三層引擎（FAQ → 業務表格 → DeepSeek），與自動回復結果一致。
+        「這一則人工丟給引擎試過、答不出來」，也就無從知道該補哪條 FAQ／表格／文件。
+    走的是同一套四層引擎（FAQ → 業務表格 → 知識庫 → 人工），與自動回復結果一致。
     """
     channel = (body.get("channel") or "").strip().lower()
     scope = (body.get("scope") or "dm").strip().lower()
@@ -667,7 +714,7 @@ async def draft(body: dict):
                 autoreply.log_manual_miss, channel, scope,
                 text=question, detail=(answer.detail or answer.reason or ""),
                 message_id=message_id, comment_id=comment_id, post_id=post_id,
-                conversation_key=conversation_key,
+                conversation_key=conversation_key, matched_rows=answer.matched_rows,
             )
         except Exception as e:
             log.warning("寫入人工未命中紀錄失敗: %s", e)
@@ -754,10 +801,33 @@ async def deepseek_test():
 @router.get("/logs")
 async def logs(channel: str = "", scope: str = "", tier: str = "", limit: int = 100,
                offset: int = 0):
+    """自動回復紀錄列表。
+
+    ⚠️ **列表刻意不帶 `matched_rows`**（召回明細）：那是幾十個候選塊的 JSON，
+    列表動輒上百筆，一起撈會讓回應肥到沒必要。要看明細走 `GET /logs/{id}`。
+    """
     data = autoreply_db.list_logs(channel, scope, tier, limit, offset)
     for r in data["logs"]:
         r["tier_label"] = autoreply_db.tier_label(r["tier"])
     return _ok(data)
+
+
+@router.get("/logs/{log_id}")
+async def log_detail(log_id: int):
+    """單筆紀錄詳情：完整內容 + RAG 召回明細（`matched_rows`）。
+
+    明細裡每一筆含：排名相關分數（vec / lex / final / rerank）、來源
+    （文件 / 章節 / 頁碼 / 工作表）、片段、以及 `picked`（是否真的入選送進模型）。
+    **未命中**的紀錄也會有明細 —— 那才是調門檻／top-k 最有用的線索。
+    """
+    row = autoreply_db.get_log(log_id)
+    if not row:
+        return _err("找不到這筆紀錄", 404)
+    row["tier_label"] = autoreply_db.tier_label(row["tier"])
+    rows = row.get("matched_rows")
+    # 舊資料 / 壞資料可能不是 list（見專案的不變式：JSON 存 TEXT 欄位不可假設型別）
+    row["matched_rows"] = rows if isinstance(rows, list) else []
+    return _ok(row)
 
 
 @router.get("/stats")
@@ -767,7 +837,7 @@ async def stats():
     summary = autoreply_db.log_summary()
     for channel, scope in config.AUTOREPLY_SCOPES:
         key = autoreply_db.scope_key(channel, scope)
-        s = summary.get(key, {"faq": 0, "table": 0, "miss": 0, "error": 0,
+        s = summary.get(key, {"faq": 0, "table": 0, "rag": 0, "miss": 0, "error": 0,
                               "rewritten": 0, "total": 0})
         scopes.append({
             "channel": channel, "scope": scope, "label": config.scope_label(channel, scope),

@@ -138,9 +138,11 @@ def mark_manual_reply(channel: str, scope: str, tier: str, *, comment_id: str = 
     與真正的自動回復區分：state 一樣是 hit，但 detail 以「人工確認」開頭，
     工作台據此顯示「人工確認的…」；log 的 reason 記 manual，方便和自動流程分開統計。
     """
-    if tier not in (reply_engine.TIER_FAQ, reply_engine.TIER_TABLE):
+    if tier not in (reply_engine.TIER_FAQ, reply_engine.TIER_TABLE, reply_engine.TIER_RAG):
         return
-    label = "自動回復-FAQ命中" if tier == reply_engine.TIER_FAQ else "自動回復-表格命中"
+    label = {reply_engine.TIER_FAQ: "自動回復-FAQ命中",
+             reply_engine.TIER_TABLE: "自動回復-表格命中",
+             reply_engine.TIER_RAG: "自動回復-知識庫命中"}[tier]
     detail = f"人工確認的{label}"
 
     message_id = ""
@@ -163,7 +165,7 @@ def mark_manual_reply(channel: str, scope: str, tier: str, *, comment_id: str = 
 
 def log_manual_miss(channel: str, scope: str, *, text: str = "", detail: str = "",
                     message_id: str = "", comment_id: str = "", post_id: str = "",
-                    conversation_key: str = "") -> None:
+                    conversation_key: str = "", matched_rows: list | None = None) -> None:
     """人工按了「由自動回復引擎給出回復」但引擎沒命中 → 也留一筆紀錄。
 
     為什麼要記：命中的會由 mark_manual_reply 記成「人工確認的…命中」，
@@ -188,6 +190,7 @@ def log_manual_miss(channel: str, scope: str, *, text: str = "", detail: str = "
         "question": text, "conversation_key": conversation_key,
         "message_id": message_id, "post_id": post_id, "comment_id": comment_id,
         "send_status": "not_sent",
+        "matched_rows": matched_rows,
     }
     try:
         # claim_message 走 ON CONFLICT (claim_key) DO NOTHING → 回 False 表示這次已經記過
@@ -332,14 +335,16 @@ async def handle_inbound(
     # 6) 未命中 → 降級人工，標記待處理
     if not answer.hit:
         _mark(channel, scope, STATE_MISS, tier=answer.tier,
-              detail=answer.detail or "FAQ 與業務表格皆未命中，待人工處理",
+              detail=answer.detail or "FAQ、業務表格與知識庫皆未命中，待人工處理",
               message_id=message_id, comment_id=comment_id, conversation_key=conversation_key)
         _log({"channel": channel, "reply_scope": scope, "tier": reply_engine.TIER_MISS,
               "reason": answer.reason, "detail": answer.detail, "question": question,
               "conversation_key": conversation_key, "message_id": message_id,
               "post_id": post_id, "comment_id": comment_id, "score": answer.score,
               "rewrote": answer.rewrote, "rewritten_query": answer.rewritten_query,
-              "history_used": answer.history_used, "send_status": "not_sent"},
+              "history_used": answer.history_used, "send_status": "not_sent",
+              # ★ 未命中也要留召回明細：這才是調門檻／top-k 最需要的線索
+              "matched_rows": answer.matched_rows},
              claim_key=claim_key)
         log.info("自動回復未命中（%s/%s）：%s", channel, scope, answer.reason)
         return {"state": STATE_MISS, "reason": answer.reason, "detail": answer.detail}
@@ -364,7 +369,8 @@ async def handle_inbound(
               "conversation_key": conversation_key, "message_id": message_id,
               "post_id": post_id, "comment_id": comment_id, "score": answer.score,
               "rewrote": answer.rewrote, "rewritten_query": answer.rewritten_query,
-              "history_used": answer.history_used, "send_status": "failed"},
+              "history_used": answer.history_used, "send_status": "failed",
+              "matched_rows": answer.matched_rows},
              claim_key=claim_key)
         return {"state": STATE_FAILED, "tier": answer.tier, "label": label,
                 "error": str(result.get("body"))[:300]}
@@ -435,6 +441,7 @@ async def handle_inbound(
           "message_id": message_id, "post_id": post_id, "comment_id": comment_id,
           "score": answer.score, "rewrote": answer.rewrote,
           "rewritten_query": answer.rewritten_query, "history_used": answer.history_used,
+          "matched_rows": answer.matched_rows,
           "send_status": "sent"}, claim_key=claim_key)
     log.info("自動回復已送出（%s/%s，%s%s）：%s", channel, scope, label,
              "，改寫後命中" if answer.rewrote else "", answer.text[:60])

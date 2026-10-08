@@ -174,6 +174,29 @@ class DeepSeekClient:
         ]
         return (await self.complete(messages, temperature=0.2)).strip()
 
+    async def answer_with_rag(self, question: str, rag_context: str,
+                              flavor: str = "dm", post_context: str = "") -> str:
+        """把知識庫檢索到的段落當上下文回答；答不出來時回含 NO_ANSWER_SENTINEL 的字串。
+
+        與 `answer_with_table` 同一套規矩：**多段指示一律合併成單一 system message**
+        （部分 OpenAI 相容閘道的模板只接受最前面那一則 system，連續多則會回 HTTP 500）。
+        """
+        import rag_config
+
+        parts = [config.DEEPSEEK_SYSTEM_PROMPT]
+        if flavor == "comment":
+            parts.append(config.DEEPSEEK_COMMENT_PROMPT)
+        if post_context:
+            parts.append(post_context)
+        parts.append(rag_config.RAG_PROMPT.format(
+            context=rag_context, sentinel=NO_ANSWER_SENTINEL
+        ))
+        messages = [
+            {"role": "system", "content": "\n\n".join(parts)},
+            {"role": "user", "content": question},
+        ]
+        return (await self.complete(messages, temperature=0.2)).strip()
+
 
 def clean_rewrite(text: str) -> str:
     """清理模型輸出的引號、常見前綴、多餘空白與換行。"""
