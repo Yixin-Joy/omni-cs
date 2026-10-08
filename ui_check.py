@@ -329,43 +329,136 @@ function ok(html, label, minLen) {
 function has(html, s, label) { ck(html.indexOf(s) >= 0, label, '"' + s + '"'); }
 function hasNot(html, s, label) { ck(html.indexOf(s) < 0, label, '"' + s + '"'); }
 
-console.log('\n[1] 知識庫分頁（有資料）');
+console.log('\n[1] 知識庫第 1 頁：清單（首頁）');
 arState.settings = FX.settings;
 arState.kb = FX.overview;
 arState.kbDocs = FX.documents.documents || [];
 arState.kbCollection = 0;
+arState.kbUngrouped = false;
+arState.kbView = 'list';
 arState.kbDocId = 0;
+arState.kbDoc = null;
+arState.kbUploadNote = '';
 let kb = ok(kbTabHtml(), 'kbTabHtml()');
-has(kb, '知識庫概覽', '有概覽卡片');
-has(kb, '上傳文件', '有上傳區');
-has(kb, '文件清單', '有文件清單');
-has(kb, '拖曳檔案到這裡', '有拖放提示');
-has(kb, 'kbDropZone', '有拖放區 id');
-has(kb, 'kbPickAny', '有多選檔案輸入');
-has(kb, '參數配置', '有參數配置入口');
-has(kb, 'kbUploadTarget', '有上傳目標選擇');
+has(kb, '知識庫概覽（第三層）', '有概覽卡片');
 has(kb, '已完成向量', '概覽有向量統計');
-hasNot(kb, 'kbDocRowHtml', '沒有把函式名當內容輸出');
+has(kb, '參數配置', '有參數配置入口');
 hasNot(kb, '<script', '沒有未轉義的 script 標籤');
+hasNot(kb, 'kbDocRowHtml', '沒有把函式名當內容輸出');
+has(kb, 'kbOpenCollection(', '知識庫卡可點進內頁');
+// 清單頁只做一件事：不該出現上傳區、也不該出現文件表格（那些是別頁的事）
+hasNot(kb, 'kbDropZone', '清單頁沒有上傳區（上傳是另一頁）');
+hasNot(kb, '拖曳檔案到這裡', '清單頁沒有拖放提示');
+hasNot(kb, '<table class="data-table">', '清單頁沒有文件表格');
+hasNot(kb, 'kb-crumbs', '清單頁是首頁，沒有麵包屑');
+hasNot(kb, 'kbP_chunk_size', '清單頁沒有分塊參數表單');
+
+console.log('\n[1b] 清單頁：有「未分組」文件時多一個入口');
+const ovUg = JSON.parse(JSON.stringify(FX.overview));
+ovUg.totals = Object.assign({}, ovUg.totals, { ungrouped_docs: 3 });
+arState.kb = ovUg;
+const kbUgList = ok(kbListPageHtml(), 'kbListPageHtml()（有未分組）');
+has(kbUgList, '未分組', '出現「未分組」入口');
+has(kbUgList, 'kbOpenUngrouped()', '未分組可點進去');
+arState.kb = FX.overview;
+// 這條不能依賴 FX.overview 的實況 —— 真實 DB 現在剛好有一份未分組文件。
+// 自己造一個 ungrouped_docs=0 的副本，才驗得到「沒有就不出現」。
+const ovNoUg = JSON.parse(JSON.stringify(FX.overview));
+ovNoUg.totals = Object.assign({}, ovNoUg.totals, { ungrouped_docs: 0 });
+arState.kb = ovNoUg;
+ck(kbListPageHtml().indexOf('kbOpenUngrouped()') < 0, '沒有未分組文件時就不出現這個入口');
+arState.kb = FX.overview;
 
 console.log('\n[2] 知識庫分頁（空資料 / 空狀態）');
 arState.kb = FX.empty_overview;
 arState.kbDocs = [];
+arState.kbView = 'list';
 let kbe = ok(kbTabHtml(), 'kbTabHtml()（空）');
 has(kbe, '尚無知識庫', '空狀態給了引導文字');
 
-console.log('\n[3] 向導（真實文件 + 知識塊）');
+console.log('\n[3] 知識庫第 2 頁：某個知識庫的文件');
 arState.kb = FX.overview;
-arState.kbDocs = FX.documents.documents || [];
+// 挑文件最多的那個庫當樣本；沒有就用合成的，讓檢查不依賴資料庫現況
+const colSample = (FX.overview.collections || []).slice()
+  .sort((a, b) => (b.doc_count || 0) - (a.doc_count || 0))[0] ||
+  { id: 1, name: '樣本庫', enabled: true, doc_count: 0, ready_count: 0, chunk_count: 0, description: '' };
+const CID = colSample.id;
+const docMine = { id: 8001, filename: '本庫文件.pdf', title: '本庫文件.pdf', collection_id: CID,
+                  status: 'ready', enabled: true, chunk_count: 7, char_count: 900,
+                  size_bytes: 2048, doc_type: 'pdf', updated_at: '2026-10-08T10:00:00' };
+const docOther = { id: 8002, filename: '別的庫.pdf', title: '別的庫.pdf', collection_id: CID + 991,
+                   status: 'ready', enabled: true, chunk_count: 1, char_count: 10, updated_at: '' };
+const docNoCol = { id: 8003, filename: '未分組.txt', title: '未分組.txt', collection_id: null,
+                   status: 'draft', enabled: true, chunk_count: 0, char_count: 5, updated_at: '' };
+arState.kbDocs = [docMine, docOther, docNoCol];
+arState.kbCollection = CID;
+arState.kbUngrouped = false;
+arState.kbView = 'docs';
+arState.ktLayers = arState.ktLayers || {};
+let kbd = ok(kbDocsPageHtml(), 'kbDocsPageHtml()');
+has(kbd, 'kb-crumbs', '有麵包屑');
+has(kbd, 'kbGoList()', '麵包屑可以回清單');
+has(kbd, '＋ 新增文檔', '有「新增文檔」按鈕');
+has(kbd, 'kbNewDoc()', '新增文檔是跳頁（不是就地展開一個區塊）');
+hasNot(kbd, 'kbDropZone', '文件清單頁沒有上傳區');
+has(kbd, 'kbOpenDoc(', '文件列可點進去看分塊');
+hasNot(kbd, '知識庫概覽', '內頁不再重複概覽卡');
+has(kbd, '參數配置', '內頁有這個庫的參數配置入口');
+// 只列「這個庫」的文件
+ck(kbd.indexOf('本庫文件.pdf') >= 0, '列出這個庫的文件');
+ck(kbd.indexOf('別的庫.pdf') < 0, '濾掉別的知識庫的文件');
+ck(kbd.indexOf('未分組.txt') < 0, '濾掉未分組的文件');
+ck((kbd.match(/class="row-link"/g) || []).length === 1, '列數 = 這個庫的文件數',
+   (kbd.match(/class="row-link"/g) || []).length + ' 列');
+// 路由：kbView='docs' 時 kbTabHtml() 要走這一頁
+ck(kbTabHtml() === kbd, 'kbTabHtml() 依 kbView 路由到文件頁');
+
+console.log('\n[3a] 第 2 頁（未分組）');
+arState.kbUngrouped = true;
+arState.kbCollection = 0;
+let kbu = ok(kbDocsPageHtml(), 'kbDocsPageHtml()（未分組）');
+has(kbu, '未分組', '標題是「未分組」');
+ck(kbu.indexOf('未分組.txt') >= 0 && kbu.indexOf('本庫文件.pdf') < 0, '只列未分組的文件');
+hasNot(kbu, '刪除知識庫', '未分組沒有「刪除知識庫」這種動作');
+// 當前頁是不可點的：麵包屑只該有「知識庫」（可點）與「未分組」（當前頁，純文字）
+hasNot(kbu, 'kbOpenUngrouped()', '麵包屑的當前頁（未分組）不會自己連回自己');
+has(kbu, 'kb-crumbs', '未分組頁有麵包屑');
+has(kbu, 'kbGoList()', '麵包屑可以回清單');
+arState.kbUngrouped = false;
+arState.kbCollection = CID;
+
+console.log('\n[3b] 知識庫第 3 頁：新增文檔（上傳）');
+arState.kbView = 'new';
+arState.kbUploadNote = '';
+let kbn = ok(kbNewPageHtml(), 'kbNewPageHtml()');
+has(kbn, 'kb-crumbs', '有麵包屑');
+has(kbn, 'kbDropZone', '有拖放區');
+has(kbn, 'kbPickAny', '有多選檔案輸入');
+has(kbn, '拖曳檔案到這裡', '有拖放提示');
+has(kbn, '取消，回文件清單', '可以取消回上一頁');
+has(kbn, '① 上傳', '說明流程 ① 上傳');
+has(kbn, '④ 確認入庫', '說明流程 ④ 確認入庫');
+hasNot(kbn, 'kbP_chunk_size', '上傳頁沒有分塊參數表單（那是解析頁的事）');
+hasNot(kbn, '<table class="data-table">', '上傳頁沒有文件表格');
+has(kbn, esc(colSample.name), '寫明會放進哪個知識庫');
+ck(arState.kbCollection === CID, '上傳頁沒有動到所在的知識庫',
+   'kbCollection=' + arState.kbCollection);
+
+console.log('\n[3c] 知識庫第 4 頁：文件解析與分塊');
+arState.kbView = 'doc';
+arState.kbUploadNote = '';
 if (FX.document) {
   const cid = (FX.document.doc.collection_id) || 0;
   _kbParamCache[String(cid)] = FX.params;
+  _kbParamCache[String(CID)] = FX.params;
   _kbParamCache['0'] = FX.params;
+  arState.kbCollection = cid || CID;
   arState.kbDocId = FX.document.doc.id;
   arState.kbDoc = FX.document;
   arState.kbPreview = null;
-  let wiz = ok(kbWizardHtml(), 'kbWizardHtml()');
-  has(wiz, '導入向導', '有向導標題');
+  let wiz = ok(kbTabHtml(), 'kbTabHtml()（分塊頁）');
+  has(wiz, 'kb-crumbs', '有麵包屑');
+  has(wiz, '回文件清單', '有回上一頁的按鈕');
   has(wiz, '分塊參數', '有分塊參數列');
   has(wiz, 'kbP_chunk_size', '有塊長輸入框');
   has(wiz, '預覽分塊', '有預覽按鈕');
@@ -375,58 +468,81 @@ if (FX.document) {
   has(wiz, 'kbChunkSplit', '有拆分動作');
   has(wiz, 'kbChunkMerge', '有合併動作');
   has(wiz, 'kbMoveTo', '有搬移目標選擇');
+  hasNot(wiz, 'kbDropZone', '分塊頁沒有上傳區');
+  hasNot(wiz, '知識庫概覽', '分塊頁不再重複概覽卡');
+  has(wiz, '① 上傳', '有四個步驟的進度條');
   // 每一塊都要有自己的 textarea id
   const ids = [...wiz.matchAll(/id="kbC_(\d+)"/g)].map(m => m[1]);
   ck(ids.length === (FX.document.chunks || []).length,
      '每塊都有獨立 textarea', ids.length + '/' + (FX.document.chunks || []).length);
   ck(new Set(ids).size === ids.length, 'textarea id 不重複');
 
-  console.log('\n[3b] 向導 + 分塊預覽（草稿）');
+  console.log('\n[3d] 分塊頁 + 分塊預覽（草稿）');
   arState.kbPreview = { count: 12, avg_chars: 310.5, min_chars: 120, max_chars: 480,
                         strategy: 'heading', chunks: FX.document.chunks };
-  let wp = ok(kbWizardHtml(), 'kbWizardHtml()（含預覽）');
+  let wp = ok(kbDocPageHtml(), 'kbDocPageHtml()（含預覽）');
   has(wp, '會切成', '預覽摘要出現');
   has(wp, '分塊預覽（草稿，未寫庫）', '預覽區標題正確');
   ck(wp.split('kb-chunk').length > wiz.split('kb-chunk').length, '預覽讓區塊數變多');
   arState.kbPreview = null;
 
-  console.log('\n[3c] 向導 + 處理中的文件（背景任務進行中）');
+  console.log('\n[3e] 分塊頁 + 處理中的文件（背景任務進行中）');
   const runningDoc = JSON.parse(JSON.stringify(FX.document));
   runningDoc.running = 'embedding';
   runningDoc.stats = Object.assign({}, runningDoc.stats || {}, { pending: 3, done: 2 });
   arState.kbDoc = runningDoc;
-  let wr = ok(kbWizardHtml(), 'kbWizardHtml()（running）');
+  let wr = ok(kbDocPageHtml(), 'kbDocPageHtml()（running）');
   has(wr, '向量化中…', '顯示背景任務狀態');
   has(wr, 'disabled', '未向量完時入庫鈕是停用的');
   arState.kbDoc = FX.document;
-
-  console.log('\n[3d] 文件列（各種狀態）');
-  const statuses = ['draft', 'parsing', 'chunking', 'embedding', 'ready', 'failed', 'disabled'];
-  let rows = '';
-  statuses.forEach(function (s, i) {
-    rows += kbDocRowHtml(Object.assign({}, FX.document.doc, {
-      id: 900 + i, status: s, running: '', error: s === 'failed' ? '解析失敗：沒有文字層' : null,
-      chunk_count: 3, char_count: 1200, updated_at: '2026-10-08T10:00:00',
-    }));
-  });
-  rows += kbDocRowHtml(Object.assign({}, FX.document.doc, { id: 999, running: 'parse+chunk' }));
-  ok(rows, 'kbDocRowHtml() 全狀態', 100);
-  statuses.forEach(function (s) {
-    const tag = KB_STATUS[s] ? KB_STATUS[s].text : s;
-    ck(rows.indexOf(tag) >= 0, '狀態 ' + s + ' 有對應標籤', tag);
-  });
-  has(rows, '解析分塊中…', '背景任務列顯示進度文字');
-
-  console.log('\n[3e] 知識庫列（啟用 / 停用 / 有無文件）');
-  let cols = (FX.overview.collections || []).map(kbColRowHtml).join('');
-  if (!cols) cols = kbColRowHtml({ id: 1, name: '測試庫', enabled: true, doc_count: 0,
-                                   ready_count: 0, chunk_count: 0, description: '' });
-  ok(cols, 'kbColRowHtml()', 50);
-  has(cols, '改名', '有改名鈕');
-  has(cols, '刪除', '有刪除鈕');
 } else {
-  ck(false, '找不到有知識塊的文件，向導沒被驗到');
+  ck(false, '找不到有知識塊的文件，分塊頁沒被驗到');
 }
+
+console.log('\n[3f] 文件列（各種狀態）');
+const statuses = ['draft', 'parsing', 'chunking', 'embedding', 'ready', 'failed', 'disabled'];
+let rows = '';
+statuses.forEach(function (s, i) {
+  rows += kbDocRowHtml(Object.assign({}, docMine, {
+    id: 900 + i, status: s, running: '', error: s === 'failed' ? '解析失敗：沒有文字層' : null,
+    chunk_count: 3, char_count: 1200, updated_at: '2026-10-08T10:00:00',
+  }));
+});
+rows += kbDocRowHtml(Object.assign({}, docMine, { id: 999, running: 'parse+chunk' }));
+ok(rows, 'kbDocRowHtml() 全狀態', 100);
+statuses.forEach(function (s) {
+  const tag = KB_STATUS[s] ? KB_STATUS[s].text : s;
+  ck(rows.indexOf(tag) >= 0, '狀態 ' + s + ' 有對應標籤', tag);
+});
+has(rows, '解析分塊中…', '背景任務列顯示進度文字');
+ck(rows.split('row-link').length - 1 === statuses.length + 1,
+   '每一列都是可點進分塊頁的列', (rows.split('row-link').length - 1) + ' 列');
+
+console.log('\n[3g] 知識庫卡（啟用 / 停用 / 有無文件）');
+let colCards = (FX.overview.collections || []).map(kbColCardHtml).join('');
+if (!colCards) {
+  colCards = kbColCardHtml({ id: 1, name: '測試庫', enabled: true, doc_count: 0,
+                             ready_count: 0, chunk_count: 0, description: '' });
+}
+ok(colCards, 'kbColCardHtml()', 50);
+has(colCards, 'clickable', '整張卡可點');
+has(colCards, 'kbOpenCollection(', '點了會進內頁');
+hasNot(colCards, 'onclick="kbRenameCollection', '改名鈕不在卡片上（在內頁）');
+
+console.log('\n[3h] 導覽：三頁互跳');
+arState.kb = FX.overview;
+arState.tab = 'kb';
+arState.kbCollection = CID;
+arState.kbDocId = 0;
+arState.kbDoc = null;
+arState.kbView = 'doc';
+kbGoList();
+ck(arState.kbView === 'list' && arState.kbDocId === 0 && arState.kbDoc === null,
+   'kbGoList() 回清單並清掉文件狀態', 'view=' + arState.kbView);
+kbNewDoc();
+ck(arState.kbView === 'new', 'kbNewDoc() 進上傳頁', 'view=' + arState.kbView);
+ck(arState.kbUploadNote === '', '跳頁會清掉上一次的上傳說明');
+arState.kbView = 'list';
 
 console.log('\n[4] 命中測試分頁');
 arState.settings = FX.settings;
@@ -678,6 +794,24 @@ try {
          + (bal.ok ? '' : ' div 不成對 ' + bal.o + '/' + bal.c));
     finalHtml += h;
   });
+  // 知識庫四個頁面各自都要乾淨（一頁一件事，四頁都要能被渲染出來）
+  arState.tab = 'kb';
+  arState.kbCollection = CID;
+  arState.kbUngrouped = false;
+  arState.kbDocs = [docMine, docOther, docNoCol];
+  [['list', null], ['docs', null], ['new', null],
+   ['doc', FX.document || { doc: docMine, stats: {}, chunks: [] }]].forEach(function (pair) {
+    arState.kbView = pair[0];
+    if (pair[1]) arState.kbDoc = pair[1];
+    const h = kbTabHtml();
+    const bad = badHtml(h);
+    const bal = divBalance(h);
+    ck(typeof h === 'string' && h.length > 100 && bad.length === 0 && bal.ok,
+       '知識庫四頁：' + pair[0], h.length + ' 字' + (bad.length ? ' 壞字串=' + bad.join('、') : '')
+         + (bal.ok ? '' : ' div 不成對 ' + bal.o + '/' + bal.c));
+  });
+  arState.kbView = 'list';
+  arState.kbDoc = null;
 } catch (e) {
   ck(false, '六個分頁全渲染時丟出例外', String(e && e.stack ? e.stack.split('\n')[0] : e));
 }

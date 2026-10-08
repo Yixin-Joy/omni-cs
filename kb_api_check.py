@@ -278,6 +278,42 @@ with TestClient(main.app) as c:
     r = c.post("/console/kb/collections/delete", json={"id": cid})
     check(r.status_code == 200, "清空後可刪知識庫")
 
+    print("\n[7b] 未分組文件（UI 的「未分組」頁靠這個）")
+    # 為什麼要專測：collection_id 在 DB 是 NULL，用 0 去查會一條都查不到。
+    with open(os.path.join(TMP, "api_manual.md"), "rb") as f:
+        blob = f.read()
+    r = c.post("/console/kb/upload",
+               files=[("files", ("api_ungrouped.md", blob, "text/markdown"))],
+               data={"auto_start": "0"})       # 不帶 collection_id = 未分組
+    ug_id = next((x["doc_id"] for x in body(r).get("results", []) if x.get("ok")), None)
+    check(bool(ug_id), "上傳一份不帶知識庫的文件（未分組）", f"doc#{ug_id}")
+
+    if ug_id:
+        # ⚠ 這裡要自己開一顆目標庫：[7] 的 cid 在收尾時已經被刪掉了，
+        #   拿它當搬移目標會 400，文件留在未分組，斷言就會假失敗。
+        r = c.post("/console/kb/collections/create", json={"name": "端點驗證庫-未分組歸位"})
+        ug_cid = body(r)["collection"]["id"]
+        try:
+            mine = body(c.get("/console/kb/documents?ungrouped=1"))["documents"]
+            check(any(x["id"] == ug_id for x in mine), "GET /documents?ungrouped=1 找得到它")
+            check(all(not x.get("collection_id") for x in mine), "ungrouped 清單裡都沒有 collection_id")
+            in_col = body(c.get(f"/console/kb/documents?collection_id={ug_cid}"))["documents"]
+            check(not any(x["id"] == ug_id for x in in_col), "它不會出現在知識庫的清單裡")
+            check(not any(x["id"] == ug_id for x in body(c.get("/console/kb/documents"))["documents"]
+                          if x.get("collection_id")), "「全部」清單裡它也是無歸屬的那一筆")
+            ug_n = body(c.get("/console/kb/overview"))["totals"].get("ungrouped_docs")
+            check(isinstance(ug_n, int) and ug_n >= 1, "overview 提供 ungrouped_docs 計數", f"={ug_n}")
+            # 搬進知識庫後就不該再出現在未分組清單
+            r = c.post("/console/kb/document/move", json={"id": ug_id, "collection_id": ug_cid})
+            check(r.status_code == 200, "把未分組文件搬進知識庫", f"#{ug_cid}")
+            left = body(c.get("/console/kb/documents?ungrouped=1"))["documents"]
+            check(not any(x["id"] == ug_id for x in left), "搬進知識庫後離開未分組清單")
+            now_in = body(c.get(f"/console/kb/documents?collection_id={ug_cid}"))["documents"]
+            check(any(x["id"] == ug_id for x in now_in), "搬進去後出現在新知識庫的清單")
+        finally:
+            c.post("/console/kb/document/delete", json={"id": ug_id})
+            c.post("/console/kb/collections/delete", json={"id": ug_cid})
+
     print("\n[8] 端點齊全性（路由存在）")
     for path in ("/console/kb/overview", "/console/kb/collections", "/console/kb/params",
                  "/console/kb/documents", "/console/kb/doc-types", "/console/kb/search",
@@ -374,6 +410,17 @@ with TestClient(main.app) as c:
                "onFaqSearchInput", "kbMoveDoc", "openKbParams"):
         check(("function " + fn) in html, f"前端函式 {fn} 已定義")
     check("kbParamsOverlay" in html, "參數配置彈窗標記存在")
+
+    # 知識庫是四層「跳轉」的頁面，不是一頁塞滿
+    for fn in ("kbListPageHtml", "kbDocsPageHtml", "kbDocPageHtml", "kbNewPageHtml",
+               "kbCrumbs", "kbGoList", "kbOpenCollection", "kbOpenUngrouped",
+               "kbNewDoc", "kbBackToDocs", "kbForgetDoc"):
+        check(("function " + fn) in html, f"知識庫分頁函式 {fn} 已定義")
+    check("function kbWizardHtml" not in html, "舊的單頁向導 kbWizardHtml 已移除")
+    check("kbDocFilter" not in html and "kbUploadTarget" not in html,
+          "舊的「同一頁篩選/上傳目標」控制項已移除")
+    check("kbUngrouped" in html and "ungrouped=1" in html, "前端會呼叫未分組清單")
+    check('id="kbParamTarget"' in html, "參數彈窗自帶知識庫切換（不必先選好再開）")
 
 print("\n" + "=" * 72)
 print(f" 結果：{'全部通過 ✅' if not FAIL else str(len(FAIL)) + ' 項失敗'}")

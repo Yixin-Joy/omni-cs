@@ -370,9 +370,16 @@ def get_document(did: int) -> dict | None:
 
 
 def list_documents(collection_id: int | None = None, status: str = "",
-                   limit: int = 500) -> list[dict]:
+                   limit: int = 500, ungrouped: bool = False) -> list[dict]:
+    """列文件。ungrouped=True 只列沒有歸屬知識庫的（collection_id IS NULL）。
+
+    ⚠ collection_id 不能用 0 代表「未分組」—— DB 存的是 NULL，
+       `collection_id=0` 會一條都查不到。
+    """
     where, params = [], []
-    if collection_id is not None:
+    if ungrouped:
+        where.append("d.collection_id IS NULL")
+    elif collection_id is not None:
         where.append("d.collection_id=%s")
         params.append(collection_id)
     if status:

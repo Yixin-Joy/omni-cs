@@ -101,6 +101,7 @@ async def overview():
     totals = await asyncio.to_thread(kb_db.query, """
         SELECT (SELECT count(*) FROM kb_document)                          AS documents,
                (SELECT count(*) FROM kb_document WHERE status='ready')     AS ready_docs,
+               (SELECT count(*) FROM kb_document WHERE collection_id IS NULL) AS ungrouped_docs,
                (SELECT count(*) FROM kb_chunk)                             AS chunks,
                (SELECT count(*) FROM kb_chunk WHERE embedding_status='done') AS embedded
     """)
@@ -235,9 +236,11 @@ async def upload(files: list[UploadFile] = File(...),
 
 
 @router.get("/documents")
-async def documents(collection_id: str = "", status: str = ""):
+async def documents(collection_id: str = "", status: str = "", ungrouped: str = ""):
+    # ungrouped=1 → 只列沒有歸屬知識庫的文件（collection_id IS NULL）
     cid = int(collection_id) if str(collection_id).strip().isdigit() else None
-    docs = await asyncio.to_thread(kb_db.list_documents, cid, status)
+    is_ung = str(ungrouped).strip() not in ("", "0", "false", "False")
+    docs = await asyncio.to_thread(kb_db.list_documents, cid, status, 500, is_ung)
     for d in docs:
         d["running"] = _is_running(int(d["id"]))
     return _ok({"documents": docs})
