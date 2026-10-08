@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+from collections import Counter as _Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -24,6 +25,7 @@ import kb_db
 import kb_ingest
 import kb_chunk
 import kb_parse
+import rag_config
 
 TMP = os.path.join(HERE, "_p1_samples")
 os.makedirs(TMP, exist_ok=True)
@@ -207,6 +209,67 @@ for fn, dt in (("manual.pdf", "pdf"), ("manual.docx", "docx"), ("price.xlsx", "x
     check(ok, f"{fn}: {len(cs)} 塊，長度 {min(sizes)}~{max(sizes)}",
           f"策略={kb_chunk.resolve_strategy(dt, 'auto')}")
 
+# ---------- 1b) 分塊不得丟內容（回歸測試） ----------
+# 這裡是踩過的坑：`_pack()` 舊寫法在累積途中用「尾端 overlap 字」整個取代緩衝區，
+# 把還沒收成塊的內容直接丟掉 —— 600 字進、281 字出，整段消失（epro-bridge 手冊
+# 4796 字只剩 2125 字就是這個原因）。重疊只允許「重複」，不允許「變少」。
+print("\n[1b] 分塊不得丟內容（重疊 ≠ 截斷）…")
+_long_paras = [kb_parse.Block(f"第{i}段" + "內容" * 90) for i in range(1, 5)]   # 每段 ~183 字
+_src_chars = sum(len(b.text) for b in _long_paras)
+_src_pool = _Counter("".join(b.text for b in _long_paras))
+for strat, dt in (("paragraph", "txt"), ("heading", "md"), ("table_row", "csv"),
+                  ("fixed", "txt")):
+    for ov in (0, 60):
+        cs = kb_chunk.chunk_blocks(_long_paras, doc_type=dt, title="t",
+                                   params={"chunk_strategy": strat, "chunk_size": 300,
+                                           "chunk_min": 120, "chunk_max": 400,
+                                           "chunk_overlap": ov, "chunk_prefix": False})
+        total = sum(len(c.body) for c in cs)
+        whole = "\n".join(c.body for c in cs)
+        # 通用條件：字元總量不得少於原文（重疊只會變多），且每個字元的出現次數
+        # 都不少於原文 —— 這條對「任何」策略都成立。
+        pool_ok = _Counter(whole) >= _src_pool
+        check(total >= _src_chars and pool_ok,
+              f"{strat}(重疊 {ov})：{len(cs)} 塊，內文 {total} 字 ≥ 原始 {_src_chars}",
+              f"字元總量不足={not pool_ok}")
+        if strat != "fixed":
+            # ⚠️ `fixed` 是「無冗餘平鋪」（overlap=0 時）：段落橫跨切點就不會完整
+            #    落在任何單一塊裡，所以「逐段完整」只對有結構的 pack 策略成立。
+            missing = [i + 1 for i, b in enumerate(_long_paras) if b.text not in whole]
+            check(not missing, f"{strat}(重疊 {ov})：每一段都完整保留",
+                  f"丟失的段落={missing or '無'}")
+        over = [len(c.body) for c in cs if len(c.body) > 400]
+        check(not over, f"{strat}(重疊 {ov})：塊長不超過 chunk_max=400", f"超標={over}")
+
+# 超長單段（> hi）走 _split_long，同樣不能少字
+_huge = kb_parse.Block("這是一段很長的話。" * 200)      # 1800 字
+for ov in (0, 80):
+    cs = kb_chunk.chunk_blocks([_huge], doc_type="txt", title="t",
+                               params={"chunk_strategy": "paragraph", "chunk_size": 300,
+                                       "chunk_min": 100, "chunk_max": 300,
+                                       "chunk_overlap": ov, "chunk_prefix": False})
+    total = sum(len(c.body) for c in cs)
+    check(total >= len(_huge.text) - ov - 10,      # 尾端可能少一點點重疊，但不該整段消失
+          f"超長單段(重疊 {ov})：{len(cs)} 塊，內文 {total} 字 ≥ 原始 {len(_huge.text)}",
+          f"最大塊={max((len(c.body) for c in cs), default=0)}")
+    check(all(len(c.body) <= 300 for c in cs),
+          f"超長單段(重疊 {ov})：塊長都 ≤ chunk_max",
+          f"最大塊={max((len(c.body) for c in cs), default=0)}")
+
+# 尾端小碎塊被併回「前一塊」時，不可以把它開頭的重疊留在裡面（會自己重複自己）
+#   場景：一塊剛好收成（≥ target）→ 剩下的零頭 < lo → 併回去。
+#   舊版沒有記「這塊開頭放了多少重疊」，併回去就變成「同一段內容出現兩次」。
+_b1 = kb_parse.Block("第一段" * 85)      # 255 字 → 收成一塊
+_b2 = kb_parse.Block("尾巴一句話。")      # 6 字  → 太小，會被併回上一塊
+_cs = kb_chunk.chunk_blocks([_b1, _b2], doc_type="txt", title="t",
+                            params={"chunk_strategy": "paragraph", "chunk_size": 200,
+                                    "chunk_min": 200, "chunk_max": 400,
+                                    "chunk_overlap": 60, "chunk_prefix": False})
+_expect = _b1.text + "\n" + _b2.text
+check(len(_cs) == 1 and _cs[0].body == _expect,
+      "零頭併回前一塊時會去掉重疊（不會自己重複自己）",
+      f"{len(_cs)} 塊 / body {len(_cs[0].body) if _cs else 0} 字（預期 {len(_expect)}）")
+
 # 代碼塊不被切斷（md）
 md_chunks = kb_chunk.chunk_blocks(
     kb_parse.parse(os.path.join(TMP, "faq.md")).blocks, doc_type="md", title="faq",
@@ -233,6 +296,10 @@ if old:
 check(bool(cid), f"知識庫就緒 #{cid}")
 
 # 參數覆寫（★ 檢索參數全庫共用；分塊參數才按知識庫）
+# ⚠️ 檢索參數是**全域**的 → 這裡寫的會蓋到正式設定，所以先存原值、後面還原。
+#    沒有還原的話，使用者調好的 min_score / top_k 會被清成預設（踩過）。
+_saved_global = {k: kb_db.get_global_param_overrides().get(k) for k in ("top_k", "min_score")}
+_saved_chunk = {k: kb_db.get_param_overrides(cid).get(k) for k in ("chunk_size",)}
 kb_db.set_params(cid, {"top_k": 5, "min_score": "0.5", "chunk_size": 300})
 p = kb_db.load_params(cid)
 check(p["top_k"] == 5 and abs(p["min_score"] - 0.5) < 1e-9 and p["chunk_size"] == 300,
@@ -246,8 +313,17 @@ if other_cid:
           f"other#{other_cid}: top_k={po['top_k']} min_score={po['min_score']}")
 kb_db.set_params(cid, {"top_k": None, "min_score": None, "chunk_size": None})
 p = kb_db.load_params(cid)
-check(p["top_k"] == 6 and p["chunk_size"] == 500, "刪除覆寫後回到預設",
-      f"top_k={p['top_k']} size={p['chunk_size']}")
+# 檢索參數清掉覆寫後會回到「這個人原本設定的值」（沒有才是預設），所以不能硬比 6
+_expect_topk = rag_config.coerce("top_k", _saved_global.get("top_k") or 6)
+check(p["top_k"] == _expect_topk and p["chunk_size"] == 500,
+      "刪除覆寫後回到原本的值（檢索回原設定、分塊回預設）",
+      f"top_k={p['top_k']}（預期 {_expect_topk}）size={p['chunk_size']}")
+# 還原成自檢前的正式全域設定（None = 本來就沒覆寫 → 刪掉）
+kb_db.set_params(None, dict(_saved_global, **_saved_chunk))
+_p = kb_db.get_global_param_overrides()
+check(all(_p.get(k) == _saved_global.get(k) for k in ("top_k", "min_score")),
+      "自檢沒有改動正式的全域檢索參數",
+      f"top_k={_p.get('top_k')} min_score={_p.get('min_score')}")
 
 doc_ids = []
 for fn in ("manual.pdf", "manual.docx", "price.xlsx", "faq.md", "warranty.txt", "stores.csv"):
