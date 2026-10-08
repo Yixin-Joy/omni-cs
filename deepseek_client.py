@@ -2,10 +2,25 @@
 
 模型預設 `deepseek-flash`（可用 `DEEPSEEK_MODEL` 覆寫）。只依賴 httpx，
 與本專案其餘部分一致；所有呼叫都是 async，避免阻塞 webhook。
+
+⚠️ **兩類呼叫要分開對待（2026-10-08 實測 48.93 秒後定案）**：
+
+    必要呼叫（生成答案）   → 一般超時（DEEPSEEK_TIMEOUT），失敗可重試一次
+    輔助呼叫（改寫問句）   → **短超時 + 不重試**（`AUX_TIMEOUT`，預設 5 秒）
+
+    理由：改寫只是「錦上添花」，失敗就沿用原問句即可；但用 30 秒超時 + 自動重試，
+    一次 ReadTimeout 就會吃掉 **60 秒**（實測就是這樣），把整則回覆拖垮。
+
+另外閘道常有限流（實測公司 LiteLLM 回 `max_parallel_requests` 429）：
+`_GATE` 信號量把同時的呼叫數壓在 `DEEPSEEK_MAX_CONCURRENCY` 之內，
+429 則依 `Limit resets at` 退避後重試。
 """
 import asyncio
 import json
 import logging
+import re
+import threading
+import time
 
 import httpx
 
@@ -26,6 +41,80 @@ NO_ANSWER_SENTINEL = "__NO_ANSWER__"
 
 # 使用者名稱若被誤當 API Key 填入，這裡做最後一道辨識
 _API_KEY_PREFIX = "sk-"
+
+# ---------- 併發閘門 ----------
+# 為什麼要自己做：閘道端有 `max_parallel_requests` 限流（實測 =2），
+# 超了就回 429。與其讓每個呼叫各自撞牆，不如在本地先排隊。
+_GATE: asyncio.Semaphore | None = None
+_GATE_LIMIT = 0                  # ⚠️ 必須在 _gate() 之前宣告（它是模組全域，被函式讀寫）
+_GATE_LOCK = threading.Lock()
+
+
+def _gate() -> asyncio.Semaphore:
+    """（惰性建立）全域併發信號量。
+
+    ⚠️ asyncio.Semaphore 綁定事件迴圈，所以每個迴圈各建一個 —— 服務是單一
+    事件迴圈，正常只會建一次；測試腳本反覆 asyncio.run() 也不會拿到舊迴圈的物件。
+    """
+    global _GATE, _GATE_LIMIT
+    limit = max(1, int(config.DEEPSEEK_MAX_CONCURRENCY or 1))
+    with _GATE_LOCK:
+        if _GATE is None or _GATE_LIMIT != limit:
+            _GATE = asyncio.Semaphore(limit)
+            _GATE_LIMIT = limit
+        return _GATE
+
+# ---------- 呼叫觀察鉤子 ----------
+# 給呼叫端（reply_engine）統計「這次請求呼叫了幾次模型、各花多久」用。
+# 用 contextvar：自動回復是併發的，兩則訊息同時跑時不能互相蓋掉。
+import contextvars as _contextvars
+
+_CALL_HOOK: "_contextvars.ContextVar" = _contextvars.ContextVar(
+    "deepseek_call_hook", default=None)
+
+
+def set_call_hook(fn):
+    """註冊觀察者：每次呼叫後以 (ok, seconds, error) 回呼。回傳 token 供還原。"""
+    return _CALL_HOOK.set(fn)
+
+
+def reset_call_hook(token) -> None:
+    try:
+        _CALL_HOOK.reset(token)
+    except (ValueError, LookupError):
+        pass
+
+
+def _notify(ok: bool, seconds: float, err: Exception | None = None) -> None:
+    fn = _CALL_HOOK.get()
+    if fn is None:
+        return
+    try:
+        fn(ok, seconds, err)
+    except Exception:            # 觀察者壞掉不該影響主流程
+        pass
+
+
+# 429 的「額度幾點重置」→ 退避秒數（抓不到就用預設）
+# ⚠️ 只寫 `resets?_at` 會漏掉閘道實際用的「Limit resets at: …」（有空格），
+#    退避時間就永遠走預設值。這裡放寬成「reset 之後 24 字內的時間戳」，容錯優先。
+_RESET_RE = re.compile(
+    r"reset\w{0,3}[^\d]{0,12}(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", re.I)
+
+
+def _retry_after(err: Exception, default: float) -> float:
+    """從錯誤訊息推算該等多久再試（只認 429 的 reset 時間，其他用固定退避）。"""
+    m = _RESET_RE.search(str(err))
+    if m:
+        try:
+            from datetime import datetime, timezone
+            ts = m.group(1).replace("T", " ")
+            when = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            wait = (when - datetime.now(timezone.utc)).total_seconds() + 0.5
+            return max(0.5, min(wait, 15.0))     # 最多等 15 秒，別把請求吊死
+        except Exception:
+            pass
+    return default
 
 
 def api_key() -> str:
@@ -58,26 +147,37 @@ class DeepSeekClient:
         self.model = (model or config.DEEPSEEK_MODEL or DEFAULT_MODEL).strip()
         self.timeout = float(timeout or config.DEEPSEEK_TIMEOUT or 30)
 
-    async def complete(self, messages: list, temperature: float = 0.0) -> str:
+    async def complete(self, messages: list, temperature: float = 0.0, *,
+                       timeout: float | None = None, retries: int | None = None) -> str:
         """送出一輪對話，回傳模型輸出文字。
 
-        網路類錯誤（連線中斷 / 逾時）自動重試一次：這類錯誤多半是暫時的，
-        重試一下就成功，可避免白白降級到人工。
+        `timeout` / `retries` 可**單次覆寫**（改寫類呼叫走短超時、不重試 —— 見模組說明）。
+
+        網路類錯誤（連線中斷 / 逾時）預設自動重試一次：這類錯誤多半是暫時的。
+        ⚠️ 但重試會讓最壞耗時變成兩倍（30 秒超時 → 60 秒），所以呼叫端若覺得
+        「失敗了也無所謂」，就該傳 `retries=0`。
         """
+        max_tries = 1 if retries is None else max(0, int(retries)) + 1
         last_error: Exception | None = None
-        for attempt in range(2):
+        t0 = time.perf_counter()
+        for attempt in range(max_tries):
             try:
-                return await self._complete_once(messages, temperature)
+                out = await self._complete_once(messages, temperature, timeout=timeout)
+                _notify(True, time.perf_counter() - t0)
+                return out
             except DeepSeekError as e:
                 last_error = e
-                if attempt == 0 and _is_transient(e):
-                    log.warning("DeepSeek 呼叫暫時失敗，重試一次：%s", e)
-                    await asyncio.sleep(0.8)
+                if attempt + 1 < max_tries and _is_transient(e):
+                    wait = 0.8 if not _is_rate_limited(e) else _retry_after(e, 2.0)
+                    log.warning("DeepSeek 呼叫暫時失敗，%.1fs 後重試：%s", wait, str(e)[:120])
+                    await asyncio.sleep(wait)
                     continue
+                _notify(False, time.perf_counter() - t0, e)
                 raise
         raise last_error  # pragma: no cover
 
-    async def _complete_once(self, messages: list, temperature: float = 0.0) -> str:
+    async def _complete_once(self, messages: list, temperature: float = 0.0,
+                             timeout: float | None = None) -> str:
         if not self.api_key:
             raise DeepSeekError("尚未配置 DeepSeek API Key（請在 .env 填 DEEPSEEK_API_KEY）")
 
@@ -93,9 +193,11 @@ class DeepSeekClient:
             "stream": False,
         }
 
+        # 本地先排隊，別讓併發量超過閘道限流（否則每個呼叫都撞 429）
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, headers=headers, json=payload)
+            async with _gate():
+                async with httpx.AsyncClient(timeout=float(timeout or self.timeout)) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
         except httpx.HTTPError as e:
             # httpx 的某些例外 str() 是空的，補上型別名方便排查
             raise DeepSeekError(f"連線失敗：{type(e).__name__}{f'（{e}）' if str(e) else ''}") from e
@@ -122,6 +224,14 @@ class DeepSeekClient:
             [{"role": "user", "content": "請只回覆「OK」兩個字。"}], temperature=0.0
         )
 
+    @property
+    def aux_timeout(self) -> float:
+        """輔助呼叫（改寫）的超時：短，且**不重試**。
+
+        改寫失敗沿用原問句就好，沒有必要為它等 30 秒甚至 60 秒。
+        """
+        return float(config.DEEPSEEK_AUX_TIMEOUT or 5)
+
     async def rewrite_query(self, question: str, faq_questions: list) -> str:
         """把口語化問題改寫成貼近 FAQ 風格的標準問句，只回傳問句本身。"""
         listed = "\n".join(f"- {q}" for q in faq_questions if q and str(q).strip())
@@ -132,6 +242,7 @@ class DeepSeekClient:
                 {"role": "user", "content": question},
             ],
             temperature=0.0,
+            timeout=self.aux_timeout, retries=0,
         )
         return clean_rewrite(out)
 
@@ -147,6 +258,7 @@ class DeepSeekClient:
         out = await self.complete(
             [{"role": "user", "content": system}],
             temperature=0.0,
+            timeout=self.aux_timeout, retries=0,
         )
         return clean_rewrite(out)
 
@@ -172,6 +284,7 @@ class DeepSeekClient:
         out = await self.complete(
             [{"role": "user", "content": prompt}],
             temperature=0.0,
+            timeout=self.aux_timeout, retries=0,
         )
         return clean_rewrite_list(out, limit=count, exclude=[question])
 
@@ -353,6 +466,11 @@ def _is_transient(err: Exception) -> bool:
     """這個錯誤是否可能重試就成功。"""
     msg = str(err).lower()
     return any(h.lower() in msg for h in _TRANSIENT_HINTS)
+
+
+def _is_rate_limited(err: Exception) -> bool:
+    """是不是被限流（429）—— 這種要等久一點，退避時間看閘道給的 reset 時間。"""
+    return "429" in str(err) or "rate limit" in str(err).lower()
 
 
 def safe_json(text: str):

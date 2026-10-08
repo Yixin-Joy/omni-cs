@@ -201,6 +201,17 @@ def log_manual_miss(channel: str, scope: str, *, text: str = "", detail: str = "
         log.warning("寫入人工未命中紀錄失敗: %s", e)
 
 
+def _usage(answer) -> dict:
+    """把這次決策的用量欄位抽出來，讓每筆 log 都能回答「為什麼這麼慢」。
+
+    一次知識庫回覆可能呼叫模型 8 次（實測 48.9 秒），光看 detail 看不出來；
+    紀錄頁有這三欄，就不用再靠猜。
+    """
+    return {"elapsed_ms": getattr(answer, "elapsed_ms", 0),
+            "llm_calls": getattr(answer, "llm_calls", 0),
+            "llm_seconds": getattr(answer, "llm_seconds", 0.0)}
+
+
 # ---------- 防護 ----------
 
 def _guard(conversation_key: str, ignore_cooldown: bool = False) -> str:
@@ -344,7 +355,8 @@ async def handle_inbound(
               "rewrote": answer.rewrote, "rewritten_query": answer.rewritten_query,
               "history_used": answer.history_used, "send_status": "not_sent",
               # ★ 未命中也要留召回明細：這才是調門檻／top-k 最需要的線索
-              "matched_rows": answer.matched_rows},
+              "matched_rows": answer.matched_rows,
+              **_usage(answer)},
              claim_key=claim_key)
         log.info("自動回復未命中（%s/%s）：%s", channel, scope, answer.reason)
         return {"state": STATE_MISS, "reason": answer.reason, "detail": answer.detail}
@@ -370,7 +382,7 @@ async def handle_inbound(
               "post_id": post_id, "comment_id": comment_id, "score": answer.score,
               "rewrote": answer.rewrote, "rewritten_query": answer.rewritten_query,
               "history_used": answer.history_used, "send_status": "failed",
-              "matched_rows": answer.matched_rows},
+              "matched_rows": answer.matched_rows, **_usage(answer)},
              claim_key=claim_key)
         return {"state": STATE_FAILED, "tier": answer.tier, "label": label,
                 "error": str(result.get("body"))[:300]}
@@ -442,7 +454,7 @@ async def handle_inbound(
           "score": answer.score, "rewrote": answer.rewrote,
           "rewritten_query": answer.rewritten_query, "history_used": answer.history_used,
           "matched_rows": answer.matched_rows,
-          "send_status": "sent"}, claim_key=claim_key)
+          "send_status": "sent", **_usage(answer)}, claim_key=claim_key)
     log.info("自動回復已送出（%s/%s，%s%s）：%s", channel, scope, label,
              "，改寫後命中" if answer.rewrote else "", answer.text[:60])
     return {"state": STATE_HIT, "tier": answer.tier, "label": label, "answer": answer.text,

@@ -678,6 +678,28 @@ ok(renderMatchedRows(oldRow, true), 'renderMatchedRows(舊資料沒有 queries)'
 ck(renderMatchedRows(oldRow, true).indexOf('命中查詢') < 0,
    '舊資料（無 queries）不會顯示命中查詢');
 
+console.log('\n[6c] 紀錄列的耗時與模型呼叫次數（為什麼要一分鐘，一眼看到）');
+const slowLog = { id: 901, created_at: '2026-10-08T15:57:10Z', channel: 'whatsapp',
+                  reply_scope: 'dm', tier: 'rag', label: '自動回復-知識庫命中',
+                  detail: '自動回復-知識庫命中（改寫後命中）', question: '有範例嗎？',
+                  answer: '有，如下…', reason: 'sent', send_status: 'sent',
+                  rewrote: true, rewritten_query: '目標系統接收訊息的範例',
+                  elapsed_ms: 48930, llm_calls: 8, llm_seconds: 46.88,
+                  has_matched_rows: false };
+const slowHtml = ok(logItemHtml(slowLog), 'logItemHtml(慢紀錄)', 120);
+has(slowHtml, '48.9s', '顯示總耗時');
+has(slowHtml, '8</b> 次', '顯示模型呼叫次數');
+has(slowHtml, '改寫問句', '改寫命中會標出改寫問句');
+// 舊紀錄沒有這三個欄位 → 不能顯示「耗時 0.0s」也不能炸
+const oldLog = Object.assign({}, slowLog, { elapsed_ms: 0, llm_calls: 0,
+                                            llm_seconds: 0, rewrote: false,
+                                            rewritten_query: '' });
+const oldHtml = ok(logItemHtml(oldLog), 'logItemHtml(舊紀錄無用量欄位)', 80);
+ck(oldHtml.indexOf('耗時') < 0, '沒有用量資料就不顯示耗時那一行');
+ck(oldHtml.indexOf('改寫問句') < 0, '沒有改寫就不顯示改寫問句');
+ok(logItemHtml(Object.assign({}, slowLog, { rewrote: true, rewritten_query: '' })),
+   'rewrote=true 但沒有改寫問句（多查詢）也要能畫', 80);
+
 console.log('\n[7] 紀錄頁');
 arState.settings = FX.settings;
 arState.logs = FX.logs.logs || [];
