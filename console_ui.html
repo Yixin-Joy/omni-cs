@@ -314,7 +314,7 @@
   .ar-btn[disabled] { opacity: .55; cursor: not-allowed; }
 
   /* 訊息 / 留言上的自動回復標記 */
-  .tag-auto-faq, .tag-auto-table, .tag-auto-miss, .tag-auto-fail {
+  .tag-auto-faq, .tag-auto-table, .tag-auto-rag, .tag-auto-miss, .tag-auto-fail {
     font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; white-space: nowrap;
   }
   .tag-auto-faq { color: #147d51; background: #e7f5ee; }
@@ -496,6 +496,85 @@
   .log-item .lg-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 3px; }
   .log-item .lg-time { color: var(--text-soft); font-size: 11px; }
   .log-item .lg-q { color: var(--text-soft); }
+  .log-item.clickable { cursor: pointer; }
+  .log-item.clickable:hover { border-color: var(--accent); }
+  .log-item.open { border-color: var(--accent); background: #fbfdff; }
+  .lg-detail {
+    margin-top: 8px; padding: 8px 10px; border-top: 1px dashed var(--border);
+    background: #fff; border-radius: 8px;
+  }
+
+  /* ---------- 知識庫（RAG 第三層） ---------- */
+  .tag-auto-rag { color: #6b21a8; background: #f3e8ff; }
+  .tag-state {
+    font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px;
+    background: #eef1f5; color: var(--text-soft); white-space: nowrap;
+  }
+  .tag-state.draft { background: #fef3c7; color: #92400e; }
+  .tag-state.ready { background: #e7f5ee; color: #147d51; }
+  .tag-state.err { background: #fdeaea; color: #b42318; }
+  .tag-state.busy { background: #e8f0fe; color: #1a5fb4; }
+
+  .kb-stat { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 4px; }
+  .kb-stat .ks { font-size: 11.5px; color: var(--text-soft); }
+  .kb-stat .ks b { display: block; font-size: 17px; color: var(--text); font-weight: 700; }
+
+  .kb-drop {
+    border: 2px dashed var(--border); border-radius: 11px; padding: 22px 14px; text-align: center;
+    color: var(--text-soft); font-size: 13px; background: #fafbfc; cursor: pointer;
+  }
+  .kb-drop:hover, .kb-drop.over {
+    border-color: var(--accent); background: var(--accent-soft); color: var(--accent-dark);
+  }
+
+  .kb-col {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--border);
+    border-radius: 9px; margin-bottom: 7px; background: #fafbfc; flex-wrap: wrap;
+  }
+  .kb-col.off { opacity: .62; }
+  .kb-col .kc-name { font-size: 13px; font-weight: 700; }
+  .kb-col .kc-sub { font-size: 11px; color: var(--text-soft); display: block; }
+
+  .kb-wiz-steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .kb-step {
+    font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+    background: #eef1f5; color: var(--text-soft);
+  }
+  .kb-step.on { background: var(--accent); color: #fff; }
+  .kb-step.done { background: #e7f5ee; color: #147d51; }
+
+  .kb-chunk {
+    border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; margin-bottom: 7px;
+    background: #fff; font-size: 12.5px;
+  }
+  .kb-chunk.off { background: #fafafa; }
+  .kb-chunk .ck-head {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 5px;
+    font-size: 11px; color: var(--text-soft);
+  }
+  .kb-chunk textarea {
+    width: 100%; border: 1px solid var(--border); border-radius: 7px; padding: 6px 7px;
+    font-family: inherit; font-size: 12.5px; line-height: 1.55; color: var(--text);
+    resize: vertical; background: #fff;
+  }
+  .kb-chunk textarea:focus { border-color: var(--accent); outline: none; }
+  .kb-chunk .ck-acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
+
+  .kb-src {
+    font-size: 11.5px; font-weight: 600; color: var(--accent-dark); background: var(--accent-soft);
+    padding: 1px 7px; border-radius: 8px;
+  }
+  .kb-hit {
+    border: 1px solid var(--border); border-left: 3px solid #cbd5e1; border-radius: 8px;
+    padding: 7px 10px; margin-bottom: 6px; font-size: 12.5px; line-height: 1.55;
+  }
+  .kb-hit.picked { border-left-color: var(--accent); background: #fbfdff; }
+  .kb-hit .kh-head {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 3px;
+  }
+  .kb-score { font-size: 11px; color: var(--text-soft); }
+  .kb-score b { color: var(--text); }
+  .kb-stage { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
 </style>
 </head>
 <body>
@@ -632,10 +711,29 @@ const arState = {
   settings: null,       // GET /console/autoreply/settings 的回應
   tab: 'autoreply',
   faqs: [],
+  faqQ: '',             // FAQ 全文搜尋字（後端 list_faqs(q) 過濾）
+  faqTotal: 0,
   tables: [],
   openTableId: null,
   logs: [],
+  openLogId: null,      // 展開中的紀錄（召回明細是點開才去撈的）
+  logDetail: null,
   scopeFilter: { channel: '', scope: '' },
+  // ---- 知識庫（第三層）----
+  kb: null,             // GET /console/kb/overview
+  kbCollection: 0,      // 目前檢視的知識庫（0 = 全部）
+  kbDocs: [],
+  kbDocId: 0,           // 向導開啟中的文件
+  kbDoc: null,          // GET /console/kb/document 的回應
+  kbPreview: null,      // 分塊預覽結果（未寫庫）
+  kbParams: null,       // GET /console/kb/params
+  kbParamCid: 0,        // 參數彈窗是針對哪個知識庫
+  kbBusy: '',
+  // ---- 命中測試 ----
+  ktResult: null,
+  ktLayers: { faq: true, table: true, rag: true },
+  ktSynced: false,      // 是否已照「自動回復」頁的實際開關對齊過
+  ktNoHistory: false,
 };
 
 const AR_CHANNEL_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
@@ -668,6 +766,12 @@ function autoTag(m) {
     const rw = (m.auto_reply_detail || '').includes('改寫後命中');
     return '<span class="tag-auto-table' + (rw ? ' rw' : '') + '" title="' + detail +
       '">' + pre + '自動回復-表格命中' + (rw ? '·改寫' : '') + '</span>';
+  }
+  if (m.auto_reply_tier === 'rag') {
+    // 知識庫命中；帶對話改寫 query 後才命中 → 加「·改寫」註記
+    const rw = (m.auto_reply_detail || '').includes('改寫後命中');
+    return '<span class="tag-auto-rag" title="' + detail + '">' + pre +
+      '自動回復-知識庫命中' + (rw ? '·改寫' : '') + '</span>';
   }
   return '';
 }
@@ -2296,7 +2400,7 @@ function switchSettingsTab(tab) {
      2. 真的要重繪時，先把「使用者改過 / 正在打字」的欄位值與焦點記下來，重繪後搬回去。 */
 
 // 這兩個區塊的內容是使用者操作後才產生的（不在產生的 html 裡），重繪時要一起搬回來
-const SP_LIVE_NODES = ['arTestResult', 'dsResult'];
+const SP_LIVE_NODES = ['dsResult', 'ktResult'];
 
 function spFieldKey(el, i) {
   if (el.id) return '#' + el.id;
@@ -2388,6 +2492,13 @@ function renderSettingsTab() {
   } else if (arState.tab === 'table') {
     html = tableTabHtml();
     after = function () { if (!arState.tables.length) loadTables(true); };
+  } else if (arState.tab === 'kb') {
+    html = kbTabHtml();
+    after = function () { if (!arState.kb) loadKbOverview(); };
+  } else if (arState.tab === 'hittest') {
+    ktSyncLayers();          // 先照「自動回復」頁的實際開關對齊（只做一次）
+    html = hittestTabHtml();
+    after = null;   // 結果由使用者按「開始測試」產生，切頁不自動跑（會打模型）
   } else {
     html = logsTabHtml();
     after = function () { if (!arState.logs.length) loadLogs(); };
@@ -2412,6 +2523,15 @@ function refreshDeepseekPill() {
 }
 
 /* ----- 分頁一：自動回復開關 ----- */
+
+// 第三層的規模摘要（後端 _kb_summary() 的形狀）；沒有知識庫時整層會自己降級
+function kbSummaryText(kb) {
+  if (!kb) return '尚未讀取知識庫狀態';
+  if (kb.error) return '讀取知識庫狀態失敗（不影響前兩層）';
+  if (!kb.collections) return '尚無啟用的知識庫 —— 這層會直接跳過';
+  return '知識庫 ' + kb.collections + ' 個 · 已上線文件 ' + kb.ready_documents +
+    ' / ' + kb.documents + ' 份 · 可檢索知識塊 ' + kb.chunks + ' 塊';
+}
 
 function autoreplyTabHtml() {
   const s = arState.settings;
@@ -2450,9 +2570,10 @@ function autoreplyTabHtml() {
     '</div>' +
 
     '<div class="card">' +
-      '<h3>兩層資料的停啟用</h3>' +
-      '<div class="hint">停用後，在自動回復開啟的前提下直接跳到下一層。' +
-      '兩層都停用（或都未命中）＝ 降級人工回復，該則訊息會標為「自動回復未命中，待處理」。</div>' +
+      '<h3>三層資料的停啟用</h3>' +
+      '<div class="hint">由上而下依序嘗試：FAQ 問答對 → 業務表格 → 知識庫。' +
+      '停用某層就在該層直接跳到下一層；三層都停用（或都未命中）＝ 降級人工回復，' +
+      '該則訊息會標為「自動回復未命中，待處理」。</div>' +
       '<div class="switch-row' + (s.faq_layer ? ' on' : '') + '">' +
         '<span class="sr-name">第一層：FAQ 問答對' +
           '<span class="sr-sub">共 ' + s.faq_count + ' 組，啟用中 ' + s.faq_enabled_count + ' 組</span>' +
@@ -2469,12 +2590,21 @@ function autoreplyTabHtml() {
           (s.table_layer ? '停用' : '啟用') + '</button>' +
         '<span class="pill ' + (s.table_layer ? 'on' : 'off') + '">' + (s.table_layer ? '啟用' : '停用') + '</span>' +
       '</div>' +
+      '<div class="switch-row' + (s.rag_layer ? ' on' : '') + '">' +
+        '<span class="sr-name">第三層：知識庫（RAG 檢索）' +
+          '<span class="sr-sub">' + kbSummaryText(s.kb) + '</span>' +
+        '</span>' +
+        '<button class="btn sm" onclick="setLayer(\'rag\',' + (!s.rag_layer) + ')">' +
+          (s.rag_layer ? '停用' : '啟用') + '</button>' +
+        '<span class="pill ' + (s.rag_layer ? 'on' : 'off') + '">' + (s.rag_layer ? '啟用' : '停用') + '</span>' +
+        '<button class="btn sm" onclick="openSettings(\'kb\')">管理知識庫</button>' +
+      '</div>' +
     '</div>' +
 
     '<div class="card">' +
       '<h3>DeepSeek</h3>' +
       '<div class="hint">API Key 由 .env 的 <code>DEEPSEEK_API_KEY</code> 提供；' +
-      '第二層業務表格匹配與 FAQ 問句改寫都靠它。</div>' +
+      '第二層業務表格、第三層知識庫的整理回答，以及 FAQ 問句改寫都靠它。</div>' +
       '<div class="row">' +
         '<span class="pill ' + (s.deepseek.configured ? 'on' : 'off') + '">' +
           (s.deepseek.configured ? esc(s.deepseek.masked_key) : '未設定 Key') + '</span>' +
@@ -2495,17 +2625,11 @@ function autoreplyTabHtml() {
     '</div>' +
 
     '<div class="card">' +
-      '<h3>試跑（不會發送任何訊息）</h3>' +
-      '<div class="hint">輸入一句客戶可能說的話，看看會走哪一層。</div>' +
-      '<div class="row">' +
-        '<input type="text" id="arTestText" placeholder="例如：你們營業到幾點？" ' +
-          'style="flex:1;min-width:220px;padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
-        '<select id="arTestTarget" style="padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
-          s.scopes.map(sc => '<option value="' + sc.channel + '|' + sc.scope + '">' + esc(sc.label) + '</option>').join('') +
-        '</select>' +
-        '<button class="btn primary" onclick="testEngine()">試跑</button>' +
-      '</div>' +
-      '<div id="arTestResult"></div>' +
+      '<h3>試跑會走哪一層</h3>' +
+      '<div class="hint">試跑移到「<b>命中測試</b>」分頁了 —— 那裡可以逐層勾選（預設照這頁的開關）、' +
+      '看到每一層的分數，知識庫那層還會列出每個候選塊的召回明細。' +
+      '一樣不會發送任何訊息、也不寫任何紀錄。</div>' +
+      '<div class="row"><button class="btn primary" onclick="openSettings(\'hittest\')">去命中測試</button></div>' +
     '</div>' +
 
     '<div class="card">' +
@@ -2538,36 +2662,6 @@ async function testDeepseek() {
   }
 }
 
-async function testEngine() {
-  const box = document.getElementById('arTestResult');
-  const text = (document.getElementById('arTestText').value || '').trim();
-  const sel = (document.getElementById('arTestTarget').value || '|').split('|');
-  if (!text) { alert('請先輸入測試訊息'); return; }
-  box.innerHTML = '<div class="test-result">分析中…（第二層會呼叫 DeepSeek，約需數秒）</div>';
-  try {
-    const res = await apiJson('/console/autoreply/test/engine',
-      { text: text, channel: sel[0], scope: sel[1] });
-    const d = res.data;
-    if (d.error) { box.innerHTML = '<div class="test-result">❌ ' + esc(d.error) + '</div>'; return; }
-    box.innerHTML = '<div class="test-result">' +
-      '<b>' + esc(d.label) + '</b>（tier=' + esc(d.tier) + '）\n' +
-      '是否會發送：' + (d.would_send ? '是' : '否（降級人工回復）') + '\n' +
-      (d.detail ? '說明：' + esc(d.detail) + '\n' : '') +
-      (d.matched_question ? '命中問法：' + esc(d.matched_question) + '\n' : '') +
-      (d.score != null ? '分數：' + d.score + '\n' : '') +
-      (d.rewritten_query ? '改寫後問句：' + esc(d.rewritten_query) +
-        (d.history_used ? '（帶入 ' + d.history_used + ' 則對話）' : '') + '\n' : '') +
-      ((d.history && d.history.length)
-        ? '參考的對話：\n' + d.history.map(h =>
-            '  ' + (h.direction === 'outbound' ? '客服' : '客戶') + '：' + esc(h.text)).join('\n') + '\n'
-        : '（沒有更早的對話可參考）\n') +
-      (d.text ? '\n回覆內容：\n' + esc(d.text) : '') +
-      '</div>';
-  } catch (e) {
-    box.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
-  }
-}
-
 async function loadStats() {
   try {
     const d = await api('/console/autoreply/stats');
@@ -2575,18 +2669,20 @@ async function loadStats() {
     if (!box) return;
     box.innerHTML = '<table class="data-table"><thead><tr>' +
       '<th>渠道</th><th>場景</th><th>開關</th><th>FAQ 命中</th><th>表格命中</th>' +
-      '<th title="業務表格第一次沒查到、帶對話改寫 query 後才命中">改寫救回</th>' +
+      '<th title="第三層知識庫檢索命中">知識庫命中</th>' +
+      '<th title="業務表格 / 知識庫第一次沒查到、帶對話改寫 query 後才命中">改寫救回</th>' +
       '<th>未命中</th><th>待處理</th></tr></thead><tbody>' +
       d.scopes.map(s => '<tr>' +
         '<td>' + esc(AR_CHANNEL_LABEL[s.channel] || s.channel) + '</td>' +
         '<td>' + (s.scope === 'dm' ? '私訊' : '貼文留言') + '</td>' +
         '<td><span class="pill ' + (s.enabled ? 'on' : 'off') + '">' + (s.enabled ? '開' : '關') + '</span></td>' +
         '<td>' + s.faq + '</td><td>' + s.table + '</td>' +
+        '<td>' + (s.rag || 0) + '</td>' +
         '<td>' + (s.rewritten || 0) + '</td>' +
         '<td>' + s.miss + '</td>' +
         '<td>' + (s.pending_miss ? '<span class="pill miss">' + s.pending_miss + '</span>' : '0') + '</td>' +
       '</tr>').join('') + '</tbody></table>' +
-      '<div class="hint" style="margin-top:8px">「改寫救回」＝業務表格第一次沒查到，' +
+      '<div class="hint" style="margin-top:8px">「改寫救回」＝第一次沒查到，' +
       '帶入最近對話讓模型改寫問句後才命中（這些原本會降級人工）。' +
       '累計 ' + (d.rewritten_total || 0) + ' 次。</div>';
   } catch (e) { /* 忽略 */ }
@@ -2615,6 +2711,17 @@ function faqTabHtml() {
         '<button class="btn" onclick="location.href=\'/console/autoreply/faq/template?fmt=xlsx\'">下載範本 xlsx</button>' +
         '<button class="btn" onclick="location.href=\'/console/autoreply/faq/template?fmt=csv\'">下載範本 csv</button>' +
         '<button class="btn" onclick="location.href=\'/console/autoreply/faq/export\'">匯出目前 FAQ</button>' +
+      '</div>' +
+      '<div class="row" style="margin-top:10px">' +
+        '<input type="text" id="faqQ" value="' + esc(arState.faqQ || '') + '" ' +
+          'placeholder="搜尋問題 / 答案 / 關鍵詞（即時過濾）" ' +
+          'oninput="onFaqSearchInput()" ' +
+          'style="flex:1;min-width:220px;padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
+        (arState.faqQ
+          ? '<button class="btn sm" onclick="clearFaqSearch()">清除</button>' +
+            '<span class="hint" style="margin:0">符合 ' + arState.faqs.length +
+            ' 組（全部 ' + (arState.faqTotal || 0) + ' 組）</span>'
+          : '<span class="hint" style="margin:0">共 ' + (arState.faqTotal || arState.faqs.length) + ' 組</span>') +
       '</div>' +
     '</div>' +
     '<div class="card">' +
@@ -2658,9 +2765,11 @@ function collectFaqs() {
 }
 
 async function loadFaqs() {
+  const q = (arState.faqQ || '').trim();
   try {
-    const d = await api('/console/autoreply/faq');
+    const d = await api('/console/autoreply/faq' + (q ? '?q=' + encodeURIComponent(q) : ''));
     arState.faqs = d.faqs || [];
+    arState.faqTotal = (d.total != null) ? d.total : arState.faqs.length;
   } catch (e) {
     arState.faqs = [];
   }
@@ -2668,6 +2777,40 @@ async function loadFaqs() {
     renderSettingsBody(faqTabHtml());
     refreshDeepseekPill();
   }
+}
+
+// FAQ 搜尋：打一個字就送一次查詢會太吵，等 250ms 停手再打
+let _faqSearchTimer = null;
+function onFaqSearchInput() {
+  const el = document.getElementById('faqQ');
+  if (!el) return;
+  arState.faqQ = el.value;
+  clearTimeout(_faqSearchTimer);
+  _faqSearchTimer = setTimeout(function () {
+    // 只更新表格本體，不整頁重繪 —— 否則輸入框會失焦、游標跳位
+    const box = document.getElementById('faqBody');
+    const q = (arState.faqQ || '').trim();
+    api('/console/autoreply/faq' + (q ? '?q=' + encodeURIComponent(q) : ''))
+      .then(function (d) {
+        arState.faqs = d.faqs || [];
+        arState.faqTotal = (d.total != null) ? d.total : arState.faqs.length;
+        if (box) {
+          box.innerHTML = arState.faqs.length
+            ? arState.faqs.map(faqRowHtml).join('')
+            : '<tr><td colspan="6"><div class="empty-note">沒有符合「' +
+              esc(q) + '」的問答對</div></td></tr>';
+        }
+        const el2 = document.getElementById('faqQ');
+        if (el2 && document.activeElement !== el2) return;   // 使用者已離開就不動
+      })
+      .catch(function () { /* 忽略 */ });
+  }, 250);
+}
+
+function clearFaqSearch() {
+  arState.faqQ = '';
+  arState.faqs = [];
+  loadFaqs();
 }
 
 async function saveAllFaqs() {
@@ -2905,7 +3048,937 @@ async function importTable(input, tableId) {
   }
 }
 
-/* ----- 分頁四：紀錄 ----- */
+/* ----- 分頁四：知識庫（第三層） ----- */
+
+const KB_STATUS = {
+  draft:     { text: '草稿（待確認入庫）', cls: 'draft' },
+  parsing:   { text: '解析中', cls: 'busy' },
+  chunking:  { text: '分塊中', cls: 'busy' },
+  embedding: { text: '向量化中', cls: 'busy' },
+  ready:     { text: '已上線', cls: 'ready' },
+  failed:    { text: '失敗', cls: 'err' },
+  disabled:  { text: '已停用', cls: 'err' },
+};
+
+const KB_RUN_LABEL = { 'parse+chunk': '解析分塊中…', 'reparse': '重新分塊中…', 'embedding': '向量化中…' };
+
+function kbDocTag(d) {
+  if (d.running) return '<span class="tag-state busy">' + esc(KB_RUN_LABEL[d.running] || '處理中…') + '</span>';
+  const st = KB_STATUS[d.status] || { text: d.status || '未知', cls: '' };
+  return '<span class="tag-state ' + st.cls + '">' + esc(st.text) + '</span>';
+}
+
+function kbTabHtml() {
+  const ov = arState.kb;
+  if (!ov) return '<div class="empty-note">知識庫狀態載入中…</div>';
+  const m = ov.model || {};
+  const t = ov.totals || {};
+  const cols = ov.collections || [];
+  const readyCols = cols.filter(c => c.enabled).length;
+
+  const colRows = cols.length ? cols.map(kbColRowHtml).join('')
+    : '<div class="empty-note">尚無知識庫。先按「＋ 新增知識庫」，再上傳文件。</div>';
+
+  const docRows = arState.kbDocs.length ? arState.kbDocs.map(kbDocRowHtml).join('')
+    : '<tr><td colspan="7"><div class="empty-note">' +
+      (arState.kbCollection ? '這個知識庫還沒有文件' : '還沒有任何文件，從下面把檔案拖進來') +
+      '</div></td></tr>';
+
+  const modelPill = m.downloaded
+    ? '<span class="pill on">模型已就緒</span>'
+    : '<span class="pill miss">模型未下載</span>';
+
+  return '' +
+    '<div class="card">' +
+      '<h3>知識庫概覽（第三層）</h3>' +
+      '<div class="hint">FAQ 與業務表格都沒命中時，會到知識庫做混合檢索（向量 + 字面），' +
+      '把最相關的幾塊交給 DeepSeek 整理成回覆；檢索不到就降級人工。' +
+      '文件要先「確認入庫」才會被搜到。</div>' +
+      '<div class="row">' +
+        modelPill +
+        '<span class="hint" style="margin:0">' + esc(m.model || '') +
+        ' · ' + (m.dim || '?') + ' 維 · 上限 ' + (m.max_tokens || '?') + ' token</span>' +
+        '<div class="spacer" style="flex:1"></div>' +
+        '<button class="btn sm" onclick="kbIndexStats()">看檢索索引規模</button>' +
+      '</div>' +
+      '<div class="kb-stat">' +
+        '<div class="ks">知識庫（啟用中）<b>' + cols.length + '（' + readyCols + '）</b></div>' +
+        '<div class="ks">文件<b>' + (t.documents || 0) + '</b></div>' +
+        '<div class="ks">已上線<b>' + (t.ready_docs || 0) + '</b></div>' +
+        '<div class="ks">知識塊<b>' + (t.chunks || 0) + '</b></div>' +
+        '<div class="ks">已完成向量<b>' + (t.embedded || 0) + '</b></div>' +
+      '</div>' +
+      '<div id="kbIndexNote"></div>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<h3>知識庫</h3>' +
+      '<div class="hint">每個知識庫有自己的一組檢索參數（可各自鬆緊）；' +
+      '停用的知識庫整庫不參與檢索。</div>' +
+      '<div class="row" style="margin-bottom:10px">' +
+        '<button class="btn primary" onclick="kbCreateCollection()">＋ 新增知識庫</button>' +
+        '<button class="btn" onclick="openKbParams()">參數配置</button>' +
+        '<select id="kbParamTarget" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+          '<option value="0">全域預設（.env）</option>' +
+          cols.map(c => '<option value="' + c.id + '"' +
+            (arState.kbParamCid === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>').join('') +
+        '</select>' +
+        '<button class="btn sm" onclick="kbReload()">重新讀取</button>' +
+        '<button class="btn sm" onclick="loadAutoSettings()">同步上方開關</button>' +
+      '</div>' +
+      colRows +
+    '</div>' +
+
+    '<div class="card">' +
+      '<h3>上傳文件</h3>' +
+      '<div class="hint">支援 ' + esc((ov.model && ov.model.doc_types || []).join('、') || 'PDF / Word / Excel / CSV / Markdown / TXT / HTML') +
+      '；單檔上限 ' + (ov.max_upload_mb || 50) + ' MB。' +
+      '上傳後會自動解析分塊（草稿狀態），不會馬上被搜到 —— 要審過內容再按「確認入庫」。</div>' +
+      '<div class="row" style="margin-bottom:8px">' +
+        '<span class="hint" style="margin:0">放進：</span>' +
+        '<select id="kbUploadTarget" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+          '<option value="">未分組</option>' +
+          cols.map(c => '<option value="' + c.id + '">' + esc(c.name) + '</option>').join('') +
+        '</select>' +
+        '<label class="btn" style="cursor:pointer">選擇檔案（可多選）' +
+          '<input type="file" multiple accept=".pdf,.docx,.xlsx,.xlsm,.csv,.md,.markdown,.txt,.html,.htm" ' +
+            'style="display:none" onchange="kbUploadFiles(this.files); this.value=\'\'"></label>' +
+      '</div>' +
+      '<div class="kb-drop" id="kbDropZone"' +
+        ' onclick="document.getElementById(\'kbPickAny\').click()"' +
+        ' ondragover="event.preventDefault(); this.classList.add(\'over\')"' +
+        ' ondragleave="this.classList.remove(\'over\')"' +
+        ' ondrop="kbDrop(event)">拖曳檔案到這裡，或點一下選檔' +
+        '<input type="file" id="kbPickAny" multiple style="display:none"' +
+        ' accept=".pdf,.docx,.xlsx,.xlsm,.csv,.md,.markdown,.txt,.html,.htm"' +
+        ' onchange="kbUploadFiles(this.files); this.value=\'\'">' +
+      '</div>' +
+      '<div id="kbUploadNote"></div>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<h3>文件清單</h3>' +
+      '<div class="row" style="margin-bottom:8px">' +
+        '<select id="kbDocFilter" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+          '<option value="0">全部知識庫</option>' +
+          cols.map(c => '<option value="' + c.id + '"' +
+            (arState.kbCollection === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>').join('') +
+        '</select>' +
+        '<button class="btn sm" onclick="kbLoadDocs()">套用</button>' +
+      '</div>' +
+      '<div class="tbl-wrap"><table class="data-table"><thead><tr>' +
+        '<th style="width:26%">檔案</th><th>知識庫</th><th style="width:96px">狀態</th>' +
+        '<th style="width:78px">知識塊</th><th style="width:88px">字數</th>' +
+        '<th style="width:130px">更新</th><th style="width:150px">操作</th>' +
+      '</tr></thead><tbody>' + docRows + '</tbody></table></div>' +
+    '</div>' +
+
+    (arState.kbDocId ? kbWizardHtml() : '');
+}
+
+function kbColRowHtml(c) {
+  return '<div class="kb-col' + (c.enabled ? '' : ' off') + '">' +
+    '<span style="flex:1;min-width:180px">' +
+      '<span class="kc-name">' + esc(c.name) + '</span>' +
+      '<span class="kc-sub">文件 ' + (c.doc_count || 0) + '（已上線 ' + (c.ready_count || 0) +
+        '）· 知識塊 ' + (c.chunk_count || 0) +
+        (c.description ? ' · ' + esc(c.description) : '') + '</span>' +
+    '</span>' +
+    '<span class="pill ' + (c.enabled ? 'on' : 'off') + '">' + (c.enabled ? '啟用' : '停用') + '</span>' +
+    '<button class="btn sm" onclick="kbRenameCollection(' + c.id + ')">改名</button>' +
+    '<button class="btn sm" onclick="kbToggleCollection(' + c.id + ',' + (!c.enabled) + ')">' +
+      (c.enabled ? '停用' : '啟用') + '</button>' +
+    '<button class="btn sm danger" onclick="kbDeleteCollection(' + c.id + ',' + (c.doc_count || 0) + ')">刪除</button>' +
+  '</div>';
+}
+
+function kbDocRowHtml(d) {
+  const col = d.collection_name ? esc(d.collection_name) : '<span class="hint">未分組</span>';
+  const open = arState.kbDocId === d.id;
+  return '<tr data-id="' + d.id + '">' +
+    '<td>' + esc(d.title || d.filename) +
+      (d.error ? '<span class="kc-sub" style="color:#b42318">' + esc(d.error) + '</span>' : '') +
+      '<span class="kc-sub">' + esc(d.filename) + ' · ' + fmtSize(d.size_bytes) +
+      ' · ' + esc(d.doc_type || '') + '</span></td>' +
+    '<td>' + col + '</td>' +
+    '<td>' + kbDocTag(d) + '</td>' +
+    '<td>' + (d.chunk_count || 0) + '</td>' +
+    '<td>' + (d.char_count || 0) + '</td>' +
+    '<td class="hint">' + fmtTime(d.updated_at) + '</td>' +
+    '<td>' +
+      '<button class="btn sm" onclick="kbOpenDoc(' + d.id + ')">' + (open ? '關閉' : '檢視 / 調塊') + '</button> ' +
+      (d.status === 'ready'
+        ? '<button class="btn sm" onclick="kbToggleDoc(' + d.id + ',' + (!d.enabled) + ')">' +
+            (d.enabled ? '停用' : '啟用') + '</button> '
+        : '') +
+      '<button class="btn sm danger" onclick="kbDeleteDoc(' + d.id + ')">刪除</button>' +
+    '</td>' +
+  '</tr>';
+}
+
+/* ----- 導入向導（單一文件的四步） ----- */
+
+function kbWizardHtml() {
+  const dd = arState.kbDoc;
+  if (!dd || !dd.doc) return '<div class="card"><div class="empty-note">讀取文件內容中…</div></div>';
+  // ⚠ `running`（背景任務）是掛在 /document 回應的**頂層**，不在 doc 裡面；
+  //    而 /documents 的列表是掛在每一份文件上。兩種來源要合併，否則向導看不到「處理中」。
+  const d = Object.assign({}, dd.doc, { running: dd.running || dd.doc.running || '' });
+  const st = dd.stats || {};
+  const pv = arState.kbPreview;
+  const chunks = dd.chunks || [];
+  const cid = d.collection_id || 0;
+  const params = kbCachedParams(cid);
+  const chunkSpecs = (params && params.chunk) || [];
+
+  const step = (n, label, cls) => '<span class="kb-step ' + cls + '">' + n + ' ' + label + '</span>';
+  const hasChunks = (st.total || 0) > 0;
+  const embedded = (st.done || 0) > 0;
+  const steps = '<div class="kb-wiz-steps">' +
+    step('①', '上傳', 'done') +
+    step('②', '解析分塊', hasChunks ? 'done' : (dd.running ? 'on' : '')) +
+    step('③', '向量化', (st.pending || 0) === 0 && embedded ? 'done' : (dd.running === 'embedding' ? 'on' : '')) +
+    step('④', '確認入庫', d.status === 'ready' ? 'done' : '') +
+  '</div>';
+
+  const paramInputs = chunkSpecs.length ? chunkSpecs.map(p => {
+    const id = 'kbP_' + p.key;
+    if (p.type === 'bool') {
+      return '<label class="hint" style="margin:0;display:flex;align-items:center;gap:5px">' +
+        '<input type="checkbox" id="' + id + '"' + (p.value ? ' checked' : '') + '>' + esc(p.label) + '</label>';
+    }
+    if (p.type === 'choice') {
+      return '<label class="hint" style="margin:0">' + esc(p.label) +
+        '<select id="' + id + '" style="margin-left:5px;padding:4px 7px;border:1px solid var(--border);border-radius:7px">' +
+        (p.choices || []).map(c => '<option value="' + esc(c) + '"' +
+          (c === p.value ? ' selected' : '') + '>' + esc(c) + '</option>').join('') +
+        '</select></label>';
+    }
+    return '<label class="hint" style="margin:0">' + esc(p.label) +
+      '<input type="number" id="' + id + '" value="' + p.value + '" min="' + p.min + '" max="' + p.max +
+      '" style="width:78px;margin-left:5px;padding:4px 7px;border:1px solid var(--border);border-radius:7px">' +
+      '</label>';
+  }).join(' ') : '<span class="hint" style="margin:0">讀取分塊參數中…</span>';
+
+  const previewNote = pv ? '<div class="test-result">' +
+    '用這組參數會切成 <b>' + pv.count + '</b> 塊' +
+    (pv.avg_chars ? '，平均 ' + pv.avg_chars + ' 字' : '') +
+    (pv.min_chars ? '（最短 ' + pv.min_chars + ' / 最長 ' + pv.max_chars + ' 字）' : '') +
+    '，策略 <b>' + esc(pv.strategy || '') + '</b>。下面是前 ' + (pv.chunks || []).length + ' 塊。' +
+    (pv.count > (pv.chunks || []).length ? '（只預覽前面幾塊，寫庫時會全部建立）' : '') +
+    '</div>' : '';
+
+  const previewList = pv ? (pv.chunks || []).map((c, i) =>
+    '<div class="kb-chunk"><div class="ck-head">' +
+      '<span class="kb-src">#' + (i + 1) + '</span>' +
+      '<span>' + c.char_count + ' 字</span>' +
+      (c.page_no ? '<span>第 ' + c.page_no + ' 頁</span>' : '') +
+      (c.heading_path ? '<span>' + esc(c.heading_path) + '</span>' : '') +
+      (c.sheet ? '<span>工作表 ' + esc(c.sheet) + '</span>' : '') +
+    '</div><div>' + esc(c.text) + '</div></div>').join('') : '';
+
+  const chunkList = hasChunks ? chunks.map(c =>
+    '<div class="kb-chunk' + (c.enabled ? '' : ' off') + '">' +
+      '<div class="ck-head">' +
+        '<span class="kb-src">#' + c.ordinal + '</span>' +
+        '<span>' + (c.char_count || 0) + ' 字</span>' +
+        (c.page_no ? '<span>第 ' + c.page_no + ' 頁</span>' : '') +
+        (c.sheet ? '<span>工作表 ' + esc(c.sheet) + '</span>' : '') +
+        (c.heading_path ? '<span>' + esc(c.heading_path) + '</span>' : '') +
+        '<span class="tag-state ' + (c.embedding_status === 'done' ? 'ready'
+          : (c.embedding_status === 'failed' ? 'err' : 'draft')) + '">' +
+          (c.embedding_status === 'done' ? '已向量化'
+            : (c.embedding_status === 'failed' ? '向量失敗' : '待向量化')) + '</span>' +
+        (c.edited ? '<span class="tag-state">手改過</span>' : '') +
+        (c.enabled ? '' : '<span class="tag-state err">已停用</span>') +
+      '</div>' +
+      '<textarea rows="3" id="kbC_' + c.id + '">' + esc(c.text) + '</textarea>' +
+      '<div class="ck-acts">' +
+        '<button class="btn sm primary" onclick="kbChunkSave(' + c.id + ')">儲存這塊</button>' +
+        '<button class="btn sm" onclick="kbChunkSplit(' + c.id + ')">從游標處拆分</button>' +
+        '<button class="btn sm" onclick="kbChunkMerge(' + c.id + ')">與下一塊合併</button>' +
+        '<button class="btn sm" onclick="kbChunkToggle(' + c.id + ',' + (!c.enabled) + ')">' +
+          (c.enabled ? '停用' : '啟用') + '</button>' +
+        '<button class="btn sm danger" onclick="kbChunkDelete(' + c.id + ')">刪除</button>' +
+      '</div>' +
+    '</div>').join('') : '<div class="empty-note">還沒有知識塊 —— 按「重新分塊」產生</div>';
+
+  const needEmbed = (st.pending || 0) + (st.failed || 0);
+  const canActivate = (st.done || 0) > 0 && needEmbed === 0;
+
+  return '<div class="card" style="border-color:var(--accent)">' +
+    '<h3>導入向導：' + esc(d.title || d.filename) + ' ' + kbDocTag(d) + '</h3>' +
+    steps +
+    '<div class="hint">' +
+      '知識塊的統計：共 <b>' + (st.total || 0) + '</b> 塊（啟用 ' + (st.enabled || 0) + '）· ' +
+      '已向量 <b>' + (st.done || 0) + '</b> · 待向量 <b>' + (st.pending || 0) + '</b>' +
+      (st.failed ? ' · 失敗 <b>' + st.failed + '</b>' : '') +
+      (st.edited ? ' · 手改過 <b>' + st.edited + '</b>' : '') +
+      '。共 ' + (d.char_count || 0) + ' 字。' +
+    '</div>' +
+
+    '<div class="row" style="margin:10px 0 4px;align-items:center">' +
+      '<b style="font-size:12.5px">分塊參數</b>' + paramInputs +
+    '</div>' +
+    '<div class="row">' +
+      '<button class="btn" onclick="kbPreviewChunks()">預覽分塊（不寫庫）</button>' +
+      '<button class="btn" onclick="kbReparse()">重新分塊（寫庫）</button>' +
+      '<span class="hint" style="margin:0">改了塊長 / 策略要重新分塊；手改過的塊會被覆蓋，會先問你。</span>' +
+    '</div>' +
+    previewNote +
+
+    '<div class="row" style="margin:12px 0 6px">' +
+      '<button class="btn primary" onclick="kbEmbed(\'pending\')"' +
+        (needEmbed ? '' : ' disabled') + '>開始 / 繼續向量化（待處理 ' + (st.pending || 0) +
+        (st.failed ? ' · 失敗 ' + st.failed : '') + '）</button>' +
+      '<button class="btn" onclick="kbEmbed(\'all\')">全部重跑向量</button>' +
+      '<button class="btn ' + (canActivate ? 'primary' : '') + '" onclick="kbActivate()"' +
+        (canActivate ? '' : ' disabled') + '>確認入庫（上線）</button>' +
+      '<span class="hint" style="margin:0">' +
+        (canActivate ? '所有知識塊都向量好了，可以上線。'
+                     : '還有 ' + needEmbed + ' 塊沒向量，先跑完再上線。') + '</span>' +
+    '</div>' +
+
+    (pv ? '<div style="margin-top:12px"><b style="font-size:12.5px">分塊預覽（草稿，未寫庫）</b>' +
+          previewList + '</div>' : '') +
+
+    (hasChunks ? '<div style="margin-top:12px"><b style="font-size:12.5px">已建立的知識塊（可直接改）</b>' +
+      chunkList + '</div>' : '') +
+
+    '<div class="row" style="margin-top:12px">' +
+      '<select id="kbMoveTo" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+        '<option value="">未分組</option>' +
+        ((arState.kb && arState.kb.collections) || [])
+          .filter(c => c.id !== (d.collection_id || 0))
+          .map(c => '<option value="' + c.id + '">' + esc(c.name) + '</option>').join('') +
+      '</select>' +
+      '<button class="btn" onclick="kbMoveDoc(' + d.id + ')">移到這個知識庫</button>' +
+      '<span style="flex:1"></span>' +
+      '<button class="btn" onclick="kbToggleDoc(' + d.id + ',' + (!d.enabled) + ')">' +
+        (d.enabled ? '停用這份文件' : '啟用這份文件') + '</button>' +
+      '<button class="btn danger" onclick="kbDeleteDoc(' + d.id + ')">刪除這份文件</button>' +
+      '<button class="btn sm" onclick="kbCloseDoc()">收起向導</button>' +
+    '</div>' +
+    '<div id="kbDocNote"></div>' +
+  '</div>';
+}
+
+/* ----- 知識庫：讀取 ----- */
+
+async function loadKbOverview(keepDocs) {
+  try {
+    const d = await api('/console/kb/overview');
+    arState.kb = d;
+    // 順便補上支援的副檔名（給上傳提示用）
+    if (!arState.kb.model) arState.kb.model = {};
+    if (!arState.kb.model.doc_types) {
+      try { const t = await api('/console/kb/doc-types'); arState.kb.model.doc_types = t.types || []; }
+      catch (e) { /* 忽略 */ }
+    }
+  } catch (e) {
+    arState.kb = { collections: [], totals: {}, model: {}, error: e.message };
+  }
+  if (!keepDocs) await kbLoadDocs();
+  if (arState.tab === 'kb') {
+    renderSettingsBody(kbTabHtml());
+    refreshDeepseekPill();
+  }
+}
+
+async function kbLoadDocs() {
+  const sel = document.getElementById('kbDocFilter');
+  const cid = sel ? sel.value : String(arState.kbCollection || 0);
+  arState.kbCollection = Number(cid) || 0;
+  try {
+    const d = await api('/console/kb/documents' + (arState.kbCollection ? '?collection_id=' + arState.kbCollection : ''));
+    arState.kbDocs = d.documents || [];
+  } catch (e) {
+    arState.kbDocs = [];
+  }
+  if (arState.tab === 'kb') {
+    renderSettingsBody(kbTabHtml());
+    kbMaybePoll();
+  }
+}
+
+async function kbReload() {
+  await loadKbOverview();
+  if (arState.kbDocId) await kbOpenDoc(arState.kbDocId, true);
+}
+
+// 有背景任務在跑就自動再撈一次（解析 / 向量化是背景執行緒，不會推播）
+let _kbPollTimer = null;
+function kbMaybePoll() {
+  const busy = (arState.kbDocs || []).some(d => d.running) ||
+               (arState.kbDoc && arState.kbDoc.running);
+  clearTimeout(_kbPollTimer);
+  if (!busy || arState.tab !== 'kb') return;
+  _kbPollTimer = setTimeout(function () {
+    if (arState.tab !== 'kb') return;
+    kbLoadDocs();
+    if (arState.kbDocId) kbOpenDoc(arState.kbDocId, true);
+  }, 2500);
+}
+
+function kbIndexStats() {
+  const box = document.getElementById('kbIndexNote');
+  if (box) box.innerHTML = '<div class="test-result">讀取中…</div>';
+  const cid = arState.kbCollection || '';
+  api('/console/kb/index-stats' + (cid ? '?collection_id=' + cid : ''))
+    .then(d => {
+      const s = d.stats || {};
+      if (box) box.innerHTML = '<div class="test-result">' +
+        '目前可檢索：<b>' + (s.chunks || 0) + '</b> 塊，來自 <b>' + (s.docs || 0) + '</b> 份文件' +
+        (s.dim ? '，向量 ' + s.dim + ' 維' : '') +
+        '。這是「已上線 + 已啟用 + 已向量化」才進得來的數字。</div>';
+    })
+    .catch(e => { if (box) box.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>'; });
+}
+
+/* ----- 知識庫：集合 CRUD ----- */
+
+async function kbCreateCollection() {
+  const name = prompt('新知識庫名稱（例如：產品保固條款）');
+  if (!name || !name.trim()) return;
+  const res = await apiJson('/console/kb/collections/create', { name: name.trim() });
+  if (res.data.error) { alert('新增失敗：' + res.data.error); return; }
+  await loadKbOverview(true);
+}
+
+async function kbRenameCollection(id) {
+  const cols = (arState.kb && arState.kb.collections) || [];
+  const cur = cols.find(c => c.id === id);
+  const name = prompt('新的名稱', cur ? cur.name : '');
+  if (!name || !name.trim() || (cur && name === cur.name)) return;
+  const res = await apiJson('/console/kb/collections/update', { id: id, name: name.trim() });
+  if (res.data.error) { alert('改名失敗：' + res.data.error); return; }
+  await loadKbOverview(true);
+}
+
+async function kbToggleCollection(id, enabled) {
+  const res = await apiJson('/console/kb/collections/update', { id: id, enabled: enabled });
+  if (res.data.error) { alert('設定失敗：' + res.data.error); return; }
+  await loadKbOverview(true);
+}
+
+async function kbDeleteCollection(id, docCount) {
+  const warn = docCount
+    ? '這個知識庫底下有 ' + docCount + ' 份文件。\n刪除知識庫不會刪掉文件，' +
+      '它們會變成「未分組」（也就不會被檢索到）。\n\n確定要刪嗎？'
+    : '確定刪除這個知識庫嗎？';
+  if (!confirm(warn)) return;
+  const body = { id: id };
+  if (docCount) body.force = true;      // 檔案數 > 0 時後端要 force 才肯刪
+  const res = await apiJson('/console/kb/collections/delete', body);
+  if (res.data.error) { alert(res.data.error); return; }
+  if (arState.kbCollection === id) arState.kbCollection = 0;
+  await loadKbOverview();
+}
+
+/* ----- 知識庫：上傳 ----- */
+
+function kbDrop(ev) {
+  ev.preventDefault();
+  const zone = document.getElementById('kbDropZone');
+  if (zone) zone.classList.remove('over');
+  const files = ev.dataTransfer && ev.dataTransfer.files;
+  if (files && files.length) kbUploadFiles(files);
+}
+
+async function kbUploadFiles(files) {
+  const note = document.getElementById('kbUploadNote');
+  const sel = document.getElementById('kbUploadTarget');
+  if (!files || !files.length) return;
+  const fd = new FormData();
+  if (sel && sel.value) fd.append('collection_id', sel.value);
+  fd.append('auto_start', '1');
+  for (let i = 0; i < files.length; i++) fd.append('files', files[i]);
+  if (note) note.innerHTML = '<div class="test-result">上傳中…（' + files.length + ' 個檔案）</div>';
+  try {
+    const r = await fetch('/console/kb/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    const ok = (d.results || []).filter(x => x.ok);
+    const bad = (d.results || []).filter(x => !x.ok);
+    let html = '';
+    if (ok.length) {
+      html += '<div class="test-result">✅ 已收下 ' + ok.length + ' 個檔案，正在背景解析分塊：\n' +
+        ok.map(x => '  · ' + esc(x.filename) + '（' + esc(x.doc_type || '') +
+          (x.duplicate_of ? '，與既有文件 #' + x.duplicate_of + ' 內容相同，已標為新版本' : '') + '）'
+        ).join('\n') + '\n分塊完成後請按「檢視 / 調塊」審一下內容再上線。</div>';
+    }
+    if (bad.length) {
+      html += '<div class="test-result">❌ ' + bad.length + ' 個檔案沒收下：\n' +
+        bad.map(x => '  · ' + esc(x.filename) + '：' + esc(x.error || '未知原因')).join('\n') + '</div>';
+    }
+    if (note) note.innerHTML = html || '<div class="test-result">沒有收到任何檔案</div>';
+    await loadKbOverview();
+    if (ok.length) await kbOpenDoc(ok[0].doc_id, true);
+  } catch (e) {
+    if (note) note.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+/* ----- 知識庫：單一文件 ----- */
+
+async function kbOpenDoc(docId, keepOpen) {
+  if (arState.kbDocId === docId && !keepOpen) { kbCloseDoc(); return; }
+  arState.kbDocId = docId;
+  arState.kbDoc = null;
+  arState.kbPreview = null;
+  if (arState.tab === 'kb') renderSettingsBody(kbTabHtml());
+  // 先確保有這個知識庫的分塊參數規格
+  try { await kbParamsFor(0); } catch (e) { /* 忽略 */ }
+  try {
+    const d = await api('/console/kb/document?id=' + docId + '&chunks=1&chunks_limit=600');
+    arState.kbDoc = d;
+    if (d.doc && d.doc.collection_id) { try { await kbParamsFor(d.doc.collection_id); } catch (e) { /* 忽略 */ } }
+  } catch (e) {
+    arState.kbDoc = { doc: { id: docId, filename: '（讀取失敗）', error: e.message }, stats: {} };
+  }
+  if (arState.tab === 'kb') { renderSettingsBody(kbTabHtml()); kbMaybePoll(); }
+}
+
+function kbCloseDoc() {
+  arState.kbDocId = 0;
+  arState.kbDoc = null;
+  arState.kbPreview = null;
+  if (arState.tab === 'kb') renderSettingsBody(kbTabHtml());
+}
+
+// 讀當前向導表單裡的分塊參數（只送 chunk 那組；其他沿用後端預設）
+function kbReadChunkParams() {
+  const out = {};
+  const specs = ((kbCachedParams((arState.kbDoc && arState.kbDoc.doc && arState.kbDoc.doc.collection_id) || 0) || {}).chunk) || [];
+  specs.forEach(function (p) {
+    const el = document.getElementById('kbP_' + p.key);
+    if (!el) return;
+    if (p.type === 'bool') out[p.key] = el.checked;
+    else if (p.type === 'choice') out[p.key] = el.value;
+    else out[p.key] = Number(el.value);
+  });
+  return out;
+}
+
+async function kbPreviewChunks() {
+  const d = arState.kbDoc && arState.kbDoc.doc;
+  if (!d) return;
+  const box = document.getElementById('kbDocNote');
+  if (box) box.innerHTML = '<div class="test-result">解析中…（大檔要幾秒）</div>';
+  try {
+    const res = await apiJson('/console/kb/document/preview',
+      { id: d.id, params: kbReadChunkParams(), limit: 8 });
+    if (res.data.error) { if (box) box.innerHTML = '<div class="test-result">❌ ' + esc(res.data.error) + '</div>'; return; }
+    arState.kbPreview = res.data;
+    renderSettingsBody(kbTabHtml());
+  } catch (e) {
+    if (box) box.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+async function kbReparse() {
+  const d = arState.kbDoc && arState.kbDoc.doc;
+  if (!d) return;
+  const params = kbReadChunkParams();
+  let body = { id: d.id, params: params };
+  let res = await apiJson('/console/kb/document/reparse', body);
+  if (res.data.error && res.data.error.indexOf('手動改過') >= 0) {
+    if (!confirm(res.data.error + '\n\n確定要繼續嗎？')) return;
+    body.force = true;
+    res = await apiJson('/console/kb/document/reparse', body);
+  }
+  if (res.data.error) { alert(res.data.error); return; }
+  arState.kbPreview = null;
+  await kbOpenDoc(d.id, true);
+}
+
+async function kbEmbed(mode) {
+  const d = arState.kbDoc && arState.kbDoc.doc;
+  if (!d) return;
+  if (mode === 'all' && !confirm('全部重跑會把所有知識塊的向量重算一次，確定嗎？')) return;
+  const res = await apiJson('/console/kb/document/embed', { id: d.id, mode: mode });
+  if (res.data.error) { alert(res.data.error); return; }
+  await kbOpenDoc(d.id, true);
+}
+
+async function kbActivate() {
+  const d = arState.kbDoc && arState.kbDoc.doc;
+  if (!d) return;
+  const res = await apiJson('/console/kb/document/activate', { id: d.id });
+  if (res.data.error) { alert('入庫失敗：' + res.data.error); return; }
+  await loadKbOverview(true);
+  await kbOpenDoc(d.id, true);
+}
+
+async function kbToggleDoc(id, enabled) {
+  const res = await apiJson('/console/kb/document/enabled', { id: id, enabled: enabled });
+  if (res.data.error) { alert('設定失敗：' + res.data.error); return; }
+  await kbLoadDocs();
+  if (arState.kbDocId === id) await kbOpenDoc(id, true);
+}
+
+async function kbDeleteDoc(id) {
+  if (!confirm('確定刪除這份文件？（知識塊與向量會一併刪除，不影響其他文件）')) return;
+  const res = await apiJson('/console/kb/document/delete', { id: id });
+  if (res.data.error) { alert('刪除失敗：' + res.data.error); return; }
+  if (arState.kbDocId === id) kbCloseDoc();
+  await loadKbOverview();
+}
+
+async function kbMoveDoc(id) {
+  const sel = document.getElementById('kbMoveTo');
+  const cid = sel ? Number(sel.value) || 0 : 0;
+  const res = await apiJson('/console/kb/document/move', { id: id, collection_id: cid || null });
+  if (res.data.error) { alert('搬移失敗：' + res.data.error); return; }
+  await loadKbOverview();
+  if (arState.kbDocId === id) await kbOpenDoc(id, true);
+}
+
+/* ----- 知識庫：知識塊微調 ----- */
+
+function kbChunkNote(html) {
+  const box = document.getElementById('kbDocNote');
+  if (box) box.innerHTML = html;
+}
+
+async function kbChunkSave(chunkId) {
+  const el = document.getElementById('kbC_' + chunkId);
+  if (!el) return;
+  const res = await apiJson('/console/kb/chunk/update', { id: chunkId, text: el.value });
+  if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
+  kbChunkNote('<div class="test-result">✅ 已儲存（這一塊的向量已標回「待向量化」，記得再跑一次向量化）。</div>');
+  await kbOpenDoc(arState.kbDocId, true);
+}
+
+async function kbChunkSplit(chunkId) {
+  const el = document.getElementById('kbC_' + chunkId);
+  if (!el) return;
+  const at = el.selectionStart;
+  if (!at || at >= el.value.length) { alert('請把游標放在要切開的位置（不能是開頭或結尾）'); return; }
+  const res = await apiJson('/console/kb/chunk/split', { id: chunkId, at: at });
+  if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
+  await kbOpenDoc(arState.kbDocId, true);
+}
+
+async function kbChunkMerge(chunkId) {
+  const res = await apiJson('/console/kb/chunk/merge', { id: chunkId });
+  if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
+  await kbOpenDoc(arState.kbDocId, true);
+}
+
+async function kbChunkToggle(chunkId, enabled) {
+  const res = await apiJson('/console/kb/chunk/update', { id: chunkId, enabled: enabled });
+  if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
+  await kbOpenDoc(arState.kbDocId, true);
+}
+
+async function kbChunkDelete(chunkId) {
+  if (!confirm('確定刪除這一塊知識？')) return;
+  const res = await apiJson('/console/kb/chunk/delete', { id: chunkId });
+  if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
+  await kbOpenDoc(arState.kbDocId, true);
+}
+
+/* ----- 參數配置（分頁四的彈窗） ----- */
+
+const _kbParamCache = {};
+
+function kbCachedParams(cid) {
+  return _kbParamCache[String(cid || 0)] || null;
+}
+
+async function kbParamsFor(cid) {
+  const key = String(cid || 0);
+  if (_kbParamCache[key]) return _kbParamCache[key];
+  const d = await api('/console/kb/params' + (cid ? '?collection_id=' + cid : ''));
+  _kbParamCache[key] = d;
+  return d;
+}
+
+function kbInvalidateParams() {
+  Object.keys(_kbParamCache).forEach(k => delete _kbParamCache[k]);
+}
+
+function openKbParams() {
+  const sel = document.getElementById('kbParamTarget');
+  const cid = sel ? Number(sel.value) || 0 : 0;
+  arState.kbParamCid = cid;
+  const ov = document.getElementById('kbParamsOverlay');
+  if (ov) ov.classList.add('open');
+  kbRenderParams();
+}
+
+function closeKbParams() {
+  const ov = document.getElementById('kbParamsOverlay');
+  if (ov) ov.classList.remove('open');
+}
+
+// Esc 關掉參數彈窗（點背景也關，見上面的 onclick）
+document.addEventListener('keydown', function (e) {
+  if (e.key !== 'Escape') return;
+  const ov = document.getElementById('kbParamsOverlay');
+  if (ov && ov.classList.contains('open')) closeKbParams();
+});
+
+async function kbRenderParams() {
+  const body = document.getElementById('kbParamsBody');
+  if (!body) return;
+  const cid = arState.kbParamCid || 0;
+  const title = document.getElementById('kbParamsTitle');
+  const cols = (arState.kb && arState.kb.collections) || [];
+  const c = cols.find(x => x.id === cid);
+  if (title) title.textContent = '檢索／分塊參數配置 · ' + (c ? c.name : '全域預設（.env）');
+
+  body.innerHTML = '<div class="empty-note">載入中…</div>';
+  let d;
+  try {
+    kbInvalidateParams();
+    d = await kbParamsFor(cid);
+  } catch (e) {
+    body.innerHTML = '<div class="empty-note">讀取失敗：' + esc(e.message) + '</div>';
+    return;
+  }
+  const group = (label, hint, items) =>
+    '<div class="card"><h3>' + label + '</h3><div class="hint">' + hint + '</div>' +
+    (items.length ? items.map(kbParamRowHtml).join('') : '<div class="empty-note">無參數</div>') + '</div>';
+
+  body.innerHTML =
+    '<div class="hint" style="margin-bottom:10px">' +
+      (cid ? '這裡改的是<b>這個知識庫</b>的參數，存在資料庫、<b>約 5 秒後生效</b>，不用重啟服務。'
+           : '目前顯示的是<b>全域預設</b>（來自 .env）。要改請先在上面選一個知識庫 —— ' +
+             '參數是按知識庫存的，這樣「A 庫嚴格、B 庫寬鬆」才成立。') +
+      '「重建」欄標 <b>是</b>的改動要重新切塊 + 重跑向量才會反映。</div>' +
+    group('A. 檢索參數（改完約 5 秒生效）',
+          '門檻與召回數直接決定第三層是「答得多」還是「答得準」。', d.retrieval || []) +
+    group('B. 分塊參數（改了要重新分塊 + 重新向量）',
+          '影響檢索的最小單位。塊太長會稀釋相似度，太短會斷章取義。', d.chunk || []) +
+    '<div class="row">' +
+      '<button class="btn ' + (cid ? 'primary' : '') + '"' + (cid ? '' : ' disabled') +
+        ' onclick="kbSaveParams()">儲存（' + (cid ? '這個知識庫' : '要先選知識庫') + '）</button>' +
+      '<button class="btn" onclick="kbResetParams()"' + (cid ? '' : ' disabled') + '>全部回復預設</button>' +
+      (d.model ? '<span class="hint" style="margin:0">模型 ' + esc(d.model.model) +
+        ' · ' + d.model.dim + ' 維 · 上限 ' + d.model.max_tokens + ' token</span>' : '') +
+    '</div>' +
+    '<div id="kbParamsNote"></div>';
+}
+
+function kbParamRowHtml(p) {
+  const id = 'kbp_' + p.key;
+  let input;
+  if (p.type === 'bool') {
+    input = '<input type="checkbox" id="' + id + '"' + (p.value ? ' checked' : '') + '>';
+  } else if (p.type === 'choice') {
+    input = '<select id="' + id + '" style="padding:5px 8px;border:1px solid var(--border);border-radius:7px">' +
+      (p.choices || []).map(c => '<option value="' + esc(c) + '"' +
+        (c === p.value ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + '</select>';
+  } else {
+    const step = p.type === 'float' ? '0.01' : '1';
+    input = '<input type="number" id="' + id + '" value="' + p.value + '" step="' + step + '"' +
+      (p.min != null ? ' min="' + p.min + '"' : '') + (p.max != null ? ' max="' + p.max + '"' : '') +
+      ' style="width:96px;padding:5px 8px;border:1px solid var(--border);border-radius:7px">';
+  }
+  return '<div class="switch-row" style="align-items:flex-start">' +
+    '<span style="flex:1;min-width:200px">' +
+      '<span class="sr-name">' + esc(p.label) +
+        (p.overridden ? ' <span class="pill on">已覆寫</span>' : '') +
+        (p.rebuild ? ' <span class="pill miss">重建</span>' : '') +
+        '<span class="sr-sub">' + esc(p.help) +
+          '（環境變數 <code>' + esc(p.env) + '</code> · 預設 ' + esc(String(p.default)) +
+          (p.min != null ? ' · 範圍 ' + p.min + '~' + p.max : '') + '）</span>' +
+      '</span>' +
+    input +
+  '</div>';
+}
+
+function kbReadParamForm(items) {
+  const out = {};
+  (items || []).forEach(function (p) {
+    const el = document.getElementById('kbp_' + p.key);
+    if (!el) return;
+    if (p.type === 'bool') out[p.key] = el.checked;
+    else if (p.type === 'choice') out[p.key] = el.value;
+    else out[p.key] = el.value === '' ? null : Number(el.value);
+  });
+  return out;
+}
+
+async function kbSaveParams() {
+  const cid = arState.kbParamCid || 0;
+  if (!cid) { alert('請先選一個知識庫'); return; }
+  const note = document.getElementById('kbParamsNote');
+  const d = kbCachedParams(cid) || {};
+  const values = Object.assign(kbReadParamForm(d.retrieval), kbReadParamForm(d.chunk));
+  const res = await apiJson('/console/kb/params', { collection_id: cid, values: values });
+  if (res.data.error) { if (note) note.innerHTML = '<div class="test-result">❌ ' + esc(res.data.error) + '</div>'; return; }
+  _kbParamCache[String(cid)] = res.data.params;
+  await kbRenderParams();
+  const note2 = document.getElementById('kbParamsNote');
+  if (note2) note2.innerHTML = '<div class="test-result">✅ 已儲存 ' + res.data.saved + ' 項，約 5 秒後生效。</div>';
+}
+
+async function kbResetParams() {
+  const cid = arState.kbParamCid || 0;
+  if (!cid) return;
+  if (!confirm('把這個知識庫的參數全部清掉，改回 .env 預設？')) return;
+  const d = kbCachedParams(cid) || {};
+  const clear = {};
+  ['retrieval', 'chunk'].forEach(g => (d[g] || []).forEach(p => { clear[p.key] = null; }));
+  const res = await apiJson('/console/kb/params', { collection_id: cid, values: clear });
+  if (res.data.error) { alert(res.data.error); return; }
+  _kbParamCache[String(cid)] = res.data.params;
+  await kbRenderParams();
+}
+
+/* ----- 分頁五：命中測試 ----- */
+
+// 第一次進這個分頁時，勾選狀態先照「自動回復」頁的實際開關（試跑卡片已經搬過來，
+// 這裡就是它唯一的家）。之後使用者自己改的勾選**不會**被 30 秒的設定同步蓋掉。
+function ktSyncLayers(force) {
+  const s = arState.settings;
+  if (!s) return;
+  if (arState.ktSynced && !force) return;
+  arState.ktLayers = { faq: !!s.faq_layer, table: !!s.table_layer, rag: !!s.rag_layer };
+  arState.ktSynced = true;
+}
+
+function ktResetLayers() {
+  ktSyncLayers(true);
+  renderSettingsBody(hittestTabHtml());
+}
+
+function ktAllLayers(on) {
+  arState.ktLayers = { faq: !!on, table: !!on, rag: !!on };
+  arState.ktSynced = true;      // 使用者動過了，別再被同步蓋掉
+  renderSettingsBody(hittestTabHtml());
+}
+
+function hittestTabHtml() {
+  const s = arState.settings;
+  const opts = s ? s.scopes.map(sc =>
+    '<option value="' + sc.channel + '|' + sc.scope + '">' + esc(sc.label) + '</option>').join('') : '';
+  const L = arState.ktLayers;
+  const box = (key, label, sub) =>
+    '<label class="switch-row' + (L[key] ? ' on' : '') + '" style="cursor:pointer;flex:1;min-width:190px">' +
+      '<input type="checkbox" id="kt_' + key + '"' + (L[key] ? ' checked' : '') +
+        ' onchange="ktSetLayer(\'' + key + '\', this.checked)">' +
+      '<span class="sr-name">' + label + '<span class="sr-sub">' + sub + '</span></span>' +
+    '</label>';
+  const r = arState.ktResult;
+  return '' +
+    '<div class="card">' +
+      '<h3>命中測試（逐層勾選，只影響這一次）</h3>' +
+      '<div class="hint">用真實客戶問句試跑，看它會落在哪一層。' +
+      '<b>不會發送任何訊息、不會改上面的開關、也不寫任何紀錄</b> —— ' +
+      '純粹是「我想知道這句會怎樣」的工具。想看目前正式設定下的結果，用「自動回復」分頁的試跑。</div>' +
+      '<div class="row" style="margin-bottom:10px">' +
+        '<input type="text" id="ktQuery" placeholder="例如：保固期內人為損壞要收費嗎？" ' +
+          'onkeydown="if(event.key===\'Enter\')runHitTest()" ' +
+          'style="flex:1;min-width:240px;padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
+        '<select id="ktTarget" style="padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
+          opts + '</select>' +
+        '<button class="btn primary" onclick="runHitTest()">開始測試</button>' +
+      '</div>' +
+      '<div class="row">' + box('faq', '第一層 FAQ', '規則匹配，回覆最快') +
+        box('table', '第二層 業務表格', '會呼叫 DeepSeek') +
+        box('rag', '第三層 知識庫', '向量 + 字面混合檢索') + '</div>' +
+      '<div class="row" style="margin-top:8px">' +
+        '<label class="hint" style="margin:0;display:flex;align-items:center;gap:6px">' +
+          '<input type="checkbox" id="ktNoHistory"' + (arState.ktNoHistory ? ' checked' : '') +
+          ' onchange="arState.ktNoHistory=this.checked">' +
+          '不要把該會話的最近對話帶進來（表格／知識庫的 query 改寫會用到）</label>' +
+      '</div>' +
+      '<div class="hint" style="margin-top:6px">' +
+        '勾選的層會<b>依固定順序</b>由上而下嘗試（FAQ → 表格 → 知識庫）；全部取消勾選 = 直接看「降級人工」。' +
+        '預設照「自動回復」分頁的實際開關，改勾選只影響這一次。' +
+      '</div>' +
+      '<div class="row" style="margin-top:8px">' +
+        '<button class="btn sm" onclick="ktAllLayers(true)">全選</button>' +
+        '<button class="btn sm" onclick="ktAllLayers(false)">全不選</button>' +
+        '<button class="btn sm" onclick="ktResetLayers()">照目前開關重設</button>' +
+        '<span class="hint" style="margin:0">目前開關：' +
+          'FAQ <b>' + (s && s.faq_layer ? '開' : '關') + '</b>' +
+          ' · 表格 <b>' + (s && s.table_layer ? '開' : '關') + '</b>' +
+          ' · 知識庫 <b>' + (s && s.rag_layer ? '開' : '關') + '</b></span>' +
+      '</div>' +
+    '</div>' +
+    '<div id="ktResult">' + (r ? ktResultHtml(r) : '<div class="empty-note">還沒有測試結果</div>') + '</div>';
+}
+
+function ktSetLayer(key, on) {
+  arState.ktLayers[key] = on;
+  arState.ktSynced = true;      // 使用者手動改過，之後不再自動蓋掉
+  renderSettingsBody(hittestTabHtml());
+}
+
+async function runHitTest() {
+  const qEl = document.getElementById('ktQuery');
+  const tEl = document.getElementById('ktTarget');
+  const text = (qEl && qEl.value || '').trim();
+  if (!text) { alert('請先輸入一句客戶可能說的話'); return; }
+  const parts = ((tEl && tEl.value) || '|').split('|');
+  const layers = Object.keys(arState.ktLayers).filter(k => arState.ktLayers[k]);
+  const box = document.getElementById('ktResult');
+  if (box) box.innerHTML = '<div class="empty-note">測試中…（勾到第二／三層會呼叫 DeepSeek，約需數秒）</div>';
+  try {
+    const res = await apiJson('/console/autoreply/test/engine', {
+      text: text, channel: parts[0], scope: parts[1],
+      layers: layers, with_history: !arState.ktNoHistory,
+    });
+    if (res.data.error) {
+      if (box) box.innerHTML = '<div class="empty-note">❌ ' + esc(res.data.error) + '</div>';
+      return;
+    }
+    arState.ktResult = res.data;
+    if (box) box.innerHTML = ktResultHtml(res.data);
+  } catch (e) {
+    if (box) box.innerHTML = '<div class="empty-note">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+function ktResultHtml(d) {
+  const tierTag = { faq: 'tag-auto-faq', table: 'tag-auto-table', rag: 'tag-auto-rag' }[d.tier];
+  const sent = d.would_send
+    ? '<span class="pill on">會自動回覆</span>'
+    : '<span class="pill miss">降級人工</span>';
+  return '' +
+    '<div class="card">' +
+      '<h3>測試結果</h3>' +
+      '<div class="lg-head">' +
+        (tierTag ? '<span class="' + tierTag + '">' + esc(d.label) + '</span>'
+                 : '<span class="tag-auto-miss">' + esc(d.label || '未命中') + '</span>') +
+        sent +
+        '<span class="lg-time">tier = ' + esc(d.tier) + '</span>' +
+        (d.layers ? '<span class="lg-time">跑了 ' + esc((d.layers || []).join(' → ')) + '</span>'
+                  : '<span class="lg-time">全部層（依開關）</span>') +
+      '</div>' +
+      '<div class="test-result" style="margin-top:8px">' +
+        (d.detail ? '說明：' + esc(d.detail) + '\n' : '') +
+        (d.reason ? '原因：' + esc(d.reason) + '\n' : '') +
+        (d.matched_question ? '命中問法：' + esc(d.matched_question) + '\n' : '') +
+        (d.score != null ? '分數：' + d.score + '\n' : '') +
+        (d.rewritten_query ? '改寫後問句：' + esc(d.rewritten_query) +
+          (d.history_used ? '（帶入 ' + d.history_used + ' 則對話）' : '') + '\n' : '') +
+        (d.rag_threshold != null
+          ? '知識庫門檻：' + d.rag_threshold + '（召回 ' + (d.rag_candidates || 0) + ' 塊）\n' : '') +
+        (d.text ? '\n回覆內容：\n' + esc(d.text) : '（沒有可送出的回覆）') +
+      '</div>' +
+      ((d.history && d.history.length)
+        ? '<div class="hint" style="margin-top:8px">參考到的最近對話（query 改寫用）：<br>' +
+          d.history.map(h => '　' + (h.direction === 'outbound' ? '客服' : '客戶') + '：' +
+            esc(h.text)).join('<br>') + '</div>'
+        : '') +
+      (d.matched_rows && d.matched_rows.length
+        ? '<div style="margin-top:10px">' +
+            '<b style="font-size:12.5px">知識庫召回明細</b>' +
+            renderMatchedRows(d.matched_rows, true) +
+            '<div class="hint" style="margin-top:4px">' +
+            '調門檻最直接的依據：把「入選」與「未入選」的分數一比，就知道該往上還是往下移。</div></div>'
+        : (arState.ktLayers.rag && d.tier !== 'rag'
+            ? '<div class="hint" style="margin-top:8px">這次沒有知識庫召回紀錄（可能是知識庫層沒被勾選、已停用，或知識庫是空的）。</div>'
+            : '')) +
+    '</div>';
+}
+
+/* ----- 分頁六：紀錄 ----- */
 
 function logsTabHtml() {
   const s = arState.settings;
@@ -2918,7 +3991,8 @@ function logsTabHtml() {
   return '' +
     '<div class="card">' +
       '<h3>自動回復紀錄</h3>' +
-      '<div class="hint">每次自動回復的處置都會留痕：命中哪一層、未命中的原因、送出結果。</div>' +
+      '<div class="hint">每次自動回復的處置都會留痕：命中哪一層、未命中的原因、送出結果。' +
+      '點任一筆可展開檢索明細（知識庫那層會列出每個候選塊的分數與是否入選）。</div>' +
       '<div class="row">' +
         '<select id="logChannel" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
           '<option value="">全部渠道</option>' + opts + '</select>' +
@@ -2926,6 +4000,7 @@ function logsTabHtml() {
           '<option value="">全部結果</option>' +
           '<option value="faq">FAQ 命中</option>' +
           '<option value="table">表格命中</option>' +
+          '<option value="rag">知識庫命中</option>' +
           '<option value="miss">未命中</option>' +
         '</select>' +
         '<button class="btn primary" onclick="loadLogs()">查詢</button>' +
@@ -2936,21 +4011,36 @@ function logsTabHtml() {
 }
 
 function logItemHtml(r) {
-  const tierTag = r.tier === 'faq'
-    ? '<span class="tag-auto-faq">自動回復-FAQ命中</span>'
-    : (r.tier === 'table'
-      ? '<span class="tag-auto-table' + (r.rewrote ? ' rw' : '') + '">自動回復-表格命中' +
-        (r.rewrote ? '·改寫' : '') + '</span>'
-      : '<span class="tag-auto-miss">自動回復未命中</span>');
+  let tierTag;
+  if (r.tier === 'faq') {
+    tierTag = '<span class="tag-auto-faq">自動回復-FAQ命中</span>';
+  } else if (r.tier === 'table') {
+    tierTag = '<span class="tag-auto-table' + (r.rewrote ? ' rw' : '') + '">自動回復-表格命中' +
+      (r.rewrote ? '·改寫' : '') + '</span>';
+  } else if (r.tier === 'rag') {
+    tierTag = '<span class="tag-auto-rag">自動回復-知識庫命中' +
+      (r.rewrote ? '·改寫' : '') + '</span>';
+  } else {
+    tierTag = '<span class="tag-auto-miss">自動回復未命中</span>';
+  }
   const sendTag = r.send_status === 'sent'
     ? '<span class="pill on">已送出</span>'
     : (r.send_status === 'failed' ? '<span class="pill miss">送出失敗</span>'
       : '<span class="pill off">未送出</span>');
   const label = AR_CHANNEL_LABEL[r.channel] || r.channel;
-  return '<div class="log-item">' +
+  // 只有真的寫過檢索明細的紀錄才值得點開（舊資料沒有這個欄位）
+  const hasRows = !!r.has_matched_rows;
+  // ⚠ 明細框一定要「有明細 且 正在展開」才畫：否則 openLogId 一旦殘留（例如換了篩選條件
+  //    但沒清掉），就會在沒有明細的列底下留一個空的明細框。
+  const showDetail = hasRows && arState.openLogId === r.id;
+  const arrow = hasRows
+    ? '<span class="lg-time">' + (showDetail ? '▾ 收起明細' : '▸ 檢索明細') + '</span>' : '';
+  return '<div class="log-item' + (hasRows ? ' clickable' : '') + (showDetail ? ' open' : '') + '"' +
+    (hasRows ? ' onclick="toggleLogDetail(' + r.id + ')"' : '') + '>' +
     '<div class="lg-head">' + tierTag + sendTag +
       '<b>' + esc(label) + ' ' + (r.reply_scope === 'dm' ? '私訊' : '貼文留言') + '</b>' +
       '<span class="lg-time">' + fmtTime(r.created_at) + '</span>' +
+      arrow +
     '</div>' +
     (r.question ? '<div class="lg-q">客戶：' + esc(r.question) + '</div>' : '') +
     (r.rewritten_query && r.rewritten_query !== r.question
@@ -2959,6 +4049,78 @@ function logItemHtml(r) {
     (r.answer ? '<div>回覆：' + esc(r.answer) + '</div>' : '') +
     (r.detail ? '<div class="lg-q">' + esc(r.detail) + '</div>' : '') +
     (r.reason && r.reason !== 'sent' ? '<div class="lg-q">原因：' + esc(r.reason) + '</div>' : '') +
+    (showDetail ? '<div class="lg-detail" id="logDetailBox">' +
+      (arState.logDetail ? renderMatchedRows(arState.logDetail.matched_rows, true)
+                         : '<div class="hint" style="margin:0">讀取明細中…</div>') +
+      '</div>' : '') +
+  '</div>';
+}
+
+// 展開／收起單筆紀錄的檢索明細（明細不在列表裡，要另外撈）
+async function toggleLogDetail(logId) {
+  const box = document.getElementById('logDetailBox');
+  if (arState.openLogId === logId) {
+    arState.openLogId = null;
+    arState.logDetail = null;
+    const l = document.getElementById('logList');
+    if (l) l.innerHTML = arState.logs.map(logItemHtml).join('') || '<div class="empty-note">沒有符合條件的紀錄</div>';
+    return;
+  }
+  arState.openLogId = logId;
+  arState.logDetail = null;
+  const l = document.getElementById('logList');
+  if (l) l.innerHTML = arState.logs.map(logItemHtml).join('');
+  const box2 = document.getElementById('logDetailBox');
+  try {
+    const d = await api('/console/autoreply/logs/' + logId);
+    arState.logDetail = d;
+    if (box2) box2.innerHTML = renderMatchedRows(d.matched_rows, true);
+  } catch (e) {
+    if (box2) box2.innerHTML = '<div class="hint" style="margin:0">讀取明細失敗：' + esc(e.message) + '</div>';
+  }
+}
+
+/* ----- 知識庫召回明細（紀錄頁 / 命中測試 / 試跑共用） -----
+   rows 是 autoreply_log.matched_rows 的形狀：每筆含 vec / lex / final / rerank /
+   來源（doc / heading / page / sheet / 列） / text 片段 / picked（是否真的送進模型）。
+   ⚠️ 這欄是「TEXT 存 JSON」的老坑高風險區 —— 一律不假設型別，壞資料降級成不顯示。 */
+function renderMatchedRows(rows, showAll) {
+  if (!Array.isArray(rows) || !rows.length) return '';
+  const picked = rows.filter(r => r && r.picked);
+  const rest = rows.filter(r => r && !r.picked);
+  const head = '<div class="hint" style="margin:0 0 6px">召回 ' + rows.length + ' 塊，' +
+    '實際送進模型 ' + picked.length + ' 塊' +
+    (picked.length ? '' : '（沒有任何一塊過門檻）') + '</div>';
+  // 沒入選的只顯示前 12 筆，避免洗版；要看全部就把 showAll 帶上
+  const tailLimit = showAll ? rest.length : 12;
+  const tail = rest.slice(0, tailLimit);
+  const more = rest.length > tail.length
+    ? '<div class="hint" style="margin:4px 0 0">…另有 ' + (rest.length - tail.length) + ' 塊未列出</div>' : '';
+  return '<div>' + head +
+    picked.map(r => kbHitHtml(r, true)).join('') +
+    (tail.length ? '<div class="hint" style="margin:8px 0 4px">未入選的候選：</div>' +
+      tail.map(r => kbHitHtml(r, false)).join('') + more : '') +
+    '</div>';
+}
+
+function kbHitHtml(r, isPicked) {
+  if (!r || typeof r !== 'object') return '';
+  const src = [r.doc, r.heading, r.sheet ? ('工作表 ' + r.sheet) : '',
+               r.page ? ('第 ' + r.page + ' 頁') : '',
+               (r.row_from != null && r.row_to != null && r.row_to !== r.row_from)
+                 ? ('列 ' + r.row_from + '-' + r.row_to) : '']
+    .filter(Boolean).map(esc).join(' › ');
+  const n = v => (v == null ? '—' : Number(v).toFixed(3));
+  return '<div class="kb-hit' + (isPicked ? ' picked' : '') + '">' +
+    '<div class="kh-head">' + (isPicked ? '<span class="pill on">入選</span>'
+                                        : '<span class="pill off">未入選</span>') +
+      '<span class="kb-src">' + (src || '未知來源') + '</span>' +
+      (r.chunk_id != null ? '<span class="kb-score">塊 #' + esc(String(r.chunk_id)) + '</span>' : '') +
+    '</div>' +
+    '<div class="kb-score">總分 <b>' + n(r.final) + '</b>' +
+      ' · 向量 ' + n(r.vec) + ' · 字面 ' + n(r.lex) +
+      (r.rerank != null ? ' · rerank ' + n(r.rerank) : '') + '</div>' +
+    (r.text ? '<div style="margin-top:3px">' + esc(r.text) + '</div>' : '') +
   '</div>';
 }
 
@@ -2976,6 +4138,8 @@ async function loadLogs() {
   try {
     const d = await api('/console/autoreply/logs?' + qs.toString());
     arState.logs = d.logs || [];
+    arState.openLogId = null;      // 換一批結果就把展開狀態歸零
+    arState.logDetail = null;
     if (box) box.innerHTML = arState.logs.length
       ? arState.logs.map(logItemHtml).join('')
       : '<div class="empty-note">沒有符合條件的紀錄</div>';
@@ -3102,9 +4266,23 @@ boot();
       <div class="sp-tab active" data-tab="autoreply" onclick="switchSettingsTab('autoreply')">自動回復</div>
       <div class="sp-tab" data-tab="faq" onclick="switchSettingsTab('faq')">FAQ 問答對</div>
       <div class="sp-tab" data-tab="table" onclick="switchSettingsTab('table')">業務表格</div>
+      <div class="sp-tab" data-tab="kb" onclick="switchSettingsTab('kb')">知識庫</div>
+      <div class="sp-tab" data-tab="hittest" onclick="switchSettingsTab('hittest')">命中測試</div>
       <div class="sp-tab" data-tab="logs" onclick="switchSettingsTab('logs')">紀錄</div>
     </div>
     <div class="sp-body" id="spBody"></div>
+  </div>
+</div>
+
+<!-- ========== 知識庫參數配置彈窗（從「知識庫」分頁開） ========== -->
+<div class="settings-overlay" id="kbParamsOverlay" onclick="if(event.target===this)closeKbParams()">
+  <div class="settings-panel" style="max-width:760px">
+    <div class="sp-head">
+      <h2 id="kbParamsTitle">參數配置</h2>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="closeKbParams()" title="關閉">✕</button>
+    </div>
+    <div class="sp-body" id="kbParamsBody"></div>
   </div>
 </div>
 </body>

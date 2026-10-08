@@ -247,10 +247,25 @@ with TestClient(main.app) as c:
     else:
         check(False, "知識塊不足，無法測微調")
 
-    print("\n[7] 停用 / 刪除")
+    print("\n[7] 停用 / 刪除 / 搬移")
     r = c.post("/console/kb/document/enabled", json={"id": did, "enabled": False})
     check(r.status_code == 200 and body(r)["doc"]["enabled"] is False, "POST /document/enabled")
     c.post("/console/kb/document/enabled", json={"id": did, "enabled": True})
+
+    # 搬移到另一個知識庫（會改變它套用的檢索參數 → 索引快取要失效）
+    r = c.post("/console/kb/collections/create", json={"name": "端點驗證庫-搬移目標"})
+    cid2 = body(r)["collection"]["id"]
+    r = c.post("/console/kb/document/move", json={"id": did, "collection_id": cid2})
+    d = body(r)
+    check(r.status_code == 200 and d["doc"]["collection_id"] == cid2,
+          f"POST /document/move → 知識庫 #{cid2}")
+    moved = body(c.get(f"/console/kb/documents?collection_id={cid2}"))["documents"]
+    check(any(x["id"] == did for x in moved), "搬移後出現在新知識庫的文件列表")
+    r = c.post("/console/kb/document/move", json={"id": did, "collection_id": 99999999})
+    check(r.status_code == 400, "搬到不存在的知識庫被擋", str(body(r).get("error"))[:40])
+    r = c.post("/console/kb/document/move", json={"id": did, "collection_id": cid})
+    check(r.status_code == 200 and body(r)["doc"]["collection_id"] == cid, "搬回來")
+    c.post("/console/kb/collections/delete", json={"id": cid2})
 
     r = c.post("/console/kb/collections/delete", json={"id": cid})
     check(r.status_code == 400, "非空知識庫刪除需二次確認", body(r).get("error", "")[:40])
@@ -269,6 +284,96 @@ with TestClient(main.app) as c:
                  "/console/kb/index-stats"):
         r = c.get(path)
         check(r.status_code == 200, f"GET {path} → {r.status_code}")
+
+    print("\n[9] 自動回復端點的第三層（P3 新增欄位 / 端點）")
+    r = c.get("/console/autoreply/settings")
+    d = body(r)
+    check(r.status_code == 200 and "rag_layer" in d, "GET /autoreply/settings 有 rag_layer",
+          f"rag_layer={d.get('rag_layer')}")
+    check(isinstance(d.get("kb"), dict) and "chunks" in (d.get("kb") or {}),
+          "settings 帶知識庫規模摘要", str(d.get("kb")))
+    check(d["kb"].get("error") is None, "知識庫摘要沒有異常", str(d["kb"].get("error")))
+
+    # 逐層開關：設 rag → 讀回 → 還原（**一定要還原**，這是正式開關）
+    before = c.get("/console/autoreply/settings").json()["rag_layer"]
+    r = c.post("/console/autoreply/settings/layer", json={"layer": "rag", "enabled": not before})
+    d = body(r)
+    check(r.status_code == 200 and d.get("ok") and d.get("enabled") == (not before),
+          f"POST /settings/layer layer=rag → enabled={d.get('enabled')}")
+    after = body(c.get("/console/autoreply/settings")).get("rag_layer")
+    check(after == (not before), f"settings 讀回已變更（rag_layer={after}）")
+    r = c.post("/console/autoreply/settings/layer", json={"layer": "rag", "enabled": before})
+    check(body(c.get("/console/autoreply/settings")).get("rag_layer") == before,
+          f"已還原為 rag_layer={before}")
+    r = c.post("/console/autoreply/settings/layer", json={"layer": "不存在", "enabled": True})
+    check(r.status_code == 400, "不認得的層被擋", str(body(r).get("error"))[:40])
+
+    # 紀錄列表：新增 has_matched_rows（UI 靠它決定哪一列可以點開）
+    r = c.get("/console/autoreply/logs?limit=5")
+    d = body(r)
+    check(r.status_code == 200 and isinstance(d.get("logs"), list), "GET /autoreply/logs")
+    if d.get("logs"):
+        check("has_matched_rows" in d["logs"][0], "列表帶 has_matched_rows（輕量布林）",
+              f"範例 id={d['logs'][0]['id']} has={d['logs'][0]['has_matched_rows']}")
+        check("matched_rows" not in d["logs"][0], "列表仍刻意不帶 matched_rows（避免肥回應）")
+        lid = d["logs"][0]["id"]
+        r = c.get(f"/console/autoreply/logs/{lid}")
+        dd = body(r)
+        check(r.status_code == 200 and isinstance(dd.get("matched_rows"), list),
+              f"GET /logs/{lid} 回 list（不假設型別）", f"{len(dd.get('matched_rows') or [])} 筆")
+        check("tier_label" in dd, "詳情帶 tier_label", str(dd.get("tier_label")))
+    else:
+        print("  （目前沒有自動回復紀錄，略過列表欄位檢查）")
+    r = c.get("/console/autoreply/logs/99999999")
+    check(r.status_code == 404, "不存在的紀錄回 404")
+
+    # FAQ 搜尋（後端參數化 ILIKE）
+    r = c.get("/console/autoreply/faq")
+    d = body(r)
+    check(r.status_code == 200 and "total" in d, "GET /autoreply/faq 帶 total/filtered",
+          f"total={d.get('total')} filtered={d.get('filtered')} q={d.get('q')!r}")
+    r = c.get("/console/autoreply/faq?q=" + "%E4%B8%8D%E5%AD%98%E5%9C%A8%E7%9A%84%E5%95%8F%E6%B3%95xyz")
+    d = body(r)
+    check(r.status_code == 200 and (d.get("faqs") or []) == [],
+          "搜不到的關鍵字回空陣列（不是 500）", f"filtered={d.get('filtered')}")
+    r = c.get("/console/autoreply/faq?q=%25")     # 單獨一個 % —— 參數化沒做好這裡會炸
+    check(r.status_code == 200, "LIKE 特殊字元不會炸（參數化正確）", f"filtered={body(r).get('filtered')}")
+
+    # 試跑端點：layers 逐層勾選，且**不寫任何紀錄**
+    import autoreply_db as _ardb
+    log_before = _ardb.query("SELECT count(*) c FROM autoreply_log")[0]["c"]
+    r = c.post("/console/autoreply/test/engine",
+               json={"text": "你們有賣藍牙耳機嗎", "channel": "whatsapp", "scope": "dm",
+                     "layers": ["faq"], "with_history": False})
+    d = body(r)
+    check(r.status_code == 200 and d.get("ok"), "POST /test/engine layers=['faq']",
+          f"tier={d.get('tier')} label={d.get('label')}")
+    check(d.get("layers") == ["faq"], "回傳實際跑的層（正規化後）", str(d.get("layers")))
+    r = c.post("/console/autoreply/test/engine",
+               json={"text": "x", "channel": "whatsapp", "scope": "dm",
+                     "layers": ["沒這層"], "with_history": False})
+    check(r.status_code == 400, "不認得的層被擋", str(body(r).get("error"))[:50])
+    r = c.post("/console/autoreply/test/engine",
+               json={"text": "x", "channel": "whatsapp", "scope": "dm",
+                     "layers": "faq", "with_history": False})
+    check(r.status_code == 400, "layers 不是陣列被擋", str(body(r).get("error"))[:50])
+    log_after = _ardb.query("SELECT count(*) c FROM autoreply_log")[0]["c"]
+    check(log_before == log_after, "試跑不寫任何紀錄", f"{log_before} → {log_after}")
+
+    print("\n[10] 前端（console_ui.html 每個請求都重讀檔案，改完不必重啟）")
+    r = c.get("/console")
+    html = r.text if hasattr(r, "text") else r.content.decode("utf-8")
+    check(r.status_code == 200 and "客服工作台" in html, f"GET /console → {r.status_code}（{len(html)} 字）")
+    for tab in ("autoreply", "faq", "table", "kb", "hittest", "logs"):
+        check('data-tab="' + tab + '"' in html, f"分頁籤 {tab} 存在")
+    order = [html.find('data-tab="' + t + '"') for t in
+             ("autoreply", "faq", "table", "kb", "hittest", "logs")]
+    check(order == sorted(order), "分頁順序：自動回復 → FAQ → 業務表格 → 知識庫 → 命中測試 → 紀錄")
+    for fn in ("kbTabHtml", "hittestTabHtml", "runHitTest", "renderMatchedRows",
+               "kbOpenDoc", "kbUploadFiles", "kbSaveParams", "toggleLogDetail",
+               "onFaqSearchInput", "kbMoveDoc", "openKbParams"):
+        check(("function " + fn) in html, f"前端函式 {fn} 已定義")
+    check("kbParamsOverlay" in html, "參數配置彈窗標記存在")
 
 print("\n" + "=" * 72)
 print(f" 結果：{'全部通過 ✅' if not FAIL else str(len(FAIL)) + ' 項失敗'}")

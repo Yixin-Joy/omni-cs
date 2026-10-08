@@ -131,12 +131,16 @@ STATE_SKIPPED = "skipped"    # 未觸發（開關關閉 / 非文字訊息 / 冷�
 # 層級值
 TIER_FAQ = "faq"
 TIER_TABLE = "table"
+TIER_RAG = "rag"
 TIER_MISS = "miss"
 TIER_ERROR = "error"
 # 處理中的佔位層級：認領列在被後續 update_claim 改寫前用它，不會出現在紀錄列表
 TIER_CLAIM = "claim"
 
-TIER_LABELS = {TIER_FAQ: "FAQ 命中", TIER_TABLE: "表格命中"}
+TIER_LABELS = {TIER_FAQ: "FAQ 命中", TIER_TABLE: "表格命中", TIER_RAG: "知識庫命中"}
+
+# 紀錄頁 / 統計要認得的層級（其他值一律歸到 error）
+KNOWN_TIERS = (TIER_FAQ, TIER_TABLE, TIER_RAG, TIER_MISS, TIER_ERROR)
 
 
 def tier_label(tier: str) -> str:
@@ -285,16 +289,30 @@ def scope_overrides() -> dict[str, bool]:
 
 # ---------- FAQ ----------
 
-def list_faqs(enabled_only: bool = False) -> list[dict]:
+def list_faqs(enabled_only: bool = False, q: str = "") -> list[dict]:
+    """列出 FAQ。`q` 有值時對 question / answer / keywords 做內文檢索（ILIKE）。
+
+    ⚠️ 一定要參數化。`query(sql, params)` 即使傳空 tuple，psycopg2 仍會做 `%` 解析，
+    SQL 裡若出現字面 `%` 會噴 `IndexError: tuple index out of range`
+    （這個專案踩過）。所以用 `ILIKE %s` + 值裡自己加 `%`，不要寫字面 `LIKE '%x%'`。
+    """
     sql = """
         SELECT id, question, answer, keywords, enabled, hit_count, sort_order,
                created_at, updated_at
         FROM autoreply_faq
     """
+    where, params = [], []
     if enabled_only:
-        sql += " WHERE enabled = true"
+        where.append("enabled = true")
+    key = (q or "").strip()
+    if key:
+        where.append("(question ILIKE %s OR answer ILIKE %s OR COALESCE(keywords,'') ILIKE %s)")
+        needle = f"%{key}%"
+        params += [needle, needle, needle]
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY sort_order, id"
-    return query(sql)
+    return query(sql, tuple(params))
 
 
 def create_faq(question: str, answer: str, keywords: str = "", enabled: bool = True) -> dict:
@@ -625,16 +643,37 @@ def list_logs(channel: str = "", scope: str = "", tier: str = "", limit: int = 1
         where.append("tier=%s")
         params.append(tier)
     clause = " WHERE " + " AND ".join(where)
+    # has_matched_rows：這筆有沒有檢索明細可以展開。列表不撈明細本體，但 UI 要能
+    # 判斷「這列值不值得點」，所以在 SQL 端算一個布林值（很便宜，且 JSONB 有函式可用）。
     rows = query(f"""
         SELECT id, created_at, channel, reply_scope, tier, detail, reason, question,
                answer, conversation_key, message_id, post_id, comment_id,
-               faq_id, table_id, score, rewrote, rewritten_query, history_used, send_status
+               faq_id, table_id, score, rewrote, rewritten_query, history_used, send_status,
+               (matched_rows IS NOT NULL
+                AND jsonb_typeof(matched_rows) = 'array'
+                AND jsonb_array_length(matched_rows) > 0) AS has_matched_rows
         FROM autoreply_log{clause}
         ORDER BY created_at DESC, id DESC
         LIMIT %s OFFSET %s
     """, tuple(params + [max(1, min(limit, 500)), max(0, offset)]))
     total = query(f"SELECT count(*) AS n FROM autoreply_log{clause}", tuple(params))
     return {"logs": rows, "total": total[0]["n"] if total else 0}
+
+
+def get_log(log_id: int) -> dict | None:
+    """單筆紀錄的完整內容（含 `matched_rows` 召回明細）。
+
+    ⚠️ 為什麼列表不帶這個欄位：`matched_rows` 每筆可能是幾十個候選塊的 JSON，
+    列表動輒上百筆，一起 SELECT 會讓回應肥到沒必要。**列表輕、詳情重。**
+    """
+    rows = query("""
+        SELECT id, created_at, channel, reply_scope, tier, detail, reason, question,
+               answer, conversation_key, message_id, post_id, comment_id,
+               faq_id, table_id, matched_rows, score, rewrote, rewritten_query,
+               history_used, send_status
+        FROM autoreply_log WHERE id=%s
+    """, (log_id,))
+    return rows[0] if rows else None
 
 
 def log_summary() -> dict:
@@ -653,9 +692,9 @@ def log_summary() -> dict:
     for r in rows:
         key = scope_key(r["channel"], r["reply_scope"])
         bucket = out.setdefault(key, {"channel": r["channel"], "scope": r["reply_scope"],
-                                      "faq": 0, "table": 0, "miss": 0, "error": 0,
+                                      "faq": 0, "table": 0, "rag": 0, "miss": 0, "error": 0,
                                       "rewritten": 0, "total": 0})
-        tier = r["tier"] if r["tier"] in ("faq", "table", "miss", "error") else "error"
+        tier = r["tier"] if r["tier"] in KNOWN_TIERS else "error"
         bucket[tier] += r["n"]
         bucket["rewritten"] += r["rewritten"] or 0
         bucket["total"] += r["n"]

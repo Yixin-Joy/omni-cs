@@ -17,6 +17,7 @@
   POST /console/kb/document/activate        確認入庫（status → ready）
   POST /console/kb/document/enabled         停用 / 啟用文件
   POST /console/kb/document/delete          刪除文件
+  POST /console/kb/document/move            改放到別的知識庫（或未分組）
   POST /console/kb/chunk/update             編輯 / 停用單一知識塊
   POST /console/kb/chunk/split              拆分知識塊
   POST /console/kb/chunk/merge              與下一塊合併
@@ -326,6 +327,34 @@ async def document_delete(body: dict):
     ok = await asyncio.to_thread(kb_ingest.delete_document, did)
     kb_search.invalidate()
     return _ok({"ok": ok})
+
+
+@router.post("/document/move")
+async def document_move(body: dict):
+    """改放到別的知識庫（`collection_id` 給 null / 0 = 未分組）。
+
+    ⚠️ 換知識庫會改變它套用的**檢索參數**，所以索引與參數快取都要失效。
+    """
+    did = int(body.get("id") or 0)
+    if not did:
+        return _err("缺少文件 id")
+    doc = await asyncio.to_thread(kb_db.get_document, did)
+    if not doc:
+        return _err("找不到這份文件", 404)
+
+    raw = body.get("collection_id")
+    cid = None
+    if raw not in (None, "", 0, "0"):
+        cid = _int_or_none(raw)
+        if not cid:
+            return _err("collection_id 要是數字，或留空表示未分組")
+        target = await asyncio.to_thread(kb_db.get_collection, cid)
+        if not target:
+            return _err(f"找不到知識庫 #{cid}")
+
+    await asyncio.to_thread(kb_db.update_document, did, {"collection_id": cid})
+    kb_search.invalidate()
+    return _ok({"ok": True, "doc": await asyncio.to_thread(kb_db.get_document, did)})
 
 
 # ======================================================================
