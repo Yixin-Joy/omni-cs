@@ -8,7 +8,7 @@
   kb_document    文件（解析 / 分塊 / 向量化的狀態機）
   kb_chunk       知識塊（含 embedding REAL[]；第一版不使用 pgvector）
   kb_job         入庫工作佇列（服務重啟可續跑）
-  kb_param       參數覆寫（★ 按知識庫存，PK=(collection_id, key)）
+  kb_param       參數覆寫（★ 檢索參數=全域 collection_id IS NULL；分塊參數按知識庫）
 
 為什麼是 `REAL[]` 而不是 pgvector：本機 PostgreSQL 18.6 沒有 `vector` 擴充
 （`pg_available_extensions` 查無），而 Windows 上要編 pgvector 得裝 MSVC 工具鏈。
@@ -97,12 +97,15 @@ CREATE TABLE IF NOT EXISTS kb_job (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- collection_id IS NULL = 全域：
+--     · 檢索參數（top_k / min_score / …）一律存這裡，所有知識庫共用一組
+--     · 未分組文件（collection_id IS NULL）的分塊參數也存這裡
+-- 分塊參數（chunk_*）才按知識庫分開存（2026-10-08 定案）
 CREATE TABLE IF NOT EXISTS kb_param (
-    collection_id BIGINT NOT NULL REFERENCES kb_collection(id) ON DELETE CASCADE,
+    collection_id BIGINT REFERENCES kb_collection(id) ON DELETE CASCADE,
     key           TEXT NOT NULL,
     value         TEXT,
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (collection_id, key)
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_kb_chunk_doc       ON kb_chunk(doc_id, ordinal);
@@ -110,6 +113,28 @@ CREATE INDEX IF NOT EXISTS idx_kb_chunk_embed     ON kb_chunk(embedding_status, 
 CREATE INDEX IF NOT EXISTS idx_kb_document_coll   ON kb_document(collection_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_kb_document_status ON kb_document(status);
 CREATE INDEX IF NOT EXISTS idx_kb_job_status      ON kb_job(status, id);
+"""
+
+# 舊庫升級：kb_param 原本是 `collection_id BIGINT NOT NULL` + PK(collection_id, key)，
+# 沒辦法存「全域」那批（NULL）。這裡把它改成可空 + NULLS NOT DISTINCT 唯一約束 ——
+# 少了 NULLS NOT DISTINCT，PG 會把每一筆 NULL 當成互不相等，同一組參數能插無限多筆。
+# 兩個步驟都可重複執行（DROP NOT NULL 已是 nullable 也不會錯；DO 區塊先檢查約束在不在）。
+# ⚠️ 順序不能顛倒：`ALTER COLUMN ... DROP NOT NULL` 在 PK 欄位上會直接報
+#    `column "collection_id" is in a primary key`，所以必須先拆掉舊 PK。
+_MIGRATE = """
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'kb_param_pkey' AND conrelid = 'kb_param'::regclass) THEN
+        ALTER TABLE kb_param DROP CONSTRAINT kb_param_pkey;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                    WHERE conname = 'kb_param_scope_key' AND conrelid = 'kb_param'::regclass) THEN
+        ALTER TABLE kb_param ADD CONSTRAINT kb_param_scope_key
+            UNIQUE NULLS NOT DISTINCT (collection_id, key);
+    END IF;
+END $$;
+ALTER TABLE kb_param ALTER COLUMN collection_id DROP NOT NULL;
 """
 
 # 文件狀態值
@@ -206,6 +231,7 @@ def init_schema() -> None:
     try:
         with conn.cursor() as cur:
             cur.execute(_DDL)
+            cur.execute(_MIGRATE)
         conn.commit()
     finally:
         conn.close()
@@ -278,34 +304,70 @@ def delete_collection(cid: int) -> bool:
 
 
 # ======================================================================
-# 參數（kb_param）—— DB 覆寫 .env 的預設值，PK=(collection_id, key)
+# 參數（kb_param）—— DB 覆寫 .env 的預設值，唯一鍵 (collection_id, key)
+#
+# ★ 2026-10-08 定案：參數分「兩層」，分派規則寫在 `_param_target()`，
+#   set / load 兩邊共用同一套，避免又出現「寫 A 讀 B」這種不一致。
+#
+#     檢索參數 group=retrieval（top_k / min_score / max_per_doc / max_context_chars /
+#         rerank_enabled / rerank_top_n）→ **全域**（collection_id IS NULL）。
+#         所有知識庫共用一組；以前「誰的 doc_id 小就聽誰」的洞一併消失。
+#     分塊參數 group=chunk（chunk_strategy / chunk_size / chunk_min / chunk_max /
+#         chunk_overlap / chunk_prefix）→ **按知識庫**，在分塊配置界面單獨設。
+#         未分組文件（cid=None）落在全域那批。
 # ======================================================================
 
-def get_param_overrides(cid: int) -> dict[str, str]:
-    rows = query("SELECT key, value FROM kb_param WHERE collection_id=%s", (cid,))
+def _param_scope(name: str) -> str:
+    """參數的歸屬：'global'（檢索，全庫共用）/ 'collection'（分塊，按知識庫）。"""
+    import rag_config
+
+    spec = rag_config.PARAM_SPECS.get(name) or {}
+    return "global" if spec.get("group") == "retrieval" else "collection"
+
+
+def _param_target(name: str, cid: int | None) -> int | None:
+    """這個參數該落在哪一行：檢索參數恆為 None（全域），分塊參數為該知識庫。"""
+    return None if _param_scope(name) == "global" else cid
+
+
+def get_param_overrides(cid: int | None = None, *, scope: str | None = None) -> dict[str, str]:
+    """取覆寫值。`scope='global'` → 讀全域那批；否則讀「這個知識庫」那批。"""
+    if scope == "global" or (scope is None and not cid):
+        rows = query("SELECT key, value FROM kb_param WHERE collection_id IS NULL")
+    else:
+        rows = query("SELECT key, value FROM kb_param WHERE collection_id=%s", (cid,))
     return {r["key"]: r["value"] for r in rows}
 
 
-def set_params(cid: int, values: dict) -> int:
-    """寫入/覆寫參數。值為 None / 空字串 = 刪除覆寫（回到 .env 預設）。"""
+def get_global_param_overrides() -> dict[str, str]:
+    """全域那批覆寫（檢索參數 + 未分組文件的分塊預設）。"""
+    return get_param_overrides(None, scope="global")
+
+
+def set_params(cid: int | None, values: dict) -> int:
+    """寫入/覆寫參數。值為 None / 空字串 = 刪除覆寫（回到 .env 預設）。
+
+    ⚠️ 檢索參數一律寫到**全域**，所以 `set_params(某個庫, {"top_k": 5})` 改的是
+    所有知識庫共用的那個值（這是刻意的：檢索參數不分庫）。
+    """
     import rag_config
 
     n = 0
     for key, raw in (values or {}).items():
         if key not in rag_config.PARAM_SPECS:
             continue
+        target = _param_target(key, cid)
         if raw is None or (isinstance(raw, str) and not raw.strip()):
-            n += execute("DELETE FROM kb_param WHERE collection_id=%s AND key=%s", (cid, key))
+            n += execute("DELETE FROM kb_param "
+                         "WHERE collection_id IS NOT DISTINCT FROM %s AND key=%s",
+                         (target, key))
             continue
-        if isinstance(raw, bool):
-            val = "true" if raw else "false"
-        else:
-            val = str(raw)
+        val = ("true" if raw else "false") if isinstance(raw, bool) else str(raw)
         execute("""
             INSERT INTO kb_param(collection_id, key, value) VALUES (%s, %s, %s)
-            ON CONFLICT (collection_id, key)
+            ON CONFLICT ON CONSTRAINT kb_param_scope_key
             DO UPDATE SET value=EXCLUDED.value, updated_at=now()
-        """, (cid, key, val))
+        """, (target, key, val))
         n += 1
     return n
 
@@ -313,14 +375,17 @@ def set_params(cid: int, values: dict) -> int:
 def load_params(cid: int | None = None) -> dict:
     """★ 執行時取值的**唯一入口**：DB 有覆寫用 DB，否則用 .env / 內建預設。
 
+    檢索參數讀全域那批；分塊參數讀該知識庫（cid=None → 讀全域，即未分組文件的預設）。
     回傳已轉型別並夾過範圍的 dict（key → value）。
     """
     import rag_config
 
-    overrides = get_param_overrides(cid) if cid else {}
+    glob = get_global_param_overrides()
+    own = get_param_overrides(cid) if cid else {}
     out: dict = {}
     for name, spec in rag_config.PARAM_SPECS.items():
-        raw = overrides.get(name)
+        src = glob if (_param_scope(name) == "global" or not cid) else own
+        raw = src.get(name)
         if raw in (None, ""):
             raw = spec["default"]
         out[name] = rag_config.coerce(name, raw)
@@ -328,14 +393,15 @@ def load_params(cid: int | None = None) -> dict:
 
 
 def effective_param(cid: int | None, name: str):
-    """單一參數的執行時值（檢索路徑用；帶 5 秒快取見 reply_engine）。"""
+    """單一參數的執行時值（檢索路徑用；5 秒快取見 kb_search.params_for）。"""
     import rag_config
 
     spec = rag_config.PARAM_SPECS.get(name)
     if not spec:
         return None
-    raw = None
-    if cid:
+    if _param_scope(name) == "global" or not cid:
+        raw = get_global_param_overrides().get(name)
+    else:
         raw = get_param_overrides(cid).get(name)
     if raw in (None, ""):
         raw = spec["default"]

@@ -3217,11 +3217,12 @@ function kbListPageHtml() {
       '<div class="kb-pg-head"><h3>知識庫</h3>' +
         '<div class="spacer" style="flex:1"></div>' +
         '<button class="btn primary" onclick="kbCreateCollection()">＋ 新增知識庫</button>' +
-        '<button class="btn sm" onclick="openKbParams(0)">參數配置（全域預設）</button>' +
+        '<button class="btn sm" onclick="openKbParams(0)">參數配置（檢索全域 · 分塊預設）</button>' +
         '<button class="btn sm" onclick="kbReload()">重新讀取</button>' +
       '</div>' +
       '<div class="hint">點一個知識庫進去，就會看到它底下的文件，以及「新增文檔」。' +
-      '每個知識庫有自己的一組檢索參數（可各自鬆緊）；停用的整庫不參與檢索。</div>' +
+      '檢索參數（門檻 / 召回數）<b>所有知識庫共用一組</b>；分塊參數可以每個庫各自設。' +
+      '停用的整庫不參與檢索。</div>' +
       colCards + ungroupedCard +
     '</div>';
 }
@@ -3507,12 +3508,17 @@ function kbDocPageHtml() {
       '</div>' +
 
       '<div class="row" style="margin:10px 0 4px;align-items:center">' +
-        '<b style="font-size:12.5px">分塊參數</b>' + kbChunkParamsHtml(cid) +
+        '<b style="font-size:12.5px">分塊參數</b>' +
+        '<span class="hint" style="margin:0 0 0 6px">（只屬於' +
+          esc(cid ? '這個知識庫' : '未分組文件') + '，別的庫不受影響）</span>' +
+        kbChunkParamsHtml(cid) +
       '</div>' +
       '<div class="row">' +
         '<button class="btn" onclick="kbPreviewChunks()">預覽分塊（不寫庫）</button>' +
         '<button class="btn" onclick="kbReparse()">重新分塊（寫庫）</button>' +
-        '<span class="hint" style="margin:0">改了塊長 / 策略要重新分塊；手改過的塊會被覆蓋，會先問你。</span>' +
+        '<button class="btn sm" onclick="kbSaveChunkDefaults()">存為本庫預設分塊參數</button>' +
+        '<span class="hint" style="margin:0">改了塊長 / 策略要重新分塊；「存為預設」之後這個庫的新文件都會用這組。' +
+        '檢索參數（門檻 / 召回數）是全庫共用的，到文件清單頁的「參數配置」改。手改過的塊會被覆蓋，會先問你。</span>' +
       '</div>' +
 
       kbPreviewHtml(arState.kbPreview) +
@@ -3854,6 +3860,23 @@ async function kbReparse() {
   await kbOpenDoc(d.id);
 }
 
+// 把分塊頁表單上的分塊參數「存成這個知識庫的預設」——
+// 之後這個庫上傳的新文件、以及沒帶 params 的重新分塊都會吃這組。
+// 未分組文件則存到「全域分塊預設」。
+async function kbSaveChunkDefaults() {
+  const d = arState.kbDoc && arState.kbDoc.doc;
+  if (!d) return;
+  const cid = d.collection_id || 0;
+  const c = ((arState.kb && arState.kb.collections) || []).find(x => x.id === cid);
+  const name = c ? ('「' + c.name + '」') : '「未分組文件」';
+  const res = await apiJson('/console/kb/params',
+    { collection_id: cid, values: kbReadChunkParams() });
+  if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
+  kbInvalidateParams();   // 參數快取清掉，其他頁面重讀才不會拿到舊的
+  kbChunkNote('<div class="test-result">✅ 已存成' + esc(name) +
+    '的預設分塊參數（只影響這個庫；下次上傳 / 重新分塊會用這組）。</div>');
+}
+
 async function kbEmbed(mode) {
   const d = arState.kbDoc && arState.kbDoc.doc;
   if (!d) return;
@@ -3968,7 +3991,8 @@ function kbInvalidateParams() {
   Object.keys(_kbParamCache).forEach(k => delete _kbParamCache[k]);
 }
 
-// cid = 0（或省略）= 全域預設；傳知識庫 id = 改那個庫的參數
+// cid 只決定「分塊參數」改哪一個知識庫（0 = 未分組文件）；
+// 檢索參數永遠是全域，不管從哪裡開、選哪個庫都改同一組。
 function openKbParams(cid) {
   arState.kbParamCid = Number(cid) || 0;
   const ov = document.getElementById('kbParamsOverlay');
@@ -3976,7 +4000,7 @@ function openKbParams(cid) {
   kbRenderParams();
 }
 
-// 彈窗裡自己換知識庫（不必先退出彈窗）
+// 彈窗裡自己換「分塊參數」的目標知識庫（不必先退出彈窗）
 function kbSwitchParamTarget(v) {
   arState.kbParamCid = Number(v) || 0;
   kbRenderParams();
@@ -4001,12 +4025,13 @@ async function kbRenderParams() {
   const title = document.getElementById('kbParamsTitle');
   const cols = (arState.kb && arState.kb.collections) || [];
   const c = cols.find(x => x.id === cid);
-  if (title) title.textContent = '檢索／分塊參數配置' + (c ? ' · ' + c.name : '');
+  const scopeName = c ? ('「' + c.name + '」') : '未分組文件';
+  if (title) title.textContent = '檢索參數（全域） · 分塊參數' + (c ? ' · ' + c.name : '');
 
-  // 彈窗標題列的下拉：這裡就能換知識庫（改的是哪一組參數要一眼看到）
+  // 下拉只決定「分塊參數」改哪一個知識庫 —— 檢索參數永遠是全域，不受它影響
   const sel = document.getElementById('kbParamTarget');
   if (sel) {
-    sel.innerHTML = '<option value="0">全域預設（.env）</option>' +
+    sel.innerHTML = '<option value="0">未分組文件（分塊預設）</option>' +
       cols.map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
     sel.value = String(cid);
   }
@@ -4026,18 +4051,19 @@ async function kbRenderParams() {
 
   body.innerHTML =
     '<div class="hint" style="margin-bottom:10px">' +
-      (cid ? '這裡改的是<b>這個知識庫</b>的參數，存在資料庫、<b>約 5 秒後生效</b>，不用重啟服務。'
-           : '目前顯示的是<b>全域預設</b>（來自 .env）。要改請先在上面選一個知識庫 —— ' +
-             '參數是按知識庫存的，這樣「A 庫嚴格、B 庫寬鬆」才成立。') +
-      '「重建」欄標 <b>是</b>的改動要重新切塊 + 重跑向量才會反映。</div>' +
-    group('A. 檢索參數（改完約 5 秒生效）',
-          '門檻與召回數直接決定第三層是「答得多」還是「答得準」。', d.retrieval || []) +
-    group('B. 分塊參數（改了要重新分塊 + 重新向量）',
-          '影響檢索的最小單位。塊太長會稀釋相似度，太短會斷章取義。', d.chunk || []) +
+      '檢索參數是<b>全域</b>的 —— 所有知識庫共用同一組，改完對<b>全部知識庫</b>生效' +
+      '（存在資料庫、約 5 秒生效，不用重啟服務）。分塊參數才是<b>按知識庫</b>分開設的，' +
+      '上面的下拉只切換分塊參數改哪一個。標「重建」的改動要重新切塊 + 重跑向量才會反映。</div>' +
+    group('A. 檢索參數（全域 · 所有知識庫共用）',
+          '門檻與召回數直接決定第三層是「答得多」還是「答得準」。不分知識庫。',
+          d.retrieval || []) +
+    group('B. 分塊參數（' + esc(scopeName) + '專用）',
+          '影響檢索的最小單位。塊太長會稀釋相似度，太短會斷章取義。' +
+          (cid ? '' : '目前目標是「未分組文件」的預設，其他知識庫不受影響。'),
+          d.chunk || []) +
     '<div class="row">' +
-      '<button class="btn ' + (cid ? 'primary' : '') + '"' + (cid ? '' : ' disabled') +
-        ' onclick="kbSaveParams()">儲存（' + (cid ? '這個知識庫' : '要先選知識庫') + '）</button>' +
-      '<button class="btn" onclick="kbResetParams()"' + (cid ? '' : ' disabled') + '>全部回復預設</button>' +
+      '<button class="btn primary" onclick="kbSaveParams()">儲存</button>' +
+      '<button class="btn" onclick="kbResetParams()">回復預設</button>' +
       (d.model ? '<span class="hint" style="margin:0">模型 ' + esc(d.model.model) +
         ' · ' + d.model.dim + ' 維 · 上限 ' + d.model.max_tokens + ' token</span>' : '') +
     '</div>' +
@@ -4086,22 +4112,27 @@ function kbReadParamForm(items) {
 
 async function kbSaveParams() {
   const cid = arState.kbParamCid || 0;
-  if (!cid) { alert('請先選一個知識庫'); return; }
   const note = document.getElementById('kbParamsNote');
   const d = kbCachedParams(cid) || {};
-  const values = Object.assign(kbReadParamForm(d.retrieval), kbReadParamForm(d.chunk));
+  // 兩組一起送出，後端按 group 分派：檢索 → 全域、分塊 → cid 這個知識庫
+  const values = Object.assign({}, kbReadParamForm(d.retrieval), kbReadParamForm(d.chunk));
   const res = await apiJson('/console/kb/params', { collection_id: cid, values: values });
   if (res.data.error) { if (note) note.innerHTML = '<div class="test-result">❌ ' + esc(res.data.error) + '</div>'; return; }
   _kbParamCache[String(cid)] = res.data.params;
   await kbRenderParams();
   const note2 = document.getElementById('kbParamsNote');
-  if (note2) note2.innerHTML = '<div class="test-result">✅ 已儲存 ' + res.data.saved + ' 項，約 5 秒後生效。</div>';
+  const c = ((arState.kb && arState.kb.collections) || []).find(x => x.id === cid);
+  if (note2) note2.innerHTML = '<div class="test-result">✅ 已儲存 ' + res.data.saved +
+    ' 項 —— 檢索參數存到<b>全域</b>（所有知識庫共用），分塊參數存到<b>' +
+    esc(c ? ('「' + c.name + '」') : '未分組文件') + '</b>。約 5 秒後生效。</div>';
 }
 
 async function kbResetParams() {
   const cid = arState.kbParamCid || 0;
-  if (!cid) return;
-  if (!confirm('把這個知識庫的參數全部清掉，改回 .env 預設？')) return;
+  const c = ((arState.kb && arState.kb.collections) || []).find(x => x.id === cid);
+  if (!confirm('清掉覆寫、改回 .env 預設？\n\n· 檢索參數 → 清「全域」（所有知識庫一起回預設）\n' +
+      '· 分塊參數 → 只清' + (c ? '「' + c.name + '」' : '「未分組文件」') +
+      '\n其他知識庫的分塊參數不受影響。')) return;
   const d = kbCachedParams(cid) || {};
   const clear = {};
   ['retrieval', 'chunk'].forEach(g => (d[g] || []).forEach(p => { clear[p.key] = null; }));

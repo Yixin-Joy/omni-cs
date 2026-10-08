@@ -119,6 +119,17 @@ with TestClient(main.app) as c:
     check(vals["top_k"] == 30 and vals["min_score"] == 0.0 and vals["chunk_strategy"] == "auto",
           "超出範圍被夾到邊界 / 非法選項回預設",
           f"top_k={vals['top_k']} min_score={vals['min_score']} strategy={vals['chunk_strategy']}")
+    # ★ 檢索參數存到「全域」：換另一個知識庫讀，值應該一模一樣（分塊參數不會跟著跑）
+    cols = body(c.get("/console/kb/collections"))["collections"]
+    other = next((x["id"] for x in cols if x["id"] != cid), None)
+    if other:
+        o = {i["key"]: i["value"] for i in
+             body(c.get(f"/console/kb/params?collection_id={other}"))["items"]}
+        check(o["top_k"] == 30,
+              f"檢索參數全庫共用（另一庫 #{other} 讀到同一組）",
+              f"top_k={o['top_k']}（本庫剛設 30）")
+    else:
+        check(True, "只有一個知識庫，跨庫共用略過")
     c.post("/console/kb/params", json={"collection_id": cid,
                                        "values": {"top_k": None, "min_score": None,
                                                   "chunk_strategy": None}})

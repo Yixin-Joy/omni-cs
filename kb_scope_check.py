@@ -5,7 +5,7 @@
 為什麼要這支：`kb_search.py` 有三處「看起來有處理、其實沒定義清楚」的地方，
 光讀碼看不出嚴重性，要用**真實資料量與真實問句**跑一遍才知道：
 
-    [1] 全域檢索（collection_id=None）時，最終的 top_k / min_score 是誰的？
+    [1] 檢索參數落在哪一層？（2026-10-08 起改成**全域**，這裡驗證它真的不分庫）
     [2] embedding 掛掉降級成純字面檢索時，門檻該是多少？（現在是 ×0.35）
     [3] `_INDEX_TTL = 5 秒` 過期後的「下一次請求」要付多少成本？併發時會不會重複付？
 
@@ -72,77 +72,60 @@ RELEVANT = ["藍牙耳機多少錢", "B 款耳機價格", "不想要了可以退
 IRRELEVANT = ["你們有賣冰箱嗎", "如何申請房屋貸款", "台北捷運末班車時間"]
 
 
-def restore_params(cid: int, saved: dict) -> None:
-    """把我動過的 key 還原：saved 裡沒有 → 傳 None 讓 set_params 刪掉覆寫。"""
-    vals = {k: saved.get(k) for k in TOUCHED}
-    kb_db.set_params(cid, vals)
+def restore_global(saved: dict) -> None:
+    """把我動過的檢索參數還原：saved 裡沒有 → 傳 None 讓 set_params 刪掉覆寫。
+
+    檢索參數一律落在「全域」（collection_id IS NULL），所以還原也是寫 None。
+    """
+    kb_db.set_params(None, {k: saved.get(k) for k in TOUCHED})
 
 
 # ======================================================================
-# [1] 全域檢索時，最終參數屬於誰？
+# [1] 檢索參數落在哪一層？（2026-10-08 起：全域，不分庫）
 # ======================================================================
 
 def section1(cids: list[int]) -> None:
-    hr("[1] 全域檢索（collection_id=None）的參數歸屬")
+    hr("[1] 檢索參數的歸屬（全域，所有知識庫共用）")
     rows = kb_db.load_ready_chunks(None)
     if not rows:
         sanity(False, "沒有可檢索的塊，跳過")
         return
-    first_cid = rows[0]["collection_id"]        # load_ready_chunks 是 ORDER BY c.doc_id
-    note("第一筆可檢索塊落在", f"cid={first_cid}（SQL 是 ORDER BY c.doc_id → 擁有最小 doc_id 的庫排前面）")
-    note("分組順序", str([c for c in dict.fromkeys(r["collection_id"] for r in rows)]))
-
-    others = [c for c in cids if c != first_cid]
-    if not others:
-        sanity(False, "只有一個可檢索的知識庫，跨庫參數衝突測不了")
-        return
-    a, b = first_cid, others[0]
-    saved = {c: kb_db.get_param_overrides(c) for c in (a, b)}
+    note("可檢索的庫", str([c for c in dict.fromkeys(r["collection_id"] for r in rows)]))
+    saved = kb_db.get_global_param_overrides()
     try:
-        # 造出「兩庫參數天差地遠」的局面
-        kb_db.set_params(a, {"top_k": 1, "min_score": 0.9})
-        kb_db.set_params(b, {"top_k": 20, "min_score": 0.05})
+        kb_db.set_params(None, {"top_k": 3, "min_score": 0.42})
         kb_search.invalidate()
         r = kb_search.search("藍牙耳機多少錢")
-        note(f"設定：A=#{a} top_k=1/min_score=0.9 ；B=#{b} top_k=20/min_score=0.05")
-        note("全域檢索回報的 params", json.dumps(
-            {k: r.params.get(k) for k in ("top_k", "min_score", "max_per_doc")}))
-        note("全域檢索實際用的 threshold", str(r.threshold))
-        note("每庫各自算出來的結果", json.dumps(r.per_collection, ensure_ascii=False))
+        note("設「全域」top_k=3 / min_score=0.42 → 檢索回報",
+             json.dumps({k: r.params.get(k) for k in ("top_k", "min_score", "max_per_doc")}))
+        note("實際用的 threshold", str(r.threshold))
+        verdict("1a", "全域檢索的參數由「doc_id 最小的那個庫」決定（不是全域統一的一組）",
+                not (int(r.params.get("top_k") or 0) == 3
+                     and abs(float(r.params.get("min_score") or 0) - 0.42) < 1e-9),
+                f"→ 實測 top_k={r.params.get('top_k')} min_score={r.params.get('min_score')}"
+                f"（設的是 3 / 0.42）")
 
-        verdict("1a", "全域檢索最終採用的參數＝**排在最前面的那個庫**（不是合併、也不是全域預設）",
-                abs(float(r.params.get("min_score") or 0) - 0.9) < 1e-9
-                and int(r.params.get("top_k") or 0) == 1,
-                f"→ min_score={r.params.get('min_score')} top_k={r.params.get('top_k')}"
-                f"（B 庫的 0.05/20 完全沒作用）")
-        verdict("1b", "連 top_k / max_per_doc 也被那一個庫決定（B 庫設 20 等於白設）",
-                len(r.hits) <= 1, f"→ 入選 {len(r.hits)} 塊")
-
-        b_row = next((x for x in r.per_collection if x["collection_id"] == b), None)
-        verdict("1c", "每庫的 `passed` 算了卻沒用：B 庫自己過門檻，整體仍判不通過",
-                bool(b_row and b_row["passed"]) and not r.passed,
-                f"→ B passed={b_row['passed'] if b_row else None} / res.passed={r.passed}")
-
-        # 對調兩庫參數 → 同一問句結果翻轉
-        kb_db.set_params(a, {"top_k": 20, "min_score": 0.05})
-        kb_db.set_params(b, {"top_k": 1, "min_score": 0.9})
-        kb_search.invalidate()
-        r2 = kb_search.search("藍牙耳機多少錢")
-        note("把兩庫參數對調後", f"threshold={r2.threshold} top_k={r2.params.get('top_k')}"
-             f" 入選={len(r2.hits)} res.passed={r2.passed}")
-        verdict("1d", "同一問句、同一份資料，只因「哪個庫的 doc_id 小」結果就不同（等於靠 row 順序決定）",
-                r2.threshold != r.threshold, f"→ threshold {r.threshold} ⇄ {r2.threshold}")
+        if cids:
+            c0 = cids[0]
+            kb_db.set_params(c0, {"top_k": 9, "min_score": 0.77})
+            kb_search.invalidate()
+            r2 = kb_search.search("藍牙耳機多少錢")
+            own = kb_db.get_param_overrides(c0)
+            verdict("1b", "對著某個知識庫寫檢索參數會變成「該庫專屬」（每庫一套）",
+                    not (int(r2.params.get("top_k") or 0) == 9 and "top_k" not in own),
+                    f"→ 實測 top_k={r2.params.get('top_k')}，該庫的 kb_param key={sorted(own)}"
+                    "（空 = 檢索參數沒落進這個庫）")
     finally:
-        for c in (a, b):
-            restore_params(c, saved[c])
+        restore_global(saved)
         kb_search.invalidate()
-    sanity(not any(kb_db.get_param_overrides(c) != saved[c] for c in (a, b)),
-           "已還原兩庫參數")
+    after = kb_db.get_global_param_overrides()
+    sanity(all(after.get(k) == saved.get(k) for k in TOUCHED),
+           "已還原全域參數", f"top_k={after.get('top_k')} min_score={after.get('min_score')}")
 
     mixed = set()
     for q in RELEVANT:
         mixed |= {h.collection_id for h in kb_search.search(q).candidates}
-    verdict("1e", "一次全域檢索的候選池跨多個知識庫，且沒有任何 scope/渠道概念可限制它",
+    verdict("1c", "一次全域檢索的候選池仍跨多個知識庫，且沒有任何 scope/渠道概念可限制它",
             len(mixed) >= 2,
             "→ 這次命中過的庫：" + str(sorted(mixed, key=lambda x: (x is None, x))))
 

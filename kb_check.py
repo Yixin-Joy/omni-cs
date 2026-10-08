@@ -232,11 +232,18 @@ if old:
     print(f"  （清掉上次自檢的 {len(old)} 份文件）")
 check(bool(cid), f"知識庫就緒 #{cid}")
 
-# 參數覆寫
+# 參數覆寫（★ 檢索參數全庫共用；分塊參數才按知識庫）
 kb_db.set_params(cid, {"top_k": 5, "min_score": "0.5", "chunk_size": 300})
 p = kb_db.load_params(cid)
 check(p["top_k"] == 5 and abs(p["min_score"] - 0.5) < 1e-9 and p["chunk_size"] == 300,
       "參數覆寫生效", f"top_k={p['top_k']} min_score={p['min_score']} size={p['chunk_size']}")
+other_cid = next((c["id"] for c in kb_db.list_collections() if c["id"] != cid), None)
+if other_cid:
+    po = kb_db.load_params(other_cid)
+    check(po["top_k"] == 5 and abs(po["min_score"] - 0.5) < 1e-9
+          and "top_k" not in kb_db.get_param_overrides(other_cid),
+          "檢索參數全庫共用（另一庫沒有自己的覆寫，也讀到同一組）",
+          f"other#{other_cid}: top_k={po['top_k']} min_score={po['min_score']}")
 kb_db.set_params(cid, {"top_k": None, "min_score": None, "chunk_size": None})
 p = kb_db.load_params(cid)
 check(p["top_k"] == 6 and p["chunk_size"] == 500, "刪除覆寫後回到預設",
