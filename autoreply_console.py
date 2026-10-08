@@ -571,6 +571,9 @@ async def test_engine(body: dict):
 
     `layers`：只跑指定的層，例如 `["faq","rag"]`。**只影響這次呼叫，不改 DB 開關**
     （`reply_engine.answer(layers=None)` 才是依開關的正式流程），也**不寫任何紀錄**。
+
+    `query_rewrite`：知識庫層要不要做多查詢改寫。不給就依知識庫的全域參數；
+    給 true / false 可單獨試「開與關的差別」，同樣**不改任何設定**。
     """
     text = (body.get("text") or "").strip()
     channel = (body.get("channel") or "whatsapp").strip().lower()
@@ -603,14 +606,18 @@ async def test_engine(body: dict):
             )
         except Exception:
             history = []
+    qr = body.get("query_rewrite")
+    if qr is not None and not isinstance(qr, bool):
+        return _err("query_rewrite 要是 true / false（不給 = 依知識庫參數）")
     try:
         answer = await reply_engine.answer(text, channel=channel, scope=scope,
-                                           history=history or [], layers=layers)
+                                           history=history or [], layers=layers,
+                                           query_rewrite=qr)
     except Exception as e:
         return _err(f"引擎錯誤：{e}", 500)
     return _ok({"ok": True, "label": answer.label, **answer.as_dict(),
                 "would_send": answer.hit, "history": history or [],
-                "layers": layers})
+                "layers": layers, "query_rewrite": qr})
 
 
 @router.post("/draft")

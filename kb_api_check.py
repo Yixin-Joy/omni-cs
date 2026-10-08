@@ -108,8 +108,14 @@ with TestClient(main.app) as c:
     keys = [i["key"] for i in d.get("items", [])]
     check(r.status_code == 200 and "top_k" in keys and "chunk_size" in keys,
           f"GET /params 回 {len(keys)} 個參數")
-    check(len(d.get("retrieval", [])) == 6 and len(d.get("chunk", [])) == 6,
-          "參數分組正確（retrieval 6 / chunk 6）")
+    # retrieval 6 → 7：多了 query_rewrite（多查詢檢索開關）
+    check(len(d.get("retrieval", [])) == 7 and len(d.get("chunk", [])) == 6,
+          "參數分組正確（retrieval 7 / chunk 6）")
+    check("query_rewrite" in [i["key"] for i in d.get("retrieval", [])],
+          "檢索參數含 query_rewrite（查詢改寫開關）",
+          f"scope={next((i.get('scope') for i in d.get('retrieval', []) if i['key'] == 'query_rewrite'), None)}")
+    check(all(i.get("scope") == "global" for i in d.get("retrieval", [])),
+          "檢索參數全部標成全域（改了全庫一起生效）")
 
     r = c.post("/console/kb/params", json={"collection_id": cid,
                                           "values": {"top_k": 99, "min_score": "-5",

@@ -24,6 +24,8 @@
   POST /console/kb/chunk/delete             刪除知識塊
   GET  /console/kb/search                   混合檢索（調參／除錯用，不寫任何紀錄）
   POST /console/kb/search                   同上（POST 版，參數多時好用）
+                                            · 帶 rewrite=1 → 先改寫查詢再多查詢檢索
+                                            · history 可給上下文（純文字或 [{direction,text}]）
 """
 import asyncio
 import json
@@ -506,9 +508,14 @@ async def chunk_delete(body: dict):
 # ======================================================================
 
 def _run_search(body: dict) -> dict:
+    """同步檢索（不改任何設定、不寫任何紀錄）。`queries` 已算好時走多查詢版本。"""
     cid = _int_or_none(body.get("collection_id"))
-    res = kb_search.search(
-        (body.get("query") or body.get("q") or "").strip(),
+    queries = body.get("queries")
+    if not queries:
+        queries = [(body.get("query") or body.get("q") or "").strip()]
+    fn = kb_search.search_multi if len(queries) > 1 else kb_search.search
+    res = fn(
+        queries if len(queries) > 1 else queries[0],
         collection_id=cid,
         top_k=_int_or_none(body.get("top_k")),
         min_score=_float_or_none(body.get("min_score")),
@@ -520,18 +527,48 @@ def _run_search(body: dict) -> dict:
     return out
 
 
+async def _search_any(body: dict) -> dict:
+    """檢索端點的共同入口。帶 `rewrite=1` 就先用上下文改寫出 N 條查詢再一起檢索。
+
+    這裡是**調參用**的端點：改寫結果會直接回在 `queries` 裡，方便肉眼確認提示詞
+    有沒有抓到同音錯別字、有沒有把指代補齊（`history` 可傳純文字或
+    `[{direction,text},…]`，不傳就沒有上下文可補）。
+    """
+    body = dict(body)
+    query = (body.get("query") or body.get("q") or "").strip()
+    queries = [query]
+    if (body.get("rewrite") or body.get("query_rewrite")) and query:
+        raw = body.get("history")
+        if isinstance(raw, list):
+            import reply_engine
+            history_text = reply_engine.format_history(raw)
+        else:
+            history_text = str(raw or "")
+        try:
+            import deepseek_client
+            extra = await deepseek_client.DeepSeekClient().rewrite_rag_queries(
+                query, history_text, count=rag_config.RAG_QUERY_REWRITE_N)
+            queries += extra
+        except Exception as e:
+            log.warning("查詢改寫失敗（改用原問句）: %s", e)
+    body["queries"] = queries
+    return await asyncio.to_thread(_run_search, body)
+
+
 @router.get("/search")
 async def search_get(q: str = "", collection_id: str = "", top_k: str = "",
-                     min_score: str = "", candidates: int = 30):
-    return _ok(await asyncio.to_thread(_run_search, {
+                     min_score: str = "", candidates: int = 30,
+                     rewrite: str = "", history: str = ""):
+    return _ok(await _search_any({
         "query": q, "collection_id": collection_id, "top_k": top_k,
         "min_score": min_score, "candidates": candidates,
+        "rewrite": rewrite, "history": history,
     }))
 
 
 @router.post("/search")
 async def search_post(body: dict):
-    return _ok(await asyncio.to_thread(_run_search, body))
+    return _ok(await _search_any(body))
 
 
 @router.get("/index-stats")

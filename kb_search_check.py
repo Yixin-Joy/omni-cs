@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""RAG 知識庫檢索自檢（P2）：混合召回的 top-1 命中率與分數分佈。
+"""RAG 知識庫檢索自檢（P2）：混合召回的 top-1 命中率、分數分佈與多查詢合併。
 
 可重複執行：自建一份小知識庫（先清空重建）→ 跑一組已知問句 → 印出召回明細。
 **重點是分數分佈**：`min_score` 的預設值 0.55 是估的，這支腳本印出真實分佈，
@@ -91,6 +91,12 @@ def build_fixtures() -> int:
     for c in kb_db.list_collections():
         if c["name"] == CHECK_COLLECTION:
             cid = c["id"]
+            # ⚠️ 整庫被停用時 `load_ready_chunks` 會一塊都撈不到（`cc.enabled` 那道閘門），
+            #    然後這一整支腳本會「全部 FAIL」看起來像程式壞了 —— 其實只是自檢庫被停用。
+            #    自檢庫是自己建的測試資料，這裡直接確保它是開的（並講出來，不偷偷改設定）。
+            if not c.get("enabled", True):
+                print(f"  （自檢庫 #{cid} 原本是停用的 → 自動啟用，跑完可自行停用）")
+                kb_db.update_collection(cid, {"enabled": True})
     if not cid:
         cid = kb_db.create_collection(CHECK_COLLECTION, "RAG 檢索自檢用，可刪")["id"]
     old = kb_db.list_documents(cid)
@@ -197,6 +203,56 @@ r = kb_search.search("藍牙耳機多少錢")
 check(bool(r.hits) and len(r.per_collection) >= 1,
       f"全域檢索命中 {len(r.hits)} 塊，涵蓋 {len(r.per_collection)} 個知識庫",
       f"top1={r.top1:.3f}")
+
+print("\n[8] 多查詢檢索（勾「查詢改寫」時走的路）…")
+# 8a 只有一條 → 直接退化成單查詢，結果要一致
+one = kb_search.search_multi(["藍牙耳機多少錢"], collection_id=cid)
+base = kb_search.search("藍牙耳機多少錢", collection_id=cid)
+check(abs(one.top1 - base.top1) < 1e-9 and len(one.hits) == len(base.hits),
+      "只有 1 條查詢時等於 search()", f"top1={one.top1:.3f} / {len(one.hits)} 塊")
+
+# 8b 錯別字救援：原問句（打錯字）撈不到，靠改寫句補回來
+TYPO = "藍芽耳機多少千"
+FIXED = "藍牙耳機多少錢"
+r_typo = kb_search.search(TYPO, collection_id=cid)
+r_multi = kb_search.search_multi([TYPO, FIXED], collection_id=cid)
+print(f"    純錯字問句「{TYPO}」：top1={r_typo.top1:.3f}，入選 {len(r_typo.hits)} 塊")
+print(f"    加上改寫句「{FIXED}」：top1={r_multi.top1:.3f}，入選 {len(r_multi.hits)} 塊")
+check(r_multi.top1 > r_typo.top1, "多查詢後最高分上升（改寫句真的救了回來）",
+      f"{r_typo.top1:.3f} → {r_multi.top1:.3f}")
+
+# 8c 合併語意：每個 chunk 只出現一次、取最高分、top_k 只套一次
+r_top1 = kb_search.search_multi([TYPO, FIXED], collection_id=cid, top_k=1)
+check(len(r_top1.hits) == 1, "多查詢時 top_k 只套一次（不會各查各的變成 N 倍）",
+      f"top_k=1 → {len(r_top1.hits)} 塊")
+check(r_top1.top1 == r_multi.top1, "top_k 不影響 top1（取的是最高分那塊）",
+      f"{r_top1.top1:.3f} vs {r_multi.top1:.3f}")
+ids = [h.chunk_id for h in r_multi.candidates]
+check(len(ids) == len(set(ids)), "候選不重複（同一塊只留一份）",
+      f"{len(ids)} 塊 / {len(set(ids))} 不重複")
+check(sorted(r_multi.queries) == sorted([TYPO, FIXED]),
+      "SearchResult.queries 記下這次實際用的查詢（原句固定排第 0）",
+      str(r_multi.queries))
+check(r_multi.query == TYPO, "SearchResult.query 仍是客戶原問句", r_multi.query)
+
+# 8d 溯源：每一塊都記得「被哪幾條查詢撈到」
+tagged = [h for h in r_multi.candidates if h.queries]
+check(len(tagged) == len(r_multi.candidates), "每個候選塊都帶 queries（溯源用）",
+      f"{len(tagged)}/{len(r_multi.candidates)}")
+by_fixed = [h for h in r_multi.candidates if FIXED in h.queries]
+check(bool(by_fixed), "改寫句確實參與了召回（有塊被它撈到）", f"{len(by_fixed)} 塊")
+# 這組語料裡錯字句與正確句共用「耳機／多少」等詞，所以原句也撈得到同一批 →
+# 「只有改寫句撈到」不必然存在，只印出來當觀察（真實客服語料才容易出現純錯字問句）。
+only_fixed = [h for h in r_multi.candidates if FIXED in h.queries and TYPO not in h.queries]
+print(f"    其中「只有改寫句撈到」的：{len(only_fixed)} 塊"
+      "（這組語料的原句也撈得到同一批，數字為 0 屬正常；重點是上面的分數有被拉高）")
+check(all(FIXED in h.queries or TYPO in h.queries for h in r_multi.candidates),
+      "候選塊的 queries 都落在這次送出的查詢集合內")
+check(bool(kb_search.search_multi([], collection_id=cid).reason == "empty_query"),
+      "空查詢清單 → empty_query（不會炸）")
+check(isinstance(kb_search.query_rewrite_enabled(), bool),
+      "query_rewrite_enabled() 讀得到全域參數",
+      f"目前 = {kb_search.query_rewrite_enabled()}")
 
 print("\n" + "=" * 78)
 if FAIL:
