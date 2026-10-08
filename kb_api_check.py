@@ -204,6 +204,23 @@ with TestClient(main.app) as c:
                         (cid,))
     check(int(ready[0]["c"]) == len(doc_ids), f"{len(doc_ids)} 份文件都 ready（{ready[0]['c']}）")
 
+    print("\n[5b] 檢索端點")
+    r = c.get(f"/console/kb/index-stats?collection_id={cid}")
+    d = body(r)
+    check(r.status_code == 200 and d["stats"]["chunks"] > 0,
+          f"GET /index-stats → {d['stats']['chunks']} 塊 / dim {d['stats']['dim']}")
+    r = c.get(f"/console/kb/search?q=%E8%97%8D%E7%89%99%E8%80%B3%E6%A9%9F&collection_id={cid}")
+    d = body(r)
+    check(r.status_code == 200 and d.get("hits"),
+          f"GET /search（藍牙耳機）→ top1={d.get('top1')} 入選 {len(d.get('hits') or [])} 塊",
+          f"passed={d.get('passed')} threshold={d.get('threshold')}")
+    r = c.post("/console/kb/search", json={"query": "退貨", "collection_id": cid, "top_k": 1})
+    d = body(r)
+    check(r.status_code == 200 and len(d.get("hits") or []) == 1, "POST /search top_k=1 只回 1 塊")
+    check(bool(d.get("context")), "回傳可餵給模型的 context", f"{len(d.get('context') or '')} 字")
+    check(bool(d.get("candidates")), "回傳候選明細（溯源用）",
+          f"{len(d.get('candidates') or [])} 筆")
+
     print("\n[6] 知識塊微調端點")
     ch = kb_db.list_chunks(did)
     if len(ch) >= 2:
@@ -248,7 +265,8 @@ with TestClient(main.app) as c:
 
     print("\n[8] 端點齊全性（路由存在）")
     for path in ("/console/kb/overview", "/console/kb/collections", "/console/kb/params",
-                 "/console/kb/documents", "/console/kb/doc-types"):
+                 "/console/kb/documents", "/console/kb/doc-types", "/console/kb/search",
+                 "/console/kb/index-stats"):
         r = c.get(path)
         check(r.status_code == 200, f"GET {path} → {r.status_code}")
 
