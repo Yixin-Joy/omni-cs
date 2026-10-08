@@ -103,6 +103,11 @@ with TestClient(main.app) as c:
           "POST /collections/update")
 
     print("\n[2] 參數配置")
+    # ⚠️ 檢索參數是**全域**的，這一段會寫到正式設定 → 先把原值存起來，最後還原。
+    #    沒有存就還原的話，會把人家調好的 min_score / top_k 清成預設（踩過）。
+    saved_global = kb_db.get_global_param_overrides()
+    saved_global = {k: saved_global.get(k) for k in ("top_k", "min_score")}
+    saved_chunk = {k: kb_db.get_param_overrides(cid).get(k) for k in ("chunk_strategy",)}
     r = c.get(f"/console/kb/params?collection_id={cid}")
     d = body(r)
     keys = [i["key"] for i in d.get("items", [])]
@@ -136,9 +141,13 @@ with TestClient(main.app) as c:
               f"top_k={o['top_k']}（本庫剛設 30）")
     else:
         check(True, "只有一個知識庫，跨庫共用略過")
+    # 還原成自檢前的正式設定（None = 本來就沒有覆寫 → 刪掉）
     c.post("/console/kb/params", json={"collection_id": cid,
-                                       "values": {"top_k": None, "min_score": None,
-                                                  "chunk_strategy": None}})
+                                       "values": dict(saved_global, **saved_chunk)})
+    after = kb_db.get_global_param_overrides()
+    check(all(after.get(k) == saved_global.get(k) for k in ("top_k", "min_score")),
+          "自檢沒有改動正式的全域檢索參數",
+          f"top_k={after.get('top_k')} min_score={after.get('min_score')}")
 
     print("\n[3] 上傳 → 解析 → 分塊")
     samples = ensure_samples()

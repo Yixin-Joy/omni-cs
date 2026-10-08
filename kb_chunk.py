@@ -85,7 +85,11 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def _split_long(text: str, hi: int, overlap: int) -> list[str]:
-    """把一個超長段落切成若干 ≤ hi 的片段（重疊 overlap 字）。"""
+    """把一個超長段落切成若干 ≤ hi 的片段（重疊 overlap 字）。
+
+    重疊同樣不得讓片段超過 hi —— 否則 `chunk_max` 就形同虛設
+    （單句貼近 hi 時，接上尾端重疊會直接爆表）。
+    """
     pieces: list[str] = []
     buf = ""
     for sent in _split_sentences(text) or [text]:
@@ -97,7 +101,8 @@ def _split_long(text: str, hi: int, overlap: int) -> list[str]:
             sent = sent[max(1, hi - overlap):]
         if buf and len(buf) + len(sent) > hi:
             pieces.append(buf)
-            buf = (buf[-overlap:] if overlap else "") + sent
+            tail = buf[-overlap:] if overlap else ""
+            buf = (tail + sent) if len(tail) + len(sent) <= hi else sent
         else:
             buf += sent
     if buf.strip():
@@ -133,18 +138,35 @@ def _pack(blocks: list[Block], strategy: str, target: int, lo: int, hi: int,
     """回傳 [(合併後的內文, 首塊, 尾塊)]。
 
     首塊／尾塊用來保留來源座標（頁碼 / 列範圍），合併後仍能溯源。
+
+    ⚠️ **重疊（overlap）只能在「開新塊」時把上一塊的尾端接進來**，不可以在累積途中
+    拿尾端去取代緩衝區 —— 那種寫法會把還沒收成塊的內容直接丟掉，是「重疊」變成
+    「截斷」的經典錯誤（實測 600 字只剩 281 字，兩個段落整段消失）。
+    這裡用 `carry` 單獨記住「上一塊的尾端」，緩衝區本身只累加、不刪減。
+
+    ⚠️ 另外要記住「這一塊開頭實際放了多少重疊」（`carry_used`）—— 因為尾端的小碎塊
+    可能被併回**同一塊**（見下方「太小的塊併進前一塊」）；那時若不把它開頭的重疊
+    拿掉，就會出現「一塊自己重複自己尾巴」的內容（實測 JSON 區塊尾巴整段重複）。
     """
-    out: list[tuple[str, Block, Block]] = []
+    # (內文, 首塊, 尾塊, 開頭放進去的重疊字)
+    out: list[tuple[str, Block, Block, str]] = []
     group_key = None
     buf = ""
     first: Block | None = None
     last: Block | None = None
+    carry = ""          # 上一塊的尾端（下一塊開頭要重疊的那段）
+    carry_used = ""     # 這一塊開頭實際放進去的重疊
 
-    def flush():
-        nonlocal buf, first, last
+    def flush(keep_overlap: bool = True):
+        nonlocal buf, first, last, carry, carry_used
         if buf.strip() and first is not None and last is not None:
-            out.append((buf.strip(), first, last))
-        buf, first, last = "", None, None
+            out.append((buf.strip(), first, last, carry_used))
+            carry = _tail(buf, overlap) if overlap else ""
+        else:
+            carry = ""
+        buf, first, last, carry_used = "", None, None, ""
+        if not keep_overlap:
+            carry = ""
 
     for b in blocks:
         text = (b.text or "").strip()
@@ -152,22 +174,25 @@ def _pack(blocks: list[Block], strategy: str, target: int, lo: int, hi: int,
             continue
         key = _group_key(b, strategy)
         if group_key is not None and key != group_key:
-            flush()
+            # 跨群組（換頁 / 換節 / 換工作表）不帶重疊，免得把上一頁的內容混進來
+            flush(keep_overlap=False)
         group_key = key
 
         if len(text) > hi:                          # 單一塊就超長 → 先切
-            flush()
+            flush(keep_overlap=False)
             for piece in _split_long(text, hi, overlap):
-                out.append((piece, b, b))
+                out.append((piece, b, b, ""))
             continue
 
-        sep = "\n" if buf else ""
-        if buf and len(buf) + len(sep) + len(text) > hi:
+        if buf and len(buf) + 1 + len(text) > hi:
             flush()
-        if buf and overlap and len(buf) >= overlap + 20:
-            buf = _tail(buf, overlap) + "\n" + text
+        if not buf:
+            # 開新塊：先接上一塊的尾端當重疊（放不下就放棄重疊，內容優先）
+            head = carry if (carry and len(carry) + 1 + len(text) <= hi) else ""
+            buf = (head + "\n" + text) if head else text
+            carry_used, carry = head, ""
         else:
-            buf += sep + text
+            buf += "\n" + text
         if first is None:
             first = b
         last = b
@@ -178,14 +203,18 @@ def _pack(blocks: list[Block], strategy: str, target: int, lo: int, hi: int,
 
     # 太小的塊併進前一塊（同群組才併，避免跨節、跨頁、跨工作表）
     merged: list[tuple[str, Block, Block]] = []
-    for text, f, l in out:
+    for text, f, l, ov_head in out:
         if (merged and len(text) < lo
-                and _group_key(f, strategy) == _group_key(merged[-1][1], strategy)
-                and len(merged[-1][0]) + 1 + len(text) <= hi):
-            pt, pf, _pl = merged[-1]
-            merged[-1] = (pt + "\n" + text, pf, l)
-        else:
-            merged.append((text, f, l))
+                and _group_key(f, strategy) == _group_key(merged[-1][1], strategy)):
+            add = text
+            if ov_head and text.startswith(ov_head):
+                # 這段開頭本來就是前一塊的尾端（重疊），併回去時要拿掉，否則會自己重複自己
+                add = text[len(ov_head):].lstrip("\n")
+            if len(merged[-1][0]) + 1 + len(add) <= hi:
+                pt, pf, _pl = merged[-1]
+                merged[-1] = (pt + "\n" + add, pf, l)
+                continue
+        merged.append((text, f, l))
     return merged
 
 
