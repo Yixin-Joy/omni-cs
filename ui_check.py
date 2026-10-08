@@ -568,6 +568,12 @@ has(tabsHtml, '照目前開關重設', '有「照目前開關重設」');
 has(tabsHtml, '目前開關：', '顯示實際開關狀態');
 has(tabsHtml, 'ktTarget', '有渠道 / 場景選擇');
 has(tabsHtml, '不會發送任何訊息、不會改上面的開關、也不寫任何紀錄', '明講不會有副作用');
+// 知識庫查詢改寫：三態選擇（跟隨設定 / 這次強制開 / 這次強制關）
+has(tabsHtml, '知識庫查詢改寫', '有查詢改寫的選擇');
+has(tabsHtml, '依知識庫設定', '查詢改寫預設「依知識庫設定」');
+has(tabsHtml, 'arState.ktRewrite=this.value', '選擇會寫進 arState.ktRewrite');
+ck(arState.ktRewrite === '', '查詢改寫預設不覆寫（不影響正式設定）',
+   JSON.stringify(arState.ktRewrite));
 
 console.log('\n[4b] 試跑卡片已從「自動回復」頁搬走（設計稿 §11.2）');
 const arHtml = autoreplyTabHtml();
@@ -617,6 +623,18 @@ let noRows = ktResultHtml({ tier: 'miss', label: '自動回復未命中', would_
 ok(noRows, 'ktResultHtml(無明細)', 60);
 has(noRows, '沒有可送出的回覆', '沒有回覆時的文案');
 hasNot(noRows, '知識庫召回明細', '沒有明細時不出明細區塊');
+// 勾了查詢改寫時，結果卡要把「這次實際拿去檢索的每一條查詢」列出來
+const withQ = ktResultHtml(Object.assign({}, FX.test_rag_hit, {
+  rag_queries: ['藍芽耳機多少千', '藍牙耳機多少錢'], rag_threshold: 0.4,
+  rag_candidates: 8, tier: 'rag', label: '自動回復-知識庫命中', would_send: true,
+}));
+ok(withQ, 'ktResultHtml(帶 rag_queries)', 150);
+has(withQ, '知識庫實際檢索的查詢', '多查詢時列出實際用的查詢');
+has(withQ, '原句', '標出哪一條是原問句');
+has(withQ, '改寫1', '標出改寫句');
+ck(ktResultHtml(Object.assign({}, FX.test_rag_hit, { rag_queries: ['只有一句'] }))
+     .indexOf('知識庫實際檢索的查詢') < 0,
+   '單查詢時不列查詢清單（不洗版）');
 
 console.log('\n[6] 召回明細渲染（紀錄頁 / 命中測試共用）');
 const mr = renderMatchedRows(FX.matched_rows, true);
@@ -635,6 +653,30 @@ ck(renderMatchedRows(null, true) === '', 'renderMatchedRows(null) 回空字串�
 ck(renderMatchedRows([null, 'x', 3], true).indexOf('[object') < 0,
    'renderMatchedRows(壞資料) 不產生 [object Object]');
 ck(renderMatchedRows([], true) === '', 'renderMatchedRows([]) 回空字串');
+
+console.log('\n[6b] 多查詢檢索（查詢改寫）的顯示');
+// 單查詢時不該多出「命中查詢」那一行（避免正常情況被洗版）
+const singleRow = [{ chunk_id: 1, doc: 'a.md', final: 0.5, vec: 0.5, lex: 0.2,
+                     picked: true, text: 't', queries: ['藍牙耳機多少錢'] }];
+ck(renderMatchedRows(singleRow, true).indexOf('命中查詢') < 0,
+   '單查詢時不顯示「命中查詢」（不洗版）');
+const multiRow = [
+  { chunk_id: 1, doc: 'a.md', final: 0.6, vec: 0.6, lex: 0.3, picked: true,
+    text: 't', queries: ['藍芽耳機多少千', '藍牙耳機多少錢'] },
+  { chunk_id: 2, doc: 'b.md', final: 0.2, vec: 0.2, lex: 0.1, picked: false,
+    text: 'u', queries: ['藍芽耳機多少千'] },
+];
+const mrMulti = renderMatchedRows(multiRow, true);
+ok(mrMulti, 'renderMatchedRows(多查詢)', 150);
+has(mrMulti, '命中查詢', '多查詢時每塊標出命中查詢');
+has(mrMulti, '藍牙耳機多少錢', '看得到改寫句');
+has(mrMulti, '多查詢檢索', '摘要說明這次是多查詢檢索');
+// 沒有 queries 欄位的舊資料不能因此爆掉
+const oldRow = [{ chunk_id: 3, doc: 'c.md', final: 0.4, vec: 0.4, lex: 0.1,
+                  picked: true, text: 'v' }];
+ok(renderMatchedRows(oldRow, true), 'renderMatchedRows(舊資料沒有 queries)', 40);
+ck(renderMatchedRows(oldRow, true).indexOf('命中查詢') < 0,
+   '舊資料（無 queries）不會顯示命中查詢');
 
 console.log('\n[7] 紀錄頁');
 arState.settings = FX.settings;

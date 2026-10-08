@@ -13,6 +13,8 @@
       │
       ├─ 第三層：RAG 知識庫 ── 混合檢索命中文件，交給 DeepSeek 依文件生成答案
       │        （整層停用，或 top1 未過門檻 → 不呼叫模型，直接降級）
+      │        勾了「查詢改寫」→ **檢索前**先改寫出 N 條查詢（修同音錯別字＋補上下文），
+      │        與原問句一起檢索再合併取高分（多查詢檢索，見 kb_search.search_multi）
       │
       └─ 第四層：不自動回覆 → 降級人工，該則訊息標為「自動回復未命中，待處理」
 
@@ -30,6 +32,7 @@ import time
 
 import config
 import faq_matcher
+import rag_config
 from deepseek_client import DeepSeekClient, DeepSeekError, looks_answered
 
 log = logging.getLogger("wechat-forwarder")
@@ -193,14 +196,15 @@ class Answer:
 
     __slots__ = ("tier", "text", "faq_id", "score", "rewrote", "reason", "detail",
                  "matched_question", "table_context_chars", "rewritten_query",
-                 "history_used", "matched_rows", "rag_threshold", "rag_candidates")
+                 "history_used", "matched_rows", "rag_threshold", "rag_candidates",
+                 "rag_queries")
 
     def __init__(self, tier: str, text: str = "", *, faq_id: int | None = None,
                  score: float | None = None, rewrote: bool = False, reason: str = "",
                  detail: str = "", matched_question: str = "", table_context_chars: int = 0,
                  rewritten_query: str = "", history_used: int = 0,
                  matched_rows: list | None = None, rag_threshold: float | None = None,
-                 rag_candidates: int = 0):
+                 rag_candidates: int = 0, rag_queries: list | None = None):
         self.tier = tier
         self.text = text
         self.faq_id = faq_id
@@ -216,6 +220,8 @@ class Answer:
         self.matched_rows = matched_rows
         self.rag_threshold = rag_threshold
         self.rag_candidates = rag_candidates
+        # 這次實際拿去檢索的查詢句（多查詢改寫時第 0 條是原問句，其餘是改寫句）
+        self.rag_queries = rag_queries or []
 
     @property
     def hit(self) -> bool:
@@ -243,7 +249,8 @@ class Answer:
                 "rewritten_query": self.rewritten_query, "history_used": self.history_used,
                 "matched_rows": self.matched_rows,
                 "rag_threshold": self.rag_threshold,
-                "rag_candidates": self.rag_candidates}
+                "rag_candidates": self.rag_candidates,
+                "rag_queries": self.rag_queries}
 
 
 def _layer_on(tier: str, layers) -> bool:
@@ -299,48 +306,74 @@ async def _table_try(question: str, context: str, flavor: str, post_context: str
 # ---------- 第三層：RAG 知識庫 ----------
 
 async def _rag_try(question: str, flavor: str, post_context: str, score: float | None,
-                   history_text: str = "", history_used: int = 0
-                   ) -> tuple[Answer | None, str, dict]:
+                   history_text: str = "", history_used: int = 0,
+                   rewrite: bool | None = None) -> tuple[Answer | None, str, dict]:
     """試著用知識庫回答。回傳 (命中就 Answer, 未命中就說明字串, 召回明細)。
 
     ⚠️ 第三個回傳值（明細）在**未命中時也要帶**：設計稿 §9 講得很明白 ——
     「未命中的記錄也要能點開，看它檢索到什麼、為什麼沒過門檻，這才是調參最需要的」。
     只在命中時才寫明細的話，最該看的那一類紀錄反而空白。
 
-    指代型追問（「那這個多少錢？」）第一次檢索通常撈不到東西 —— 這時才帶對話請模型
-    改寫問句再檢索一次。**只在第一次沒過門檻時才做**，平常不會多花一次模型呼叫。
+    `rewrite`：檢索前要不要做「多查詢改寫」。
+        None  = 依知識庫的全域參數（正式流程走這條）
+        True  = 這次強制做（命中測試頁用，不改 DB 參數）
+        False = 這次強制不做
+    **勾了就在檢索前**把原問句連同改寫出的 N 條一起送去檢索（`kb_search.search_multi`），
+    而不是等第一次查不到才補救 —— 錯別字型的問句第一次就註定查不到，那時已經太晚。
+
+    沒勾時仍保留舊行為：第一次沒過門檻、且有對話可參考時，才改寫一次再檢索。
     """
     import kb_search
 
-    async def _search(q: str):
-        return await asyncio.to_thread(kb_search.search, q)
+    use_rewrite = kb_search.query_rewrite_enabled() if rewrite is None else bool(rewrite)
+
+    queries = [question]
+    rewrote = False
+    rewritten = ""
+    rewrite_note = ""
+    if use_rewrite:
+        try:
+            extra_q = await DeepSeekClient().rewrite_rag_queries(
+                question, history_text, count=rag_config.RAG_QUERY_REWRITE_N,
+                post_context=post_context)
+        except DeepSeekError as e:
+            log.warning("知識庫 query 改寫失敗（沿用原問句）: %s", e)
+            extra_q = []
+            rewrite_note = f"（查詢改寫失敗，沿用原問句：{e}）"
+        if extra_q:
+            queries += extra_q
+            rewrote = True
+            rewritten = " ｜ ".join(extra_q)
+        else:
+            rewrite_note = rewrite_note or "（改寫後沒有可用的新問句，沿用原問句）"
 
     try:
-        res = await _search(question)
+        res = await asyncio.to_thread(kb_search.search_multi, queries)
     except Exception as e:
         log.warning("知識庫檢索失敗: %s", e)
         return None, f"知識庫：檢索失敗（{e}）", {}
 
-    rewrote = False
-    rewritten = ""
-    if not res.passed and history_text.strip() and config.DEEPSEEK_API_KEY:
+    # 舊的單句改寫 fallback：**只在這次沒做多查詢改寫時**才做。
+    # 已經勾了改寫就等於「檢索前該補的都補過了」，再改一次只是多花一次模型呼叫。
+    if not use_rewrite and not res.passed and history_text.strip() and config.DEEPSEEK_API_KEY:
         try:
-            rewritten = await DeepSeekClient().rewrite_table_query(question, history_text)
+            single = await DeepSeekClient().rewrite_table_query(question, history_text)
         except DeepSeekError as e:
             log.debug("知識庫 query 改寫失敗（沿用原問句）: %s", e)
-            rewritten = ""
-        if rewritten and rewritten != question:
+            single = ""
+        if single and single != question:
             try:
-                res2 = await _search(rewritten)
+                res2 = await asyncio.to_thread(kb_search.search, single)
             except Exception as e:
                 log.warning("知識庫改寫後檢索失敗: %s", e)
                 res2 = None
             if res2 is not None and res2.top1 > res.top1:
-                res, rewrote = res2, True
+                res, rewrote, rewritten = res2, True, single
 
     rows = [h.as_dict() for h in res.candidates[:30]]
     extra = dict(matched_rows=rows, rag_threshold=res.threshold,
-                 rag_candidates=len(res.candidates), top1=res.top1)
+                 rag_candidates=len(res.candidates), top1=res.top1,
+                 rag_queries=list(res.queries or []))
 
     if res.reason == "empty_index":
         return None, "知識庫：還沒有已上線的文件", extra
@@ -348,7 +381,7 @@ async def _rag_try(question: str, flavor: str, post_context: str, score: float |
         return None, "知識庫：沒有檢索到任何知識塊", extra
     if not res.passed:
         return None, (f"知識庫：最高分 {res.top1:.3f} 未達門檻 {res.threshold:.2f}"
-                      f"（已擋下，不呼叫模型）"), extra
+                      f"（已擋下，不呼叫模型）{rewrite_note}"), extra
 
     context = res.context(int(res.params.get("max_context_chars") or 0))
     try:
@@ -365,11 +398,14 @@ async def _rag_try(question: str, flavor: str, post_context: str, score: float |
     detail = (f"知識庫命中 {len(res.hits)} 塊（最高分 {res.top1:.3f}／門檻 "
               f"{res.threshold:.2f}），主要來源：{top.source}")
     if rewrote:
-        detail = f"改寫後命中（「{question}」 → 「{rewritten}」）：{detail}"
+        detail = f"查詢改寫後命中（原問句「{question}」，改寫為「{rewritten}」）：{detail}"
+    if rewrite_note:
+        detail += rewrite_note
     return Answer(TIER_RAG, _tidy(out), score=res.top1, rewrote=rewrote,
                   rewritten_query=rewritten, history_used=history_used if rewrote else 0,
                   detail=detail, matched_rows=rows, rag_threshold=res.threshold,
-                  rag_candidates=len(res.candidates)), "", extra
+                  rag_candidates=len(res.candidates),
+                  rag_queries=list(res.queries or [])), "", extra
 
 
 # ---------- 主流程 ----------
@@ -388,15 +424,19 @@ def format_history(history: list[dict] | None) -> str:
 
 async def answer(text: str, *, channel: str, scope: str,
                  post_context: str = "", history: list[dict] | None = None,
-                 layers: list[str] | None = None) -> Answer:
+                 layers: list[str] | None = None,
+                 query_rewrite: bool | None = None) -> Answer:
     """依四層邏輯產生回覆。channel: whatsapp|ig|fb；scope: dm|comment。
 
     history 是「當前這句之前」的最近對話（見 autoreply_db.get_conversation_history），
-    只在某層第一次查不到時拿來改寫 query。回答本身仍只依該層的資料，
-    避免模型改用對話裡的舊資訊回答。
+    用來改寫 query（表格層查不到時；知識庫層則是勾了「查詢改寫」才會在檢索前用）。
+    回答本身仍只依該層的資料，避免模型改用對話裡的舊資訊回答。
 
     `layers`：只跑指定的層（命中測試頁用）。**None = 依 DB 開關**（正式流程用）。
     ⚠️ 一定要用 None 當預設值 —— 若在這裡直接讀 DB 開關當預設，就等於「測試時改了線上開關」。
+
+    `query_rewrite`：知識庫層要不要做多查詢改寫。None = 依知識庫的全域參數；
+    命中測試頁可傳 True / False 覆寫（同樣**不動 DB 參數**）。
     """
     question = (text or "").strip()
     if not question:
@@ -464,7 +504,8 @@ async def answer(text: str, *, channel: str, scope: str,
                       detail="未設定 DEEPSEEK_API_KEY，AI 層（業務表格／知識庫）無法運作")
     else:
         ans, note, rag_extra = await _rag_try(question, flavor, post_context, score,
-                                             history_text, history_used)
+                                             history_text, history_used,
+                                             rewrite=query_rewrite)
         if ans:
             return ans
         notes.append(note)
@@ -476,7 +517,8 @@ async def answer(text: str, *, channel: str, scope: str,
                   detail="；".join(notes) + static_detail,
                   matched_rows=rag_extra.get("matched_rows"),
                   rag_threshold=rag_extra.get("rag_threshold"),
-                  rag_candidates=int(rag_extra.get("rag_candidates") or 0))
+                  rag_candidates=int(rag_extra.get("rag_candidates") or 0),
+                  rag_queries=rag_extra.get("rag_queries"))
 
 
 def _tidy(text: str) -> str:

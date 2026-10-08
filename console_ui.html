@@ -765,6 +765,7 @@ const arState = {
   ktLayers: { faq: true, table: true, rag: true },
   ktSynced: false,      // 是否已照「自動回復」頁的實際開關對齊過
   ktNoHistory: false,
+  ktRewrite: '',        // 查詢改寫：'' = 依知識庫參數、'on' / 'off' = 這次強制
 };
 
 const AR_CHANNEL_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
@@ -4199,10 +4200,23 @@ function hittestTabHtml() {
           '<input type="checkbox" id="ktNoHistory"' + (arState.ktNoHistory ? ' checked' : '') +
           ' onchange="arState.ktNoHistory=this.checked">' +
           '不要把該會話的最近對話帶進來（表格／知識庫的 query 改寫會用到）</label>' +
+        '<label class="hint" style="margin:0;display:flex;align-items:center;gap:6px">' +
+          '知識庫查詢改寫' +
+          '<select onchange="arState.ktRewrite=this.value" ' +
+            'style="padding:4px 7px;border:1px solid var(--border);border-radius:7px">' +
+            '<option value=""' + (arState.ktRewrite === '' ? ' selected' : '') +
+              '>依知識庫設定</option>' +
+            '<option value="on"' + (arState.ktRewrite === 'on' ? ' selected' : '') +
+              '>這次強制開啟</option>' +
+            '<option value="off"' + (arState.ktRewrite === 'off' ? ' selected' : '') +
+              '>這次強制關閉</option>' +
+          '</select></label>' +
       '</div>' +
       '<div class="hint" style="margin-top:6px">' +
         '勾選的層會<b>依固定順序</b>由上而下嘗試（FAQ → 表格 → 知識庫）；全部取消勾選 = 直接看「降級人工」。' +
-        '預設照「自動回復」分頁的實際開關，改勾選只影響這一次。' +
+        '預設照「自動回復」分頁的實際開關，改勾選只影響這一次。<br>' +
+        '「知識庫查詢改寫」＝檢索前先請模型把問句改寫成 2 條（修同音錯別字、補齊「這個」的指代），' +
+        '與原問句一起檢索再取高分。上方選單可以只這一次開／關，方便比較差別 —— 不改知識庫的正式設定。' +
       '</div>' +
       '<div class="row" style="margin-top:8px">' +
         '<button class="btn sm" onclick="ktAllLayers(true)">全選</button>' +
@@ -4232,11 +4246,15 @@ async function runHitTest() {
   const layers = Object.keys(arState.ktLayers).filter(k => arState.ktLayers[k]);
   const box = document.getElementById('ktResult');
   if (box) box.innerHTML = '<div class="empty-note">測試中…（勾到第二／三層會呼叫 DeepSeek，約需數秒）</div>';
+  const body = {
+    text: text, channel: parts[0], scope: parts[1],
+    layers: layers, with_history: !arState.ktNoHistory,
+  };
+  // '' = 不送，讓後端依知識庫參數（設定頁的勾選）決定
+  if (arState.ktRewrite === 'on') body.query_rewrite = true;
+  else if (arState.ktRewrite === 'off') body.query_rewrite = false;
   try {
-    const res = await apiJson('/console/autoreply/test/engine', {
-      text: text, channel: parts[0], scope: parts[1],
-      layers: layers, with_history: !arState.ktNoHistory,
-    });
+    const res = await apiJson('/console/autoreply/test/engine', body);
     if (res.data.error) {
       if (box) box.innerHTML = '<div class="empty-note">❌ ' + esc(res.data.error) + '</div>';
       return;
@@ -4271,6 +4289,10 @@ function ktResultHtml(d) {
         (d.score != null ? '分數：' + d.score + '\n' : '') +
         (d.rewritten_query ? '改寫後問句：' + esc(d.rewritten_query) +
           (d.history_used ? '（帶入 ' + d.history_used + ' 則對話）' : '') + '\n' : '') +
+        ((Array.isArray(d.rag_queries) && d.rag_queries.length > 1)
+          ? '知識庫實際檢索的查詢（共 ' + d.rag_queries.length + ' 條）：\n' +
+            d.rag_queries.map((q, i) => '　' + (i === 0 ? '原句 ' : '改寫' + i + ' ') +
+              esc(q)).join('\n') + '\n' : '') +
         (d.rag_threshold != null
           ? '知識庫門檻：' + d.rag_threshold + '（召回 ' + (d.rag_candidates || 0) + ' 塊）\n' : '') +
         (d.text ? '\n回覆內容：\n' + esc(d.text) : '（沒有可送出的回覆）') +
@@ -4402,22 +4424,25 @@ function renderMatchedRows(rows, showAll) {
   if (!Array.isArray(rows) || !rows.length) return '';
   const picked = rows.filter(r => r && r.picked);
   const rest = rows.filter(r => r && !r.picked);
+  // 有任一塊是被「多條查詢」撈到的 → 這次是多查詢檢索，才逐塊標出命中查詢
+  const multi = rows.some(r => r && Array.isArray(r.queries) && r.queries.length > 1);
   const head = '<div class="hint" style="margin:0 0 6px">召回 ' + rows.length + ' 塊，' +
     '實際送進模型 ' + picked.length + ' 塊' +
-    (picked.length ? '' : '（沒有任何一塊過門檻）') + '</div>';
+    (picked.length ? '' : '（沒有任何一塊過門檻）') +
+    (multi ? '　· 多查詢檢索：每塊標出是被哪一條查詢撈到的' : '') + '</div>';
   // 沒入選的只顯示前 12 筆，避免洗版；要看全部就把 showAll 帶上
   const tailLimit = showAll ? rest.length : 12;
   const tail = rest.slice(0, tailLimit);
   const more = rest.length > tail.length
     ? '<div class="hint" style="margin:4px 0 0">…另有 ' + (rest.length - tail.length) + ' 塊未列出</div>' : '';
   return '<div>' + head +
-    picked.map(r => kbHitHtml(r, true)).join('') +
+    picked.map(r => kbHitHtml(r, true, multi)).join('') +
     (tail.length ? '<div class="hint" style="margin:8px 0 4px">未入選的候選：</div>' +
-      tail.map(r => kbHitHtml(r, false)).join('') + more : '') +
+      tail.map(r => kbHitHtml(r, false, multi)).join('') + more : '') +
     '</div>';
 }
 
-function kbHitHtml(r, isPicked) {
+function kbHitHtml(r, isPicked, showQueries) {
   if (!r || typeof r !== 'object') return '';
   const src = [r.doc, r.heading, r.sheet ? ('工作表 ' + r.sheet) : '',
                r.page ? ('第 ' + r.page + ' 頁') : '',
@@ -4434,6 +4459,9 @@ function kbHitHtml(r, isPicked) {
     '<div class="kb-score">總分 <b>' + n(r.final) + '</b>' +
       ' · 向量 ' + n(r.vec) + ' · 字面 ' + n(r.lex) +
       (r.rerank != null ? ' · rerank ' + n(r.rerank) : '') + '</div>' +
+    (showQueries && Array.isArray(r.queries) && r.queries.length
+      ? '<div class="kb-score">命中查詢：' +
+        r.queries.map(esc).join(' ｜ ') + '</div>' : '') +
     (r.text ? '<div style="margin-top:3px">' + esc(r.text) + '</div>' : '') +
   '</div>';
 }

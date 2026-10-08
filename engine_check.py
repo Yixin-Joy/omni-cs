@@ -67,6 +67,11 @@ def build_kb() -> int:
     for c in kb_db.list_collections():
         if c["name"] == CHECK_COLLECTION:
             cid = c["id"]
+            # ⚠️ 整庫被停用 → `load_ready_chunks` 一塊都撈不到，這裡會整段 FAIL 看起來像壞了。
+            #    自檢庫是自己建的測試資料，直接確保它是開的（並講出來）。
+            if not c.get("enabled", True):
+                print(f"  （自檢庫 #{cid} 原本是停用的 → 自動啟用）")
+                kb_db.update_collection(cid, {"enabled": True})
     if not cid:
         cid = kb_db.create_collection(CHECK_COLLECTION, "引擎自檢用，可刪")["id"]
     for d in kb_db.list_documents(cid):
@@ -130,6 +135,33 @@ def run() -> int:
                   f"{len(d.get('matched_rows') or [])} 筆")
             check(bool(d.get("rag_threshold")), "回傳門檻值",
                   f"門檻={d.get('rag_threshold')}")
+
+            print("\n[4b] 勾「查詢改寫」的多查詢檢索（真實模型呼叫）…")
+            # 錯別字型問句：「藍芽」→「藍牙」、「多少千」→「多少錢」
+            d = body(c.post("/console/autoreply/test/engine",
+                            json={"text": "你們的藍芽耳機多少千？", "layers": ["rag"],
+                                  "with_history": False, "query_rewrite": True}))
+            rq = d.get("rag_queries") or []
+            print(f"       實際檢索的查詢：{rq}")
+            check(len(rq) >= 2, "原問句 + 改寫句一起檢索（多查詢）", f"{len(rq)} 條")
+            check(bool(rq) and rq[0] == "你們的藍芽耳機多少千？",
+                  "第 0 條固定是客戶原問句")
+            check(d.get("query_rewrite") is True, "回報這次是強制開啟（不動 DB 參數）")
+            check(d.get("rewrote") is True, "標記 rewrote=True（日誌才看得出改寫過）",
+                  f"rewritten_query={str(d.get('rewritten_query'))[:40]}")
+            check(bool(d.get("matched_rows")), "改寫後仍帶召回明細",
+                  f"{len(d.get('matched_rows') or [])} 筆")
+            # 對照組：同一個問句把改寫強制關掉 → 只有一條查詢，且不標改寫
+            d0 = body(c.post("/console/autoreply/test/engine",
+                             json={"text": "你們的藍芽耳機多少千？", "layers": ["rag"],
+                                   "with_history": False, "query_rewrite": False}))
+            check(len(d0.get("rag_queries") or []) == 1 and not d0.get("rewrote"),
+                  "強制關閉時只有原問句、也不標改寫",
+                  f"{d0.get('rag_queries')} rewrote={d0.get('rewrote')}")
+            # 型別驗證
+            d1 = body(c.post("/console/autoreply/test/engine",
+                             json={"text": "測試", "layers": ["rag"], "query_rewrite": "yes"}))
+            check("error" in d1, "query_rewrite 非布林被擋下", str(d1.get("error"))[:40])
 
             print("\n[5] 不相關問題 → 降級人工（不硬掰）…")
             d = body(c.post("/console/autoreply/test/engine",

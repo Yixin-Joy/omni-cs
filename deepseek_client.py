@@ -150,6 +150,31 @@ class DeepSeekClient:
         )
         return clean_rewrite(out)
 
+    async def rewrite_rag_queries(self, question: str, history_text: str = "",
+                                  count: int = 2, post_context: str = "") -> list[str]:
+        """知識庫檢索前：依上下文改寫出 `count` 條查詢句（多查詢檢索用）。
+
+        重點是**同音錯別字**與**上下文補齊**（提示詞見 `rag_config.RAG_REWRITE_PROMPT`）。
+        與 `rewrite_table_query` 一樣只送**單一 user message** —— 有些 OpenAI 相容閘道
+        （實測 LiteLLM）不接受連續多則 system，這樣寫最保險。
+
+        回傳去重後、最多 `count` 條的查詢句；模型沒給出可用的東西就回空 list
+        （呼叫端據此沿用原問句，不要當成錯誤）。
+        """
+        import rag_config
+
+        prompt = (rag_config.RAG_REWRITE_PROMPT
+                  .replace("{n}", str(max(1, int(count or 1))))
+                  .replace("{history}", (history_text or "").strip() or "（沒有更早的對話紀錄）")
+                  .replace("{question}", question))
+        if post_context:
+            prompt = f"{prompt}\n\n貼文內容（僅供理解語境）：\n{post_context}"
+        out = await self.complete(
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+        )
+        return clean_rewrite_list(out, limit=count, exclude=[question])
+
     async def answer_with_table(self, question: str, table_context: str,
                                 flavor: str = "dm", post_context: str = "") -> str:
         """把業務表格當上下文回答；答不出來時回傳含 NO_ANSWER_SENTINEL 的字串。
@@ -224,6 +249,90 @@ def clean_rewrite(text: str) -> str:
 
     # 只取第一行，避免模型多餘輸出
     return t.splitlines()[0].strip() if t else ""
+
+
+def clean_rewrite_list(text: str, limit: int = 2, exclude: list[str] | None = None) -> list[str]:
+    """把模型輸出的「多條改寫查詢」解析成 list。
+
+    模型被要求只輸出 N 行，但實務上會多送編號（`1.` / `1、` / `-`）、引號、JSON 陣列、
+    甚至一句「好的，以下是改寫結果：」——這裡全部容忍，只挑得出問句。
+
+    規則：
+      * 先試 JSON 陣列（`["a","b"]`），失敗才逐行拆
+      * 逐行剝掉編號／項目符號／引號（重用 `clean_rewrite`）
+      * 丟掉空行、超過 60 字的行（那是說明不是問句）、含「改寫」「查詢句」之類的說明行
+      * 去掉與 `exclude`（原問句）重複的、以及自身重複的（比對時忽略空白）
+    """
+    out: list[str] = []
+    if not text:
+        return out
+
+    t = (text or "").strip()
+    if t.startswith("```"):                      # 去掉 ```json 圍欄
+        parts = t.split("```")
+        t = parts[1] if len(parts) > 1 else t
+        if t.lstrip().lower().startswith("json"):
+            t = t.lstrip()[4:]
+
+    lines: list[str] = []
+    start, end = t.find("["), t.rfind("]")
+    if 0 <= start < end:
+        try:
+            data = json.loads(t[start:end + 1])
+            if isinstance(data, list):
+                lines = [str(x) for x in data if isinstance(x, (str, int, float))]
+        except Exception:
+            lines = []
+    if not lines:
+        lines = t.splitlines()
+
+    seen: set[str] = set()
+    for raw in lines:
+        line = (raw or "").strip()
+        if not line or _looks_like_instruction(line):
+            continue
+        line = _strip_list_marker(line)
+        line = clean_rewrite(line)
+        key = "".join(line.split())
+        if not line or len(line) > 60 or key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+        if len(out) >= max(1, limit):
+            break
+
+    if exclude:
+        skip = {"".join(str(x or "").split()) for x in exclude}
+        out = [x for x in out if "".join(x.split()) not in skip]
+    return out
+
+
+# 說明句而非問句的樣態（模型很愛多寫這幾句）。
+# ⚠️ 只比對**行首**，不要用「包含」——「保固說明」是正常問句，「查詢訂單」也是。
+_INSTRUCTION_PREFIXES = ("以下是", "如下", "好的", "改寫", "改写", "查詢句", "查询句",
+                         "輸出", "输出", "結果", "结果", "前綴", "前缀")
+
+
+def _looks_like_instruction(line: str) -> bool:
+    """這一行看起來是「模型的說明」而不是查詢句。"""
+    s = line.lstrip()
+    if s.endswith("：") or s.endswith(":"):
+        return True
+    return s.startswith(_INSTRUCTION_PREFIXES)
+
+
+def _strip_list_marker(line: str) -> str:
+    """剝掉行首的編號／項目符號：`1.` `1、` `1)` `-` `*` `①`。"""
+    s = line.lstrip()
+    for mark in ("-", "*", "•", "·"):
+        if s.startswith(mark):
+            return s[len(mark):].strip()
+    i = 0
+    while i < len(s) and (s[i].isdigit() or s[i] in "①②③④⑤⑥⑦⑧⑨" or s[i] in ".、)）]"):
+        i += 1
+    if 0 < i <= 3:
+        return s[i:].strip()
+    return s
 
 
 def looks_answered(text: str) -> bool:
