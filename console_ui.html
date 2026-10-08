@@ -575,6 +575,32 @@
   .kb-score { font-size: 11px; color: var(--text-soft); }
   .kb-score b { color: var(--text); }
   .kb-stage { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
+
+  /* 知識庫的四層導覽：麵包屑 + 可點的列表項 */
+  .kb-crumbs {
+    display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+    font-size: 12.5px; margin-bottom: 10px; color: var(--text-soft);
+  }
+  .kb-crumbs a {
+    color: var(--accent-dark); cursor: pointer; font-weight: 600;
+    border-bottom: 1px dashed transparent;
+  }
+  .kb-crumbs a:hover { border-bottom-color: var(--accent-dark); }
+  .kb-crumbs .c-sep { color: var(--text-soft); opacity: .7; }
+  .kb-crumbs .c-cur { font-weight: 700; color: var(--text); }
+
+  .kb-pg-head {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 9px;
+  }
+  .kb-pg-head h3 { margin: 0; }
+
+  .kb-col.clickable { cursor: pointer; }
+  .kb-col.clickable:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .kb-col.clickable:hover .kc-name { color: var(--accent-dark); }
+  .kb-col .kc-go { color: var(--text-soft); font-size: 15px; }
+
+  table.data-table tbody tr.row-link { cursor: pointer; }
+  table.data-table tbody tr.row-link:hover { background: var(--accent-soft); }
 </style>
 </head>
 <body>
@@ -719,15 +745,20 @@ const arState = {
   openLogId: null,      // 展開中的紀錄（召回明細是點開才去撈的）
   logDetail: null,
   scopeFilter: { channel: '', scope: '' },
-  // ---- 知識庫（第三層）----
+  // ---- 知識庫（第三層）：四個可跳轉的頁面 ----
+  // kbView: 'list' 知識庫清單 → 'docs' 某庫的文件 → 'doc' 某文件的分塊 → 'new' 新增文檔
+  // 一頁只做一件事，靠麵包屑往回走，不把全部塞在同一頁。
   kb: null,             // GET /console/kb/overview
-  kbCollection: 0,      // 目前檢視的知識庫（0 = 全部）
+  kbView: 'list',
+  kbCollection: 0,      // 目前在這個知識庫裡（kb.view 為 docs/doc/new 時有意義）
+  kbUngrouped: false,   // 目前看的是「未分組」這個虛擬知識庫
   kbDocs: [],
-  kbDocId: 0,           // 向導開啟中的文件
+  kbDocId: 0,
   kbDoc: null,          // GET /console/kb/document 的回應
   kbPreview: null,      // 分塊預覽結果（未寫庫）
   kbParams: null,       // GET /console/kb/params
   kbParamCid: 0,        // 參數彈窗是針對哪個知識庫
+  kbUploadNote: '',     // 上傳結果的說明（跟著跳到文件頁一起帶過去）
   kbBusy: '',
   // ---- 命中測試 ----
   ktResult: null,
@@ -2377,6 +2408,11 @@ async function refreshAfterBackfill() {
 
 function openSettings(tab) {
   document.getElementById('settingsOverlay').classList.add('open');
+  // 從別的頁籤點「管理知識庫」進來時，回到知識庫清單首頁（不要停在上次看到一半的文件）
+  if (tab === 'kb' && arState.tab !== 'kb') {
+    arState.kbView = 'list';
+    kbForgetDoc();
+  }
   switchSettingsTab(tab || arState.tab);
 }
 
@@ -2400,7 +2436,7 @@ function switchSettingsTab(tab) {
      2. 真的要重繪時，先把「使用者改過 / 正在打字」的欄位值與焦點記下來，重繪後搬回去。 */
 
 // 這兩個區塊的內容是使用者操作後才產生的（不在產生的 html 裡），重繪時要一起搬回來
-const SP_LIVE_NODES = ['dsResult', 'ktResult'];
+const SP_LIVE_NODES = ['dsResult', 'ktResult', 'kbIndexNote', 'kbDocNote'];
 
 function spFieldKey(el, i) {
   if (el.id) return '#' + el.id;
@@ -2494,7 +2530,12 @@ function renderSettingsTab() {
     after = function () { if (!arState.tables.length) loadTables(true); };
   } else if (arState.tab === 'kb') {
     html = kbTabHtml();
-    after = function () { if (!arState.kb) loadKbOverview(); };
+    // 停在「文件」或「分塊」頁時，切回來要重撈一次，不要顯示上次的殘影
+    after = function () {
+      if (!arState.kb) loadKbOverview();
+      else if (arState.kbView === 'doc' && arState.kbDocId) kbOpenDoc(arState.kbDocId);
+      else if (arState.kbView === 'docs') kbLoadDocs();
+    };
   } else if (arState.tab === 'hittest') {
     ktSyncLayers();          // 先照「自動回復」頁的實際開關對齊（只做一次）
     html = hittestTabHtml();
@@ -3068,25 +3109,86 @@ function kbDocTag(d) {
   return '<span class="tag-state ' + st.cls + '">' + esc(st.text) + '</span>';
 }
 
+/* ----- 分頁四：知識庫（第三層）—— 一頁一件事，靠跳轉移動 -----
+
+   ① 知識庫（清單）--點一個知識庫--> ② 文件（這個庫裡有哪些文件，可新增文檔）
+                                            |--點一份文件--> ③ 分塊（解析與分塊、逐塊微調）
+                                            `--按新增文檔--> ④ 新增文檔（上傳）→ 上傳完跳到 ③
+*/
+
+// 麵包屑：最後一項是當前頁（不可點），其餘可點
+function kbCrumbs(items) {
+  let html = '';
+  items.forEach(function (it, i) {
+    if (i) html += '<span class="c-sep">›</span>';
+    if (i === items.length - 1 || !it.onclick) {
+      html += '<span class="c-cur">' + esc(it.label) + '</span>';
+    } else {
+      html += '<a onclick="' + it.onclick + '">' + esc(it.label) + '</a>';
+    }
+  });
+  return '<div class="kb-crumbs">' + html + '</div>';
+}
+
+function kbCollectionById(id) {
+  const cols = (arState.kb && arState.kb.collections) || [];
+  return cols.find(function (c) { return c.id === id; }) || null;
+}
+
+// 目前所在的知識庫名稱；「未分組」是一個虛擬知識庫（文件沒有歸屬）
+function kbScopeLabel() {
+  if (arState.kbUngrouped) return '未分組';
+  const c = kbCollectionById(arState.kbCollection);
+  return c ? c.name : ('知識庫 #' + (arState.kbCollection || 0));
+}
+
+// 目前這一頁的「回上一層」動作（給麵包屑與返回鈕共用）
+function kbScopeBack() {
+  return arState.kbUngrouped ? 'kbOpenUngrouped()' : ('kbOpenCollection(' + arState.kbCollection + ')');
+}
+
 function kbTabHtml() {
   const ov = arState.kb;
   if (!ov) return '<div class="empty-note">知識庫狀態載入中…</div>';
+  if (ov.error) {
+    return '<div class="card"><h3>讀不到知識庫狀態</h3>' +
+      '<div class="hint">' + esc(ov.error) + '</div>' +
+      '<div class="row"><button class="btn primary" onclick="loadKbOverview()">重新讀取</button></div></div>';
+  }
+  const v = arState.kbView || 'list';
+  if (v === 'docs') return kbDocsPageHtml();
+  if (v === 'doc') return kbDocPageHtml();
+  if (v === 'new') return kbNewPageHtml();
+  return kbListPageHtml();
+}
+
+/* --- 第 1 頁：知識庫清單 --- */
+
+function kbListPageHtml() {
+  const ov = arState.kb;
   const m = ov.model || {};
   const t = ov.totals || {};
   const cols = ov.collections || [];
   const readyCols = cols.filter(c => c.enabled).length;
-
-  const colRows = cols.length ? cols.map(kbColRowHtml).join('')
-    : '<div class="empty-note">尚無知識庫。先按「＋ 新增知識庫」，再上傳文件。</div>';
-
-  const docRows = arState.kbDocs.length ? arState.kbDocs.map(kbDocRowHtml).join('')
-    : '<tr><td colspan="7"><div class="empty-note">' +
-      (arState.kbCollection ? '這個知識庫還沒有文件' : '還沒有任何文件，從下面把檔案拖進來') +
-      '</div></td></tr>';
+  const ungrouped = Number(t.ungrouped_docs || 0);
 
   const modelPill = m.downloaded
     ? '<span class="pill on">模型已就緒</span>'
     : '<span class="pill miss">模型未下載</span>';
+
+  const colCards = cols.length ? cols.map(kbColCardHtml).join('')
+    : '<div class="empty-note">尚無知識庫。按「＋ 新增知識庫」開一個，再進去上傳文件。</div>';
+
+  const ungroupedCard = ungrouped
+    ? '<div class="kb-col clickable" onclick="kbOpenUngrouped()">' +
+        '<span style="flex:1;min-width:180px">' +
+          '<span class="kc-name">未分組</span>' +
+          '<span class="kc-sub">' + ungrouped + ' 份文件沒有放進任何知識庫' +
+            '（不會被檢索到）—— 點進去可以把它們搬到知識庫裡</span>' +
+        '</span>' +
+        '<span class="pill off">不參與檢索</span><span class="kc-go">›</span>' +
+      '</div>'
+    : '';
 
   return '' +
     '<div class="card">' +
@@ -3112,72 +3214,21 @@ function kbTabHtml() {
     '</div>' +
 
     '<div class="card">' +
-      '<h3>知識庫</h3>' +
-      '<div class="hint">每個知識庫有自己的一組檢索參數（可各自鬆緊）；' +
-      '停用的知識庫整庫不參與檢索。</div>' +
-      '<div class="row" style="margin-bottom:10px">' +
+      '<div class="kb-pg-head"><h3>知識庫</h3>' +
+        '<div class="spacer" style="flex:1"></div>' +
         '<button class="btn primary" onclick="kbCreateCollection()">＋ 新增知識庫</button>' +
-        '<button class="btn" onclick="openKbParams()">參數配置</button>' +
-        '<select id="kbParamTarget" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
-          '<option value="0">全域預設（.env）</option>' +
-          cols.map(c => '<option value="' + c.id + '"' +
-            (arState.kbParamCid === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>').join('') +
-        '</select>' +
+        '<button class="btn sm" onclick="openKbParams(0)">參數配置（全域預設）</button>' +
         '<button class="btn sm" onclick="kbReload()">重新讀取</button>' +
-        '<button class="btn sm" onclick="loadAutoSettings()">同步上方開關</button>' +
       '</div>' +
-      colRows +
-    '</div>' +
-
-    '<div class="card">' +
-      '<h3>上傳文件</h3>' +
-      '<div class="hint">支援 ' + esc((ov.model && ov.model.doc_types || []).join('、') || 'PDF / Word / Excel / CSV / Markdown / TXT / HTML') +
-      '；單檔上限 ' + (ov.max_upload_mb || 50) + ' MB。' +
-      '上傳後會自動解析分塊（草稿狀態），不會馬上被搜到 —— 要審過內容再按「確認入庫」。</div>' +
-      '<div class="row" style="margin-bottom:8px">' +
-        '<span class="hint" style="margin:0">放進：</span>' +
-        '<select id="kbUploadTarget" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
-          '<option value="">未分組</option>' +
-          cols.map(c => '<option value="' + c.id + '">' + esc(c.name) + '</option>').join('') +
-        '</select>' +
-        '<label class="btn" style="cursor:pointer">選擇檔案（可多選）' +
-          '<input type="file" multiple accept=".pdf,.docx,.xlsx,.xlsm,.csv,.md,.markdown,.txt,.html,.htm" ' +
-            'style="display:none" onchange="kbUploadFiles(this.files); this.value=\'\'"></label>' +
-      '</div>' +
-      '<div class="kb-drop" id="kbDropZone"' +
-        ' onclick="document.getElementById(\'kbPickAny\').click()"' +
-        ' ondragover="event.preventDefault(); this.classList.add(\'over\')"' +
-        ' ondragleave="this.classList.remove(\'over\')"' +
-        ' ondrop="kbDrop(event)">拖曳檔案到這裡，或點一下選檔' +
-        '<input type="file" id="kbPickAny" multiple style="display:none"' +
-        ' accept=".pdf,.docx,.xlsx,.xlsm,.csv,.md,.markdown,.txt,.html,.htm"' +
-        ' onchange="kbUploadFiles(this.files); this.value=\'\'">' +
-      '</div>' +
-      '<div id="kbUploadNote"></div>' +
-    '</div>' +
-
-    '<div class="card">' +
-      '<h3>文件清單</h3>' +
-      '<div class="row" style="margin-bottom:8px">' +
-        '<select id="kbDocFilter" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
-          '<option value="0">全部知識庫</option>' +
-          cols.map(c => '<option value="' + c.id + '"' +
-            (arState.kbCollection === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>').join('') +
-        '</select>' +
-        '<button class="btn sm" onclick="kbLoadDocs()">套用</button>' +
-      '</div>' +
-      '<div class="tbl-wrap"><table class="data-table"><thead><tr>' +
-        '<th style="width:26%">檔案</th><th>知識庫</th><th style="width:96px">狀態</th>' +
-        '<th style="width:78px">知識塊</th><th style="width:88px">字數</th>' +
-        '<th style="width:130px">更新</th><th style="width:150px">操作</th>' +
-      '</tr></thead><tbody>' + docRows + '</tbody></table></div>' +
-    '</div>' +
-
-    (arState.kbDocId ? kbWizardHtml() : '');
+      '<div class="hint">點一個知識庫進去，就會看到它底下的文件，以及「新增文檔」。' +
+      '每個知識庫有自己的一組檢索參數（可各自鬆緊）；停用的整庫不參與檢索。</div>' +
+      colCards + ungroupedCard +
+    '</div>';
 }
 
-function kbColRowHtml(c) {
-  return '<div class="kb-col' + (c.enabled ? '' : ' off') + '">' +
+function kbColCardHtml(c) {
+  return '<div class="kb-col clickable' + (c.enabled ? '' : ' off') + '"' +
+    ' onclick="kbOpenCollection(' + c.id + ')">' +
     '<span style="flex:1;min-width:180px">' +
       '<span class="kc-name">' + esc(c.name) + '</span>' +
       '<span class="kc-sub">文件 ' + (c.doc_count || 0) + '（已上線 ' + (c.ready_count || 0) +
@@ -3185,28 +3236,82 @@ function kbColRowHtml(c) {
         (c.description ? ' · ' + esc(c.description) : '') + '</span>' +
     '</span>' +
     '<span class="pill ' + (c.enabled ? 'on' : 'off') + '">' + (c.enabled ? '啟用' : '停用') + '</span>' +
-    '<button class="btn sm" onclick="kbRenameCollection(' + c.id + ')">改名</button>' +
-    '<button class="btn sm" onclick="kbToggleCollection(' + c.id + ',' + (!c.enabled) + ')">' +
-      (c.enabled ? '停用' : '啟用') + '</button>' +
-    '<button class="btn sm danger" onclick="kbDeleteCollection(' + c.id + ',' + (c.doc_count || 0) + ')">刪除</button>' +
+    '<span class="kc-go">›</span>' +
   '</div>';
 }
 
+/* --- 第 2 頁：某個知識庫裡的文件 --- */
+
+function kbDocsPageHtml() {
+  const c = arState.kbUngrouped ? null : kbCollectionById(arState.kbCollection);
+  const name = kbScopeLabel();
+  if (!arState.kbUngrouped && !c) {
+    return kbCrumbs([{ label: '知識庫', onclick: 'kbGoList()' }, { label: '找不到' }]) +
+      '<div class="card"><div class="empty-note">這個知識庫已經不在了。</div>' +
+      '<div class="row"><button class="btn primary" onclick="kbGoList()">回知識庫清單</button></div></div>';
+  }
+
+  const docs = (arState.kbDocs || []).filter(function (d) {
+    return arState.kbUngrouped ? !d.collection_id : d.collection_id === arState.kbCollection;
+  });
+
+  const colActions = arState.kbUngrouped ? '' :
+    '<button class="btn sm" onclick="kbRenameCollection(' + c.id + ')">改名</button>' +
+    '<button class="btn sm" onclick="kbToggleCollection(' + c.id + ',' + (!c.enabled) + ')">' +
+      (c.enabled ? '停用整庫' : '啟用整庫') + '</button>' +
+    '<button class="btn sm" onclick="openKbParams(' + c.id + ')">參數配置</button>' +
+    '<button class="btn sm danger" onclick="kbDeleteCollection(' + c.id + ',' + (c.doc_count || 0) +
+      ')">刪除知識庫</button>';
+
+  const docRows = docs.length ? docs.map(kbDocRowHtml).join('')
+    : '<tr><td colspan="6"><div class="empty-note">這個知識庫還沒有文件。' +
+      '按右上角的「＋ 新增文檔」上傳第一份。</div></td></tr>';
+
+  return kbCrumbs([
+      { label: '知識庫', onclick: 'kbGoList()' },
+      { label: name },
+    ]) +
+    '<div class="card">' +
+      '<div class="kb-pg-head"><h3>' + esc(name) + '</h3>' +
+        (arState.kbUngrouped
+          ? '<span class="pill off">未歸屬</span>'
+          : '<span class="pill ' + (c.enabled ? 'on' : 'off') + '">' + (c.enabled ? '啟用' : '停用') + '</span>') +
+        '<div class="spacer" style="flex:1"></div>' +
+        '<button class="btn primary" onclick="kbNewDoc()">＋ 新增文檔</button>' +
+        '<button class="btn sm" onclick="kbReload()">重新讀取</button>' +
+      '</div>' +
+      (arState.kbUngrouped
+        ? '<div class="hint">這些文件沒有放進任何知識庫，所以第三層檢索不會碰到它們。' +
+          '點開文件，用下面的「移到這個知識庫」把它們歸位。</div>'
+        : '<div class="hint">' + (c.description ? esc(c.description) + ' · ' : '') +
+          '文件 ' + (c.doc_count || 0) + ' 份（已上線 ' + (c.ready_count || 0) + '）· 知識塊 ' +
+          (c.chunk_count || 0) + '。點一列看它的分塊情況。</div>') +
+      '<div class="row" style="margin-bottom:8px">' + colActions +
+        '<span style="flex:1"></span>' +
+        (arState.kbUngrouped ? '' :
+          '<button class="btn sm" onclick="kbIndexStats(' + c.id + ')">看這個庫的可檢索規模</button>') +
+      '</div>' +
+      '<div id="kbIndexNote"></div>' +
+      '<div class="tbl-wrap"><table class="data-table"><thead><tr>' +
+        '<th style="width:34%">檔案</th><th style="width:96px">狀態</th>' +
+        '<th style="width:78px">知識塊</th><th style="width:88px">字數</th>' +
+        '<th style="width:130px">更新</th><th style="width:150px">操作</th>' +
+      '</tr></thead><tbody>' + docRows + '</tbody></table></div>' +
+    '</div>';
+}
+
 function kbDocRowHtml(d) {
-  const col = d.collection_name ? esc(d.collection_name) : '<span class="hint">未分組</span>';
-  const open = arState.kbDocId === d.id;
-  return '<tr data-id="' + d.id + '">' +
+  return '<tr class="row-link" onclick="kbOpenDoc(' + d.id + ')">' +
     '<td>' + esc(d.title || d.filename) +
       (d.error ? '<span class="kc-sub" style="color:#b42318">' + esc(d.error) + '</span>' : '') +
       '<span class="kc-sub">' + esc(d.filename) + ' · ' + fmtSize(d.size_bytes) +
       ' · ' + esc(d.doc_type || '') + '</span></td>' +
-    '<td>' + col + '</td>' +
     '<td>' + kbDocTag(d) + '</td>' +
     '<td>' + (d.chunk_count || 0) + '</td>' +
     '<td>' + (d.char_count || 0) + '</td>' +
     '<td class="hint">' + fmtTime(d.updated_at) + '</td>' +
-    '<td>' +
-      '<button class="btn sm" onclick="kbOpenDoc(' + d.id + ')">' + (open ? '關閉' : '檢視 / 調塊') + '</button> ' +
+    '<td onclick="event.stopPropagation()">' +
+      '<button class="btn sm" onclick="kbOpenDoc(' + d.id + ')">檢視 / 調塊</button> ' +
       (d.status === 'ready'
         ? '<button class="btn sm" onclick="kbToggleDoc(' + d.id + ',' + (!d.enabled) + ')">' +
             (d.enabled ? '停用' : '啟用') + '</button> '
@@ -3216,32 +3321,75 @@ function kbDocRowHtml(d) {
   '</tr>';
 }
 
-/* ----- 導入向導（單一文件的四步） ----- */
+/* --- 第 3 頁：新增文檔（上傳） --- */
 
-function kbWizardHtml() {
-  const dd = arState.kbDoc;
-  if (!dd || !dd.doc) return '<div class="card"><div class="empty-note">讀取文件內容中…</div></div>';
-  // ⚠ `running`（背景任務）是掛在 /document 回應的**頂層**，不在 doc 裡面；
-  //    而 /documents 的列表是掛在每一份文件上。兩種來源要合併，否則向導看不到「處理中」。
-  const d = Object.assign({}, dd.doc, { running: dd.running || dd.doc.running || '' });
-  const st = dd.stats || {};
-  const pv = arState.kbPreview;
-  const chunks = dd.chunks || [];
-  const cid = d.collection_id || 0;
-  const params = kbCachedParams(cid);
-  const chunkSpecs = (params && params.chunk) || [];
+function kbNewPageHtml() {
+  const ov = arState.kb;
+  const m = ov.model || {};
+  const name = kbScopeLabel();
+  const types = (m.doc_types || []).join('、') ||
+    'PDF / Word / Excel / CSV / Markdown / TXT / HTML';
+  const back = kbScopeBack();
 
-  const step = (n, label, cls) => '<span class="kb-step ' + cls + '">' + n + ' ' + label + '</span>';
+  return kbCrumbs([
+      { label: '知識庫', onclick: 'kbGoList()' },
+      { label: name, onclick: back },
+      { label: '新增文檔' },
+    ]) +
+    '<div class="card">' +
+      '<div class="kb-pg-head"><h3>新增文檔</h3>' +
+        '<span class="hint" style="margin:0">放進「<b>' + esc(name) + '</b>」</span>' +
+        '<div class="spacer" style="flex:1"></div>' +
+        '<button class="btn sm" onclick="' + back + '">取消，回文件清單</button>' +
+      '</div>' +
+      '<div class="hint">支援 ' + esc(types) + '；單檔上限 ' + (ov.max_upload_mb || 50) + ' MB。' +
+      '上傳後會立刻跳到那份文件的解析頁（自動解析＋分塊，草稿狀態，還不會被搜到）。</div>' +
+      '<div class="kb-drop" id="kbDropZone"' +
+        ' onclick="document.getElementById(\'kbPickAny\').click()"' +
+        ' ondragover="event.preventDefault(); this.classList.add(\'over\')"' +
+        ' ondragleave="this.classList.remove(\'over\')"' +
+        ' ondrop="kbDrop(event)">拖曳檔案到這裡，或點一下選檔（可多選）' +
+        '<input type="file" id="kbPickAny" multiple style="display:none"' +
+        ' accept=".pdf,.docx,.xlsx,.xlsm,.csv,.md,.markdown,.txt,.html,.htm"' +
+        ' onchange="kbUploadFiles(this.files); this.value=\'\'">' +
+      '</div>' +
+      '<div id="kbUploadNote">' + (arState.kbUploadNote || '') + '</div>' +
+    '</div>' +
+    '<div class="card">' +
+      '<h3>接下來會發生什麼</h3>' +
+      '<div class="kb-wiz-steps" style="margin:0 0 8px">' +
+        '<span class="kb-step done">① 上傳</span>' +
+        '<span class="kb-step">② 解析分塊</span>' +
+        '<span class="kb-step">③ 向量化</span>' +
+        '<span class="kb-step">④ 確認入庫（上線）</span>' +
+      '</div>' +
+      '<div class="hint">②③④ 都在下一頁（文件解析與分塊）完成。' +
+      '在那裡可以改分塊參數、重新分塊、逐塊微調，覺得內容對了再按「確認入庫」——' +
+      '沒入庫前這份文件不會被檢索到。</div>' +
+    '</div>';
+}
+
+/* --- 第 4 頁：文件解析與分塊 --- */
+
+function kbStepsHtml(d, st, running) {
   const hasChunks = (st.total || 0) > 0;
   const embedded = (st.done || 0) > 0;
-  const steps = '<div class="kb-wiz-steps">' +
+  const step = (n, label, cls) => '<span class="kb-step ' + cls + '">' + n + ' ' + label + '</span>';
+  return '<div class="kb-wiz-steps">' +
     step('①', '上傳', 'done') +
-    step('②', '解析分塊', hasChunks ? 'done' : (dd.running ? 'on' : '')) +
-    step('③', '向量化', (st.pending || 0) === 0 && embedded ? 'done' : (dd.running === 'embedding' ? 'on' : '')) +
+    step('②', '解析分塊', hasChunks ? 'done'
+      : ((running === 'parse+chunk' || running === 'reparse') ? 'on' : '')) +
+    step('③', '向量化', ((st.pending || 0) === 0 && embedded) ? 'done'
+      : (running === 'embedding' ? 'on' : '')) +
     step('④', '確認入庫', d.status === 'ready' ? 'done' : '') +
   '</div>';
+}
 
-  const paramInputs = chunkSpecs.length ? chunkSpecs.map(p => {
+function kbChunkParamsHtml(cid) {
+  const params = kbCachedParams(cid);
+  const specs = (params && params.chunk) || [];
+  if (!specs.length) return '<span class="hint" style="margin:0">讀取分塊參數中…</span>';
+  return specs.map(function (p) {
     const id = 'kbP_' + p.key;
     if (p.type === 'bool') {
       return '<label class="hint" style="margin:0;display:flex;align-items:center;gap:5px">' +
@@ -3258,109 +3406,237 @@ function kbWizardHtml() {
       '<input type="number" id="' + id + '" value="' + p.value + '" min="' + p.min + '" max="' + p.max +
       '" style="width:78px;margin-left:5px;padding:4px 7px;border:1px solid var(--border);border-radius:7px">' +
       '</label>';
-  }).join(' ') : '<span class="hint" style="margin:0">讀取分塊參數中…</span>';
+  }).join(' ');
+}
 
-  const previewNote = pv ? '<div class="test-result">' +
+function kbPreviewHtml(pv) {
+  if (!pv) return '';
+  const note = '<div class="test-result">' +
     '用這組參數會切成 <b>' + pv.count + '</b> 塊' +
     (pv.avg_chars ? '，平均 ' + pv.avg_chars + ' 字' : '') +
     (pv.min_chars ? '（最短 ' + pv.min_chars + ' / 最長 ' + pv.max_chars + ' 字）' : '') +
     '，策略 <b>' + esc(pv.strategy || '') + '</b>。下面是前 ' + (pv.chunks || []).length + ' 塊。' +
     (pv.count > (pv.chunks || []).length ? '（只預覽前面幾塊，寫庫時會全部建立）' : '') +
-    '</div>' : '';
-
-  const previewList = pv ? (pv.chunks || []).map((c, i) =>
+    '</div>';
+  const list = (pv.chunks || []).map((c, i) =>
     '<div class="kb-chunk"><div class="ck-head">' +
       '<span class="kb-src">#' + (i + 1) + '</span>' +
       '<span>' + c.char_count + ' 字</span>' +
       (c.page_no ? '<span>第 ' + c.page_no + ' 頁</span>' : '') +
       (c.heading_path ? '<span>' + esc(c.heading_path) + '</span>' : '') +
       (c.sheet ? '<span>工作表 ' + esc(c.sheet) + '</span>' : '') +
-    '</div><div>' + esc(c.text) + '</div></div>').join('') : '';
+    '</div><div>' + esc(c.text) + '</div></div>').join('');
+  return '<div style="margin-top:12px"><b style="font-size:12.5px">分塊預覽（草稿，未寫庫）</b>' +
+    note + list + '</div>';
+}
 
-  const chunkList = hasChunks ? chunks.map(c =>
-    '<div class="kb-chunk' + (c.enabled ? '' : ' off') + '">' +
-      '<div class="ck-head">' +
-        '<span class="kb-src">#' + c.ordinal + '</span>' +
-        '<span>' + (c.char_count || 0) + ' 字</span>' +
-        (c.page_no ? '<span>第 ' + c.page_no + ' 頁</span>' : '') +
-        (c.sheet ? '<span>工作表 ' + esc(c.sheet) + '</span>' : '') +
-        (c.heading_path ? '<span>' + esc(c.heading_path) + '</span>' : '') +
-        '<span class="tag-state ' + (c.embedding_status === 'done' ? 'ready'
-          : (c.embedding_status === 'failed' ? 'err' : 'draft')) + '">' +
-          (c.embedding_status === 'done' ? '已向量化'
-            : (c.embedding_status === 'failed' ? '向量失敗' : '待向量化')) + '</span>' +
-        (c.edited ? '<span class="tag-state">手改過</span>' : '') +
-        (c.enabled ? '' : '<span class="tag-state err">已停用</span>') +
-      '</div>' +
-      '<textarea rows="3" id="kbC_' + c.id + '">' + esc(c.text) + '</textarea>' +
-      '<div class="ck-acts">' +
-        '<button class="btn sm primary" onclick="kbChunkSave(' + c.id + ')">儲存這塊</button>' +
-        '<button class="btn sm" onclick="kbChunkSplit(' + c.id + ')">從游標處拆分</button>' +
-        '<button class="btn sm" onclick="kbChunkMerge(' + c.id + ')">與下一塊合併</button>' +
-        '<button class="btn sm" onclick="kbChunkToggle(' + c.id + ',' + (!c.enabled) + ')">' +
-          (c.enabled ? '停用' : '啟用') + '</button>' +
-        '<button class="btn sm danger" onclick="kbChunkDelete(' + c.id + ')">刪除</button>' +
-      '</div>' +
-    '</div>').join('') : '<div class="empty-note">還沒有知識塊 —— 按「重新分塊」產生</div>';
+function kbChunkListHtml(chunks) {
+  if (!chunks || !chunks.length) {
+    return '<div style="margin-top:12px"><b style="font-size:12.5px">知識塊</b>' +
+      '<div class="empty-note">還沒有知識塊 —— 按「重新分塊（寫庫）」產生</div></div>';
+  }
+  return '<div style="margin-top:12px"><b style="font-size:12.5px">已建立的知識塊（可直接改）</b>' +
+    chunks.map(c =>
+      '<div class="kb-chunk' + (c.enabled ? '' : ' off') + '">' +
+        '<div class="ck-head">' +
+          '<span class="kb-src">#' + c.ordinal + '</span>' +
+          '<span>' + (c.char_count || 0) + ' 字</span>' +
+          (c.page_no ? '<span>第 ' + c.page_no + ' 頁</span>' : '') +
+          (c.sheet ? '<span>工作表 ' + esc(c.sheet) + '</span>' : '') +
+          (c.heading_path ? '<span>' + esc(c.heading_path) + '</span>' : '') +
+          '<span class="tag-state ' + (c.embedding_status === 'done' ? 'ready'
+            : (c.embedding_status === 'failed' ? 'err' : 'draft')) + '">' +
+            (c.embedding_status === 'done' ? '已向量化'
+              : (c.embedding_status === 'failed' ? '向量失敗' : '待向量化')) + '</span>' +
+          (c.edited ? '<span class="tag-state">手改過</span>' : '') +
+          (c.enabled ? '' : '<span class="tag-state err">已停用</span>') +
+        '</div>' +
+        '<textarea rows="3" id="kbC_' + c.id + '">' + esc(c.text) + '</textarea>' +
+        '<div class="ck-acts">' +
+          '<button class="btn sm primary" onclick="kbChunkSave(' + c.id + ')">儲存這塊</button>' +
+          '<button class="btn sm" onclick="kbChunkSplit(' + c.id + ')">從游標處拆分</button>' +
+          '<button class="btn sm" onclick="kbChunkMerge(' + c.id + ')">與下一塊合併</button>' +
+          '<button class="btn sm" onclick="kbChunkToggle(' + c.id + ',' + (!c.enabled) + ')">' +
+            (c.enabled ? '停用' : '啟用') + '</button>' +
+          '<button class="btn sm danger" onclick="kbChunkDelete(' + c.id + ')">刪除</button>' +
+        '</div>' +
+      '</div>').join('') + '</div>';
+}
 
+function kbDocPageHtml() {
+  const dd = arState.kbDoc;
+  const title = (dd && dd.doc) ? (dd.doc.title || dd.doc.filename) : '讀取中…';
+  const back = kbScopeBack();
+  const crumbs = kbCrumbs([
+    { label: '知識庫', onclick: 'kbGoList()' },
+    { label: kbScopeLabel(), onclick: back },
+    { label: title },
+  ]);
+  if (!dd || !dd.doc) {
+    return crumbs + '<div class="card"><div class="empty-note">讀取文件內容中…</div></div>';
+  }
+
+  // ⚠ `running`（背景任務）是掛在 /document 回應的**頂層**，不在 doc 裡面；
+  //    而 /documents 的列表是掛在每一份文件上。兩種來源要合併，否則這頁看不到「處理中」。
+  const d = Object.assign({}, dd.doc, { running: dd.running || dd.doc.running || '' });
+  const st = dd.stats || {};
+  const cid = d.collection_id || 0;
+  const chunks = dd.chunks || [];
+  const hasChunks = (st.total || 0) > 0;
   const needEmbed = (st.pending || 0) + (st.failed || 0);
   const canActivate = (st.done || 0) > 0 && needEmbed === 0;
+  const busy = !!d.running;
 
-  return '<div class="card" style="border-color:var(--accent)">' +
-    '<h3>導入向導：' + esc(d.title || d.filename) + ' ' + kbDocTag(d) + '</h3>' +
-    steps +
-    '<div class="hint">' +
-      '知識塊的統計：共 <b>' + (st.total || 0) + '</b> 塊（啟用 ' + (st.enabled || 0) + '）· ' +
-      '已向量 <b>' + (st.done || 0) + '</b> · 待向量 <b>' + (st.pending || 0) + '</b>' +
-      (st.failed ? ' · 失敗 <b>' + st.failed + '</b>' : '') +
-      (st.edited ? ' · 手改過 <b>' + st.edited + '</b>' : '') +
-      '。共 ' + (d.char_count || 0) + ' 字。' +
-    '</div>' +
+  const statLine = '共 <b>' + (st.total || 0) + '</b> 塊（啟用 ' + (st.enabled || 0) + '）· ' +
+    '已向量 <b>' + (st.done || 0) + '</b> · 待向量 <b>' + (st.pending || 0) + '</b>' +
+    (st.failed ? ' · 失敗 <b>' + st.failed + '</b>' : '') +
+    (st.edited ? ' · 手改過 <b>' + st.edited + '</b>' : '') +
+    '。共 ' + (d.char_count || 0) + ' 字。';
 
-    '<div class="row" style="margin:10px 0 4px;align-items:center">' +
-      '<b style="font-size:12.5px">分塊參數</b>' + paramInputs +
-    '</div>' +
-    '<div class="row">' +
-      '<button class="btn" onclick="kbPreviewChunks()">預覽分塊（不寫庫）</button>' +
-      '<button class="btn" onclick="kbReparse()">重新分塊（寫庫）</button>' +
-      '<span class="hint" style="margin:0">改了塊長 / 策略要重新分塊；手改過的塊會被覆蓋，會先問你。</span>' +
-    '</div>' +
-    previewNote +
+  return crumbs +
+    (arState.kbUploadNote ? '<div class="card">' + arState.kbUploadNote + '</div>' : '') +
+    '<div class="card" style="border-color:var(--accent)">' +
+      '<div class="kb-pg-head"><h3>' + esc(d.title || d.filename) + '</h3>' + kbDocTag(d) +
+        '<div class="spacer" style="flex:1"></div>' +
+        '<button class="btn sm" onclick="' + back + '">← 回文件清單</button>' +
+      '</div>' +
+      kbStepsHtml(d, st, d.running) +
+      '<div class="hint">' + statLine +
+        (busy ? ' <b style="color:#1a5fb4">背景處理中（' +
+          esc(KB_RUN_LABEL[d.running] || d.running) + '），頁面會自動更新。</b>' : '') +
+      '</div>' +
 
-    '<div class="row" style="margin:12px 0 6px">' +
-      '<button class="btn primary" onclick="kbEmbed(\'pending\')"' +
-        (needEmbed ? '' : ' disabled') + '>開始 / 繼續向量化（待處理 ' + (st.pending || 0) +
-        (st.failed ? ' · 失敗 ' + st.failed : '') + '）</button>' +
-      '<button class="btn" onclick="kbEmbed(\'all\')">全部重跑向量</button>' +
-      '<button class="btn ' + (canActivate ? 'primary' : '') + '" onclick="kbActivate()"' +
-        (canActivate ? '' : ' disabled') + '>確認入庫（上線）</button>' +
-      '<span class="hint" style="margin:0">' +
-        (canActivate ? '所有知識塊都向量好了，可以上線。'
-                     : '還有 ' + needEmbed + ' 塊沒向量，先跑完再上線。') + '</span>' +
-    '</div>' +
+      '<div class="row" style="margin:10px 0 4px;align-items:center">' +
+        '<b style="font-size:12.5px">分塊參數</b>' + kbChunkParamsHtml(cid) +
+      '</div>' +
+      '<div class="row">' +
+        '<button class="btn" onclick="kbPreviewChunks()">預覽分塊（不寫庫）</button>' +
+        '<button class="btn" onclick="kbReparse()">重新分塊（寫庫）</button>' +
+        '<span class="hint" style="margin:0">改了塊長 / 策略要重新分塊；手改過的塊會被覆蓋，會先問你。</span>' +
+      '</div>' +
 
-    (pv ? '<div style="margin-top:12px"><b style="font-size:12.5px">分塊預覽（草稿，未寫庫）</b>' +
-          previewList + '</div>' : '') +
+      kbPreviewHtml(arState.kbPreview) +
 
-    (hasChunks ? '<div style="margin-top:12px"><b style="font-size:12.5px">已建立的知識塊（可直接改）</b>' +
-      chunkList + '</div>' : '') +
+      '<div class="row" style="margin:12px 0 6px">' +
+        '<button class="btn primary" onclick="kbEmbed(\'pending\')"' +
+          (needEmbed ? '' : ' disabled') + '>開始 / 繼續向量化（待處理 ' + (st.pending || 0) +
+          (st.failed ? ' · 失敗 ' + st.failed : '') + '）</button>' +
+        '<button class="btn" onclick="kbEmbed(\'all\')">全部重跑向量</button>' +
+        '<button class="btn ' + (canActivate ? 'primary' : '') + '" onclick="kbActivate()"' +
+          (canActivate ? '' : ' disabled') + '>確認入庫（上線）</button>' +
+        '<span class="hint" style="margin:0">' +
+          (canActivate
+            ? (d.status === 'ready' ? '已上線；改了內容要重新向量化才會生效。'
+                                    : '所有知識塊都向量好了，可以上線。')
+            : '還有 ' + needEmbed + ' 塊沒向量，先跑完再上線。') + '</span>' +
+      '</div>' +
 
-    '<div class="row" style="margin-top:12px">' +
-      '<select id="kbMoveTo" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
-        '<option value="">未分組</option>' +
-        ((arState.kb && arState.kb.collections) || [])
-          .filter(c => c.id !== (d.collection_id || 0))
-          .map(c => '<option value="' + c.id + '">' + esc(c.name) + '</option>').join('') +
-      '</select>' +
-      '<button class="btn" onclick="kbMoveDoc(' + d.id + ')">移到這個知識庫</button>' +
-      '<span style="flex:1"></span>' +
-      '<button class="btn" onclick="kbToggleDoc(' + d.id + ',' + (!d.enabled) + ')">' +
-        (d.enabled ? '停用這份文件' : '啟用這份文件') + '</button>' +
-      '<button class="btn danger" onclick="kbDeleteDoc(' + d.id + ')">刪除這份文件</button>' +
-      '<button class="btn sm" onclick="kbCloseDoc()">收起向導</button>' +
-    '</div>' +
-    '<div id="kbDocNote"></div>' +
-  '</div>';
+      kbChunkListHtml(chunks) +
+
+      '<div class="row" style="margin-top:12px">' +
+        '<select id="kbMoveTo" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+          '<option value="">未分組</option>' +
+          ((arState.kb && arState.kb.collections) || [])
+            .filter(function (c) { return c.id !== cid; })
+            .map(c => '<option value="' + c.id + '">' + esc(c.name) + '</option>').join('') +
+        '</select>' +
+        '<button class="btn" onclick="kbMoveDoc(' + d.id + ')">移到這個知識庫</button>' +
+        '<span style="flex:1"></span>' +
+        '<button class="btn" onclick="kbToggleDoc(' + d.id + ',' + (!d.enabled) + ')">' +
+          (d.enabled ? '停用這份文件' : '啟用這份文件') + '</button>' +
+        '<button class="btn danger" onclick="kbDeleteDoc(' + d.id + ')">刪除這份文件</button>' +
+      '</div>' +
+      '<div id="kbDocNote"></div>' +
+    '</div>';
+}
+
+/* ----- 知識庫：導覽（每一頁都是跳轉，不把全部塞在同一頁） ----- */
+
+function kbRender() {
+  if (arState.tab === 'kb') renderSettingsBody(kbTabHtml());
+}
+
+// 清掉「目前這份文件」的狀態（跳頁時用）
+function kbForgetDoc() {
+  arState.kbDocId = 0;
+  arState.kbDoc = null;
+  arState.kbPreview = null;
+  arState.kbUploadNote = '';
+}
+
+// ① 回知識庫清單
+function kbGoList() {
+  arState.kbView = 'list';
+  kbForgetDoc();
+  kbRender();
+  kbMaybePoll();
+}
+
+// ② 進某個知識庫（看它底下的文件）
+async function kbOpenCollection(id) {
+  arState.kbUngrouped = false;
+  arState.kbCollection = Number(id) || 0;
+  arState.kbView = 'docs';
+  kbForgetDoc();
+  kbRender();
+  await kbLoadDocs();
+}
+
+// ②' 進「未分組」（沒有歸屬、因此不會被檢索到的文件）
+async function kbOpenUngrouped() {
+  arState.kbUngrouped = true;
+  arState.kbCollection = 0;
+  arState.kbView = 'docs';
+  kbForgetDoc();
+  kbRender();
+  await kbLoadDocs();
+}
+
+// ③ 回文件清單（從分塊頁 / 新增文檔頁）
+async function kbBackToDocs() {
+  arState.kbView = 'docs';
+  kbForgetDoc();
+  kbRender();
+  await kbLoadDocs();
+}
+
+function kbCloseDoc() { kbBackToDocs(); }   // 舊名字，其他呼叫點還在用
+
+// 進「新增文檔」上傳頁
+function kbNewDoc() {
+  arState.kbView = 'new';
+  kbForgetDoc();
+  kbRender();
+}
+
+// 進某份文件（解析與分塊頁）
+async function kbOpenDoc(docId) {
+  arState.kbView = 'doc';
+  arState.kbDocId = docId;
+  arState.kbDoc = null;
+  arState.kbPreview = null;
+  kbRender();
+  // 先確保有全域分塊參數規格（文件還沒載到時先頂著）
+  try { await kbParamsFor(0); } catch (e) { /* 忽略 */ }
+  try {
+    const d = await api('/console/kb/document?id=' + docId + '&chunks=1&chunks_limit=600');
+    arState.kbDoc = d;
+    if (d.doc) {
+      // 文件的知識庫可能不是「目前所在」那個（例如從未分組點進來）→ 對齊，麵包屑才不會指錯
+      if (d.doc.collection_id) {
+        arState.kbUngrouped = false;
+        arState.kbCollection = d.doc.collection_id;
+        try { await kbParamsFor(d.doc.collection_id); } catch (e) { /* 忽略 */ }
+      } else {
+        arState.kbUngrouped = true;
+        arState.kbCollection = 0;
+      }
+    }
+  } catch (e) {
+    arState.kbDoc = { doc: { id: docId, filename: '（讀取失敗）', error: e.message }, stats: {} };
+  }
+  kbRender();
+  kbMaybePoll();
 }
 
 /* ----- 知識庫：讀取 ----- */
@@ -3378,57 +3654,58 @@ async function loadKbOverview(keepDocs) {
   } catch (e) {
     arState.kb = { collections: [], totals: {}, model: {}, error: e.message };
   }
-  if (!keepDocs) await kbLoadDocs();
-  if (arState.tab === 'kb') {
-    renderSettingsBody(kbTabHtml());
-    refreshDeepseekPill();
-  }
+  if (!keepDocs && arState.kbView !== 'list') await kbLoadDocs();
+  kbRender();
+  refreshDeepseekPill();
 }
 
 async function kbLoadDocs() {
-  const sel = document.getElementById('kbDocFilter');
-  const cid = sel ? sel.value : String(arState.kbCollection || 0);
-  arState.kbCollection = Number(cid) || 0;
+  if (arState.kbView === 'list') { arState.kbDocs = []; kbRender(); return; }
+  const qs = arState.kbUngrouped ? '?ungrouped=1'
+    : (arState.kbCollection ? '?collection_id=' + arState.kbCollection : '');
   try {
-    const d = await api('/console/kb/documents' + (arState.kbCollection ? '?collection_id=' + arState.kbCollection : ''));
+    const d = await api('/console/kb/documents' + qs);
     arState.kbDocs = d.documents || [];
   } catch (e) {
     arState.kbDocs = [];
   }
-  if (arState.tab === 'kb') {
-    renderSettingsBody(kbTabHtml());
-    kbMaybePoll();
-  }
+  kbRender();
+  kbMaybePoll();
 }
 
 async function kbReload() {
-  await loadKbOverview();
-  if (arState.kbDocId) await kbOpenDoc(arState.kbDocId, true);
+  await loadKbOverview(true);
+  if (arState.kbView === 'doc' && arState.kbDocId) await kbOpenDoc(arState.kbDocId);
+  else if (arState.kbView === 'docs') await kbLoadDocs();
+  else kbRender();
 }
 
 // 有背景任務在跑就自動再撈一次（解析 / 向量化是背景執行緒，不會推播）
 let _kbPollTimer = null;
 function kbMaybePoll() {
-  const busy = (arState.kbDocs || []).some(d => d.running) ||
-               (arState.kbDoc && arState.kbDoc.running);
   clearTimeout(_kbPollTimer);
-  if (!busy || arState.tab !== 'kb') return;
+  if (arState.tab !== 'kb') return;
+  const busy = (arState.kbDocs || []).some(d => d.running) ||
+               !!(arState.kbDoc && arState.kbDoc.running);
+  if (!busy) return;
   _kbPollTimer = setTimeout(function () {
     if (arState.tab !== 'kb') return;
-    kbLoadDocs();
-    if (arState.kbDocId) kbOpenDoc(arState.kbDocId, true);
+    if (arState.kbView === 'doc' && arState.kbDocId) kbOpenDoc(arState.kbDocId);
+    else if (arState.kbView === 'docs') kbLoadDocs();
   }, 2500);
 }
 
-function kbIndexStats() {
+// 索引規模：不帶 cid = 全部知識庫；帶 cid = 只看那個庫
+function kbIndexStats(cid) {
   const box = document.getElementById('kbIndexNote');
   if (box) box.innerHTML = '<div class="test-result">讀取中…</div>';
-  const cid = arState.kbCollection || '';
-  api('/console/kb/index-stats' + (cid ? '?collection_id=' + cid : ''))
+  const q = cid ? '?collection_id=' + cid : '';
+  api('/console/kb/index-stats' + q)
     .then(d => {
       const s = d.stats || {};
       if (box) box.innerHTML = '<div class="test-result">' +
-        '目前可檢索：<b>' + (s.chunks || 0) + '</b> 塊，來自 <b>' + (s.docs || 0) + '</b> 份文件' +
+        (cid ? '這個知識庫' : '全部知識庫') + '目前可檢索：<b>' + (s.chunks || 0) +
+        '</b> 塊，來自 <b>' + (s.docs || 0) + '</b> 份文件' +
         (s.dim ? '，向量 ' + s.dim + ' 維' : '') +
         '。這是「已上線 + 已啟用 + 已向量化」才進得來的數字。</div>';
     })
@@ -3442,12 +3719,13 @@ async function kbCreateCollection() {
   if (!name || !name.trim()) return;
   const res = await apiJson('/console/kb/collections/create', { name: name.trim() });
   if (res.data.error) { alert('新增失敗：' + res.data.error); return; }
+  const nid = res.data.collection && res.data.collection.id;
   await loadKbOverview(true);
+  if (nid) await kbOpenCollection(nid);   // 直接進去，接著就能上傳文件
 }
 
 async function kbRenameCollection(id) {
-  const cols = (arState.kb && arState.kb.collections) || [];
-  const cur = cols.find(c => c.id === id);
+  const cur = kbCollectionById(id);
   const name = prompt('新的名稱', cur ? cur.name : '');
   if (!name || !name.trim() || (cur && name === cur.name)) return;
   const res = await apiJson('/console/kb/collections/update', { id: id, name: name.trim() });
@@ -3471,11 +3749,16 @@ async function kbDeleteCollection(id, docCount) {
   if (docCount) body.force = true;      // 檔案數 > 0 時後端要 force 才肯刪
   const res = await apiJson('/console/kb/collections/delete', body);
   if (res.data.error) { alert(res.data.error); return; }
-  if (arState.kbCollection === id) arState.kbCollection = 0;
+  if (arState.kbCollection === id) {
+    arState.kbCollection = 0;
+    arState.kbUngrouped = false;
+    arState.kbView = 'list';
+    kbForgetDoc();
+  }
   await loadKbOverview();
 }
 
-/* ----- 知識庫：上傳 ----- */
+/* ----- 知識庫：上傳（第 3 頁「新增文檔」） ----- */
 
 function kbDrop(ev) {
   ev.preventDefault();
@@ -3487,10 +3770,12 @@ function kbDrop(ev) {
 
 async function kbUploadFiles(files) {
   const note = document.getElementById('kbUploadNote');
-  const sel = document.getElementById('kbUploadTarget');
   if (!files || !files.length) return;
   const fd = new FormData();
-  if (sel && sel.value) fd.append('collection_id', sel.value);
+  // 放在「目前這個知識庫」底下（未分組頁上傳 = 不歸屬）
+  if (!arState.kbUngrouped && arState.kbCollection) {
+    fd.append('collection_id', String(arState.kbCollection));
+  }
   fd.append('auto_start', '1');
   for (let i = 0; i < files.length; i++) fd.append('files', files[i]);
   if (note) note.innerHTML = '<div class="test-result">上傳中…（' + files.length + ' 個檔案）</div>';
@@ -3504,48 +3789,26 @@ async function kbUploadFiles(files) {
       html += '<div class="test-result">✅ 已收下 ' + ok.length + ' 個檔案，正在背景解析分塊：\n' +
         ok.map(x => '  · ' + esc(x.filename) + '（' + esc(x.doc_type || '') +
           (x.duplicate_of ? '，與既有文件 #' + x.duplicate_of + ' 內容相同，已標為新版本' : '') + '）'
-        ).join('\n') + '\n分塊完成後請按「檢視 / 調塊」審一下內容再上線。</div>';
+        ).join('\n') +
+        (ok.length > 1 ? '\n下面是第一份的解析頁，其餘回文件清單看。' : '') + '</div>';
     }
     if (bad.length) {
       html += '<div class="test-result">❌ ' + bad.length + ' 個檔案沒收下：\n' +
         bad.map(x => '  · ' + esc(x.filename) + '：' + esc(x.error || '未知原因')).join('\n') + '</div>';
     }
-    if (note) note.innerHTML = html || '<div class="test-result">沒有收到任何檔案</div>';
-    await loadKbOverview();
-    if (ok.length) await kbOpenDoc(ok[0].doc_id, true);
+    arState.kbUploadNote = html || '<div class="test-result">沒有收到任何檔案</div>';
+    await loadKbOverview(true);
+    if (ok.length) await kbOpenDoc(ok[0].doc_id);   // 跳到解析頁
+    else kbRender();
   } catch (e) {
-    if (note) note.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+    arState.kbUploadNote = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+    kbRender();
   }
 }
 
 /* ----- 知識庫：單一文件 ----- */
 
-async function kbOpenDoc(docId, keepOpen) {
-  if (arState.kbDocId === docId && !keepOpen) { kbCloseDoc(); return; }
-  arState.kbDocId = docId;
-  arState.kbDoc = null;
-  arState.kbPreview = null;
-  if (arState.tab === 'kb') renderSettingsBody(kbTabHtml());
-  // 先確保有這個知識庫的分塊參數規格
-  try { await kbParamsFor(0); } catch (e) { /* 忽略 */ }
-  try {
-    const d = await api('/console/kb/document?id=' + docId + '&chunks=1&chunks_limit=600');
-    arState.kbDoc = d;
-    if (d.doc && d.doc.collection_id) { try { await kbParamsFor(d.doc.collection_id); } catch (e) { /* 忽略 */ } }
-  } catch (e) {
-    arState.kbDoc = { doc: { id: docId, filename: '（讀取失敗）', error: e.message }, stats: {} };
-  }
-  if (arState.tab === 'kb') { renderSettingsBody(kbTabHtml()); kbMaybePoll(); }
-}
-
-function kbCloseDoc() {
-  arState.kbDocId = 0;
-  arState.kbDoc = null;
-  arState.kbPreview = null;
-  if (arState.tab === 'kb') renderSettingsBody(kbTabHtml());
-}
-
-// 讀當前向導表單裡的分塊參數（只送 chunk 那組；其他沿用後端預設）
+// 讀分塊頁表單裡的分塊參數（只送 chunk 那組；其他沿用後端預設）
 function kbReadChunkParams() {
   const out = {};
   const specs = ((kbCachedParams((arState.kbDoc && arState.kbDoc.doc && arState.kbDoc.doc.collection_id) || 0) || {}).chunk) || [];
@@ -3569,7 +3832,7 @@ async function kbPreviewChunks() {
       { id: d.id, params: kbReadChunkParams(), limit: 8 });
     if (res.data.error) { if (box) box.innerHTML = '<div class="test-result">❌ ' + esc(res.data.error) + '</div>'; return; }
     arState.kbPreview = res.data;
-    renderSettingsBody(kbTabHtml());
+    kbRender();
   } catch (e) {
     if (box) box.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
   }
@@ -3588,7 +3851,7 @@ async function kbReparse() {
   }
   if (res.data.error) { alert(res.data.error); return; }
   arState.kbPreview = null;
-  await kbOpenDoc(d.id, true);
+  await kbOpenDoc(d.id);
 }
 
 async function kbEmbed(mode) {
@@ -3597,7 +3860,7 @@ async function kbEmbed(mode) {
   if (mode === 'all' && !confirm('全部重跑會把所有知識塊的向量重算一次，確定嗎？')) return;
   const res = await apiJson('/console/kb/document/embed', { id: d.id, mode: mode });
   if (res.data.error) { alert(res.data.error); return; }
-  await kbOpenDoc(d.id, true);
+  await kbOpenDoc(d.id);
 }
 
 async function kbActivate() {
@@ -3605,22 +3868,27 @@ async function kbActivate() {
   if (!d) return;
   const res = await apiJson('/console/kb/document/activate', { id: d.id });
   if (res.data.error) { alert('入庫失敗：' + res.data.error); return; }
+  arState.kbUploadNote = '';
   await loadKbOverview(true);
-  await kbOpenDoc(d.id, true);
+  await kbOpenDoc(d.id);
 }
 
 async function kbToggleDoc(id, enabled) {
   const res = await apiJson('/console/kb/document/enabled', { id: id, enabled: enabled });
   if (res.data.error) { alert('設定失敗：' + res.data.error); return; }
-  await kbLoadDocs();
-  if (arState.kbDocId === id) await kbOpenDoc(id, true);
+  if (arState.kbView === 'doc' && arState.kbDocId === id) await kbOpenDoc(id);
+  else await kbLoadDocs();
 }
 
 async function kbDeleteDoc(id) {
   if (!confirm('確定刪除這份文件？（知識塊與向量會一併刪除，不影響其他文件）')) return;
   const res = await apiJson('/console/kb/document/delete', { id: id });
   if (res.data.error) { alert('刪除失敗：' + res.data.error); return; }
-  if (arState.kbDocId === id) kbCloseDoc();
+  // 刪掉的是正在看的那份 → 退回文件清單
+  if (arState.kbView === 'doc' && arState.kbDocId === id) {
+    arState.kbView = 'docs';
+    kbForgetDoc();
+  }
   await loadKbOverview();
 }
 
@@ -3629,8 +3897,10 @@ async function kbMoveDoc(id) {
   const cid = sel ? Number(sel.value) || 0 : 0;
   const res = await apiJson('/console/kb/document/move', { id: id, collection_id: cid || null });
   if (res.data.error) { alert('搬移失敗：' + res.data.error); return; }
+  // 搬到別的知識庫（或搬回未分組）→ 這份文件就不在目前的清單裡了，退回文件清單
+  arState.kbView = 'docs';
+  kbForgetDoc();
   await loadKbOverview();
-  if (arState.kbDocId === id) await kbOpenDoc(id, true);
 }
 
 /* ----- 知識庫：知識塊微調 ----- */
@@ -3646,7 +3916,7 @@ async function kbChunkSave(chunkId) {
   const res = await apiJson('/console/kb/chunk/update', { id: chunkId, text: el.value });
   if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
   kbChunkNote('<div class="test-result">✅ 已儲存（這一塊的向量已標回「待向量化」，記得再跑一次向量化）。</div>');
-  await kbOpenDoc(arState.kbDocId, true);
+  await kbOpenDoc(arState.kbDocId);
 }
 
 async function kbChunkSplit(chunkId) {
@@ -3656,26 +3926,26 @@ async function kbChunkSplit(chunkId) {
   if (!at || at >= el.value.length) { alert('請把游標放在要切開的位置（不能是開頭或結尾）'); return; }
   const res = await apiJson('/console/kb/chunk/split', { id: chunkId, at: at });
   if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
-  await kbOpenDoc(arState.kbDocId, true);
+  await kbOpenDoc(arState.kbDocId);
 }
 
 async function kbChunkMerge(chunkId) {
   const res = await apiJson('/console/kb/chunk/merge', { id: chunkId });
   if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
-  await kbOpenDoc(arState.kbDocId, true);
+  await kbOpenDoc(arState.kbDocId);
 }
 
 async function kbChunkToggle(chunkId, enabled) {
   const res = await apiJson('/console/kb/chunk/update', { id: chunkId, enabled: enabled });
   if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
-  await kbOpenDoc(arState.kbDocId, true);
+  await kbOpenDoc(arState.kbDocId);
 }
 
 async function kbChunkDelete(chunkId) {
   if (!confirm('確定刪除這一塊知識？')) return;
   const res = await apiJson('/console/kb/chunk/delete', { id: chunkId });
   if (res.data.error) { kbChunkNote('<div class="test-result">❌ ' + esc(res.data.error) + '</div>'); return; }
-  await kbOpenDoc(arState.kbDocId, true);
+  await kbOpenDoc(arState.kbDocId);
 }
 
 /* ----- 參數配置（分頁四的彈窗） ----- */
@@ -3698,12 +3968,17 @@ function kbInvalidateParams() {
   Object.keys(_kbParamCache).forEach(k => delete _kbParamCache[k]);
 }
 
-function openKbParams() {
-  const sel = document.getElementById('kbParamTarget');
-  const cid = sel ? Number(sel.value) || 0 : 0;
-  arState.kbParamCid = cid;
+// cid = 0（或省略）= 全域預設；傳知識庫 id = 改那個庫的參數
+function openKbParams(cid) {
+  arState.kbParamCid = Number(cid) || 0;
   const ov = document.getElementById('kbParamsOverlay');
   if (ov) ov.classList.add('open');
+  kbRenderParams();
+}
+
+// 彈窗裡自己換知識庫（不必先退出彈窗）
+function kbSwitchParamTarget(v) {
+  arState.kbParamCid = Number(v) || 0;
   kbRenderParams();
 }
 
@@ -3726,7 +4001,15 @@ async function kbRenderParams() {
   const title = document.getElementById('kbParamsTitle');
   const cols = (arState.kb && arState.kb.collections) || [];
   const c = cols.find(x => x.id === cid);
-  if (title) title.textContent = '檢索／分塊參數配置 · ' + (c ? c.name : '全域預設（.env）');
+  if (title) title.textContent = '檢索／分塊參數配置' + (c ? ' · ' + c.name : '');
+
+  // 彈窗標題列的下拉：這裡就能換知識庫（改的是哪一組參數要一眼看到）
+  const sel = document.getElementById('kbParamTarget');
+  if (sel) {
+    sel.innerHTML = '<option value="0">全域預設（.env）</option>' +
+      cols.map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
+    sel.value = String(cid);
+  }
 
   body.innerHTML = '<div class="empty-note">載入中…</div>';
   let d;
@@ -4279,6 +4562,8 @@ boot();
   <div class="settings-panel" style="max-width:760px">
     <div class="sp-head">
       <h2 id="kbParamsTitle">參數配置</h2>
+      <select id="kbParamTarget" style="padding:6px 10px;border:1px solid var(--border);border-radius:9px;max-width:280px"
+        onchange="kbSwitchParamTarget(this.value)"></select>
       <div class="spacer"></div>
       <button class="sp-close" onclick="closeKbParams()" title="關閉">✕</button>
     </div>
