@@ -21,6 +21,8 @@
   POST /console/kb/chunk/split              拆分知識塊
   POST /console/kb/chunk/merge              與下一塊合併
   POST /console/kb/chunk/delete             刪除知識塊
+  GET  /console/kb/search                   混合檢索（調參／除錯用，不寫任何紀錄）
+  POST /console/kb/search                   同上（POST 版，參數多時好用）
 """
 import asyncio
 import json
@@ -33,6 +35,7 @@ import kb_db
 import kb_embed
 import kb_ingest
 import kb_parse
+import kb_search
 import rag_config
 from kb_parse import ParseError
 
@@ -72,6 +75,7 @@ def _spawn(label: str, doc_id: int, fn, *args, **kwargs) -> bool:
             log.warning("知識庫背景任務失敗（%s doc#%s）: %s", label, doc_id, e)
         finally:
             _RUNNING.pop(doc_id, None)
+            kb_search.invalidate()   # 分塊／向量變了，檢索索引要重載
 
     asyncio.create_task(runner())
     return True
@@ -191,6 +195,7 @@ async def set_params(body: dict):
         return _err("缺少知識庫 id（參數是按知識庫存的）")
     values = body.get("values") or {}
     n = await asyncio.to_thread(kb_db.set_params, cid, values)
+    kb_search.invalidate()   # 參數／索引快取立即失效（不用等 5 秒）
     return _ok({"ok": True, "saved": n, "params": await asyncio.to_thread(_params_payload, cid)})
 
 
@@ -301,6 +306,7 @@ async def document_activate(body: dict):
         doc = await asyncio.to_thread(kb_ingest.activate_document, did)
     except Exception as e:
         return _err(str(e))
+    kb_search.invalidate()      # 剛上線的文件要能立刻被搜到
     return _ok({"doc": doc})
 
 
@@ -308,6 +314,7 @@ async def document_activate(body: dict):
 async def document_enabled(body: dict):
     did = int(body.get("id") or 0)
     doc = await asyncio.to_thread(kb_ingest.set_document_enabled, did, bool(body.get("enabled")))
+    kb_search.invalidate()
     return _ok({"doc": doc})
 
 
@@ -317,12 +324,25 @@ async def document_delete(body: dict):
     if _is_running(did):
         return _err(f"這份文件正在「{_is_running(did)}」，請等它跑完再刪")
     ok = await asyncio.to_thread(kb_ingest.delete_document, did)
+    kb_search.invalidate()
     return _ok({"ok": ok})
 
 
 # ======================================================================
 # 知識塊微調（向導第 ③ 步）
 # ======================================================================
+
+def _int_or_none(v):
+    s = str(v if v is not None else "").strip()
+    return int(s) if s.lstrip("-").isdigit() else None
+
+
+def _float_or_none(v):
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
 
 @router.post("/chunk/update")
 async def chunk_update(body: dict):
@@ -334,6 +354,7 @@ async def chunk_update(body: dict):
     ok = await asyncio.to_thread(kb_db.update_chunk, cid,
                                  text if isinstance(text, str) else None,
                                  bool(enabled) if isinstance(enabled, bool) else None)
+    kb_search.invalidate()
     return _ok({"ok": ok, "chunk": await asyncio.to_thread(kb_db.get_chunk, cid)})
 
 
@@ -373,6 +394,7 @@ async def chunk_split(body: dict):
         new_id = await asyncio.to_thread(work)
     except Exception as e:
         return _err(f"拆分失敗：{e}")
+    kb_search.invalidate()
     return _ok({"ok": True, "new_chunk_id": new_id,
                 "chunks": await asyncio.to_thread(kb_db.list_chunks, int(c["doc_id"]),
                                                   False, 2000)})
@@ -406,6 +428,7 @@ async def chunk_merge(body: dict):
         await asyncio.to_thread(work)
     except Exception as e:
         return _err(f"合併失敗：{e}")
+    kb_search.invalidate()
     return _ok({"ok": True,
                 "chunks": await asyncio.to_thread(kb_db.list_chunks, int(c["doc_id"]),
                                                   False, 2000)})
@@ -423,9 +446,51 @@ async def chunk_delete(body: dict):
         kb_db.renumber_chunks(int(c["doc_id"]))
 
     await asyncio.to_thread(work)
+    kb_search.invalidate()
     return _ok({"ok": True,
                 "chunks": await asyncio.to_thread(kb_db.list_chunks, int(c["doc_id"]),
                                                   False, 2000)})
+
+
+# ======================================================================
+# 檢索（命中測試／調參用；不寫任何紀錄、不改任何開關）
+# ======================================================================
+
+def _run_search(body: dict) -> dict:
+    cid = _int_or_none(body.get("collection_id"))
+    res = kb_search.search(
+        (body.get("query") or body.get("q") or "").strip(),
+        collection_id=cid,
+        top_k=_int_or_none(body.get("top_k")),
+        min_score=_float_or_none(body.get("min_score")),
+        max_per_doc=_int_or_none(body.get("max_per_doc")),
+        max_context_chars=_int_or_none(body.get("max_context_chars")),
+    )
+    out = res.as_dict(candidates=int(body.get("candidates") or 30))
+    out["context"] = res.context(int(res.params.get("max_context_chars") or 0))
+    return out
+
+
+@router.get("/search")
+async def search_get(q: str = "", collection_id: str = "", top_k: str = "",
+                     min_score: str = "", candidates: int = 30):
+    return _ok(await asyncio.to_thread(_run_search, {
+        "query": q, "collection_id": collection_id, "top_k": top_k,
+        "min_score": min_score, "candidates": candidates,
+    }))
+
+
+@router.post("/search")
+async def search_post(body: dict):
+    return _ok(await asyncio.to_thread(_run_search, body))
+
+
+@router.get("/index-stats")
+async def index_stats(collection_id: str = ""):
+    """索引目前的規模（幾塊 / 幾份文件 / 維度），方便確認「剛上線的搜得到」。"""
+    cid = _int_or_none(collection_id)
+    stats = await asyncio.to_thread(kb_search.index_stats, cid)
+    return _ok({"stats": stats})
 
 
 @router.get("/doc-types")

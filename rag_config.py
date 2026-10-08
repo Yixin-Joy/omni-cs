@@ -78,8 +78,14 @@ PARAM_SPECS: dict[str, dict] = {
     ),
     "min_score": dict(
         env="RAG_MIN_SCORE", label="入選門檻", group="retrieval", type="float",
-        default=0.55, min=0.0, max=0.95, rebuild=False,
-        help="低於此分數 → 直接降級人工，不呼叫模型",
+        # ⚠️ 0.28 是**實測校正**出來的，不是設計稿原本估的 0.55。
+        #    見 `kb_search_check.py` 的分數分佈：這套計分（0.65×cosine + 0.35×字面）
+        #    連「近乎完美命中」的問句也只有 ~0.61；用 0.55 會讓 8 條相關問句只過 2 條，
+        #    整個第三層形同關閉。實測「最大值：不相關 0.193 / 相關 0.608」，
+        #    取兩者中點 0.28 → 相關過 7 條、不相關 0 條。
+        #    P4 校準時請用你自己的真實問句重跑 kb_search_check.py 再定。
+        default=0.28, min=0.0, max=0.95, rebuild=False,
+        help="低於此分數 → 直接降級人工，不呼叫模型（實測校正，非 0.55）",
     ),
     "max_per_doc": dict(
         env="RAG_MAX_PER_DOC", label="單檔最多入選", group="retrieval", type="int",
