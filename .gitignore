@@ -21,6 +21,9 @@ jieba.cache
 meta_occ_snapshot.json
 *.log
 
+# ===== RAG 本地模型（jina-embeddings-v2-base-zh 約 640MB，不進版控）=====
+models/
+
 # ===== 二進位工具（體積大，不進版控）=====
 ngrok.exe
 chromedriver/
