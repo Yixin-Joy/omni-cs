@@ -32,6 +32,9 @@ import igfb_db
 import autoreply
 import autoreply_console
 import autoreply_db
+import kb_console
+import kb_db
+import kb_ingest
 import token_refresh
 import wechat
 import whatsapp
@@ -52,6 +55,13 @@ logging.getLogger("jieba").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     # 自動回復資料表（含既有表的新欄位），可重複執行
     await autoreply_db.init_schema_async()
+    # RAG 知識庫資料表（kb_*，5 張），可重複執行
+    await kb_db.init_schema_async()
+    # 上次被重啟打斷的入庫任務收拾乾淨（文件回到可重跑狀態）
+    try:
+        await asyncio.to_thread(kb_ingest.resume_on_startup)
+    except Exception as e:
+        log.warning("知識庫啟動清理失敗: %s", e)
     # IG 登入權杖自動續期（60 天效期，每天續一次）
     task = asyncio.create_task(token_refresh.ig_token_loop())
     try:
@@ -73,6 +83,9 @@ app.include_router(igfb_console.router)
 
 # AI 自動回復設定接口（掛在 /console/autoreply 之下）
 app.include_router(autoreply_console.router)
+
+# RAG 知識庫接口（掛在 /console/kb 之下）
+app.include_router(kb_console.router)
 
 
 def _cfg() -> dict:
