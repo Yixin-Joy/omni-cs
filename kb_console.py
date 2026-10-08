@@ -163,16 +163,17 @@ async def collection_delete(body: dict):
 def _params_payload(collection_id: int | None) -> dict:
     """參數規格 + 目前值。
 
-    ⚠️ 檢索那組（group='retrieval'）**永遠是全域值**、不隨 collection_id 變動；
-    分塊那組才是這個知識庫的（collection_id 空 → 未分組文件用的全域預設）。
+    ⚠️ 檢索那組（group='retrieval'）與提示詞（group='prompt'）**永遠是全域值**、
+    不隨 collection_id 變動；只有分塊那組才是這個知識庫的
+    （collection_id 空 → 未分組文件用的全域預設）。
     `scope` 欄位讓前端知道「這一項改到哪一層」。
     """
     glob = kb_db.get_global_param_overrides()
     own = kb_db.get_param_overrides(collection_id) if collection_id else {}
     items = []
     for key, spec in rag_config.PARAM_SPECS.items():
-        is_global = spec["group"] == "retrieval"
-        raw = (glob if (is_global or not collection_id) else own).get(key)
+        is_chunk = spec["group"] == "chunk"
+        raw = (own if (is_chunk and collection_id) else glob).get(key)
         value = rag_config.coerce(key, raw if raw not in (None, "") else spec["default"])
         items.append({
             "key": key, "label": spec["label"], "group": spec["group"],
@@ -184,7 +185,11 @@ def _params_payload(collection_id: int | None) -> dict:
             "env": spec["env"],
             "overridden": raw not in (None, ""),
             "rebuild": spec["rebuild"],
-            "scope": "global" if is_global else ("library" if collection_id else "unassigned"),
+            # ── 提示詞（type='text'）專用：前端要 render 多行框、標出可用變數 ──
+            "required": spec.get("required") or [],
+            "vars": spec.get("vars") or [],
+            "rows": spec.get("rows") or 0,
+            "scope": ("library" if collection_id else "unassigned") if is_chunk else "global",
         })
     return {
         "collection_id": collection_id,
@@ -192,6 +197,7 @@ def _params_payload(collection_id: int | None) -> dict:
         "model": kb_embed.model_info(),
         "retrieval": [i for i in items if i["group"] == "retrieval"],
         "chunk": [i for i in items if i["group"] == "chunk"],
+        "prompts": [i for i in items if i["group"] == "prompt"],
     }
 
 
@@ -203,16 +209,29 @@ async def get_params(collection_id: str = ""):
 
 @router.post("/params")
 async def set_params(body: dict):
-    """寫參數。檢索參數一律落到全域，分塊參數落到 `collection_id` 那個知識庫。
+    """寫參數。檢索參數與提示詞一律落到全域，分塊參數落到 `collection_id` 那個知識庫。
 
-    所以 `collection_id` 可以留空 —— 那就是「只改全域檢索參數」。
+    所以 `collection_id` 可以留空 —— 那就是「只改全域的東西（檢索參數／提示詞）」。
     """
     raw_cid = body.get("collection_id")
     cid = int(raw_cid) if str(raw_cid if raw_cid is not None else "").strip().isdigit() else None
     cid = cid or None
     values = body.get("values") or {}
+
+    # ★ 提示詞要先驗「必需佔位符」再寫。
+    #   少了 {context} / {sentinel} 這種，讀取端雖然會退回預設，但使用者會以為
+    #   「我明明存了卻沒生效」——不如當場擋下、直接告訴他少了哪一個。
+    for key, raw in values.items():
+        if key not in rag_config.PARAM_SPECS or raw is None:
+            continue
+        miss = rag_config.missing_placeholders(key, str(raw))
+        if miss:
+            label = rag_config.PARAM_SPECS[key]["label"]
+            return _err(f"「{label}」缺少必要的變數：{'、'.join(miss)}"
+                        f"（少了它模型就看不到資料／無法判定，請補回去再存）")
+
     n = await asyncio.to_thread(kb_db.set_params, cid, values)
-    kb_search.invalidate()   # 參數／索引快取立即失效（不用等 5 秒）
+    kb_search.invalidate()   # 參數／提示詞／索引快取立即失效（不用等 5 秒）
     return _ok({"ok": True, "saved": n, "params": await asyncio.to_thread(_params_payload, cid)})
 
 

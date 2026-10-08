@@ -23,6 +23,7 @@ except Exception:
 from fastapi.testclient import TestClient
 import main
 import kb_db
+import rag_config
 
 FAIL = []
 TMP = os.path.join(HERE, "_p1_samples")
@@ -103,24 +104,39 @@ with TestClient(main.app) as c:
           "POST /collections/update")
 
     print("\n[2] 參數配置")
-    # ⚠️ 檢索參數是**全域**的，這一段會寫到正式設定 → 先把原值存起來，最後還原。
-    #    沒有存就還原的話，會把人家調好的 min_score / top_k 清成預設（踩過）。
-    saved_global = kb_db.get_global_param_overrides()
-    saved_global = {k: saved_global.get(k) for k in ("top_k", "min_score")}
+    # ⚠️ 檢索參數與**提示詞**都是全域的，這一段會寫到正式設定 → 先整批存起來，最後還原。
+    #    沒有存就還原的話，會把人家調好的 min_score / 提示詞清成預設（踩過一次）。
+    saved_global = kb_db.get_global_param_overrides()      # 全量，含提示詞
     saved_chunk = {k: kb_db.get_param_overrides(cid).get(k) for k in ("chunk_strategy",)}
     r = c.get(f"/console/kb/params?collection_id={cid}")
     d = body(r)
     keys = [i["key"] for i in d.get("items", [])]
     check(r.status_code == 200 and "top_k" in keys and "chunk_size" in keys,
           f"GET /params 回 {len(keys)} 個參數")
-    # retrieval 6 → 7：多了 query_rewrite（多查詢檢索開關）
-    check(len(d.get("retrieval", [])) == 7 and len(d.get("chunk", [])) == 6,
-          "參數分組正確（retrieval 7 / chunk 6）")
+    # retrieval 6 → 7：多了 query_rewrite（多查詢檢索開關）；prompt 2：知識庫問答 + 查詢改寫
+    check(len(d.get("retrieval", [])) == 7 and len(d.get("chunk", [])) == 6
+          and len(d.get("prompts", [])) == 2,
+          "參數分組正確（檢索 7 / 分塊 6 / 提示詞 2）",
+          f"prompts={[i['key'] for i in d.get('prompts', [])]}")
     check("query_rewrite" in [i["key"] for i in d.get("retrieval", [])],
           "檢索參數含 query_rewrite（查詢改寫開關）",
           f"scope={next((i.get('scope') for i in d.get('retrieval', []) if i['key'] == 'query_rewrite'), None)}")
     check(all(i.get("scope") == "global" for i in d.get("retrieval", [])),
           "檢索參數全部標成全域（改了全庫一起生效）")
+
+    # ★ 提示詞（C 區）：也是全域參數，可在頁面直接編輯
+    pmap = {i["key"]: i for i in d.get("prompts", [])}
+    check(all(i.get("scope") == "global" and i.get("type") == "text"
+              for i in d.get("prompts", [])),
+          "提示詞全部標成全域、型別 text（前端才會 render 多行框）")
+    ans_p = pmap.get("rag_answer_prompt") or {}
+    rw_p = pmap.get("rewrite_prompt") or {}
+    check(all(v in (ans_p.get("value") or "") for v in ("{context}", "{sentinel}")),
+          "知識庫問答提示詞帶 {context} 與 {sentinel}")
+    check(all(v in (rw_p.get("value") or "") for v in ("{question}", "{n}")),
+          "查詢改寫提示詞帶 {question} 與 {n}")
+    check(bool(ans_p.get("required")) and bool(ans_p.get("vars")),
+          "提示詞帶 required / vars（前端要標「必須保留」與可用變數）")
 
     r = c.post("/console/kb/params", json={"collection_id": cid,
                                           "values": {"top_k": 99, "min_score": "-5",
@@ -141,13 +157,39 @@ with TestClient(main.app) as c:
               f"top_k={o['top_k']}（本庫剛設 30）")
     else:
         check(True, "只有一個知識庫，跨庫共用略過")
-    # 還原成自檢前的正式設定（None = 本來就沒有覆寫 → 刪掉）
+
+    # ★ 提示詞：缺必需變數要當場擋下（不然使用者會以為「存了卻沒生效」）
+    r = c.post("/console/kb/params",
+               json={"values": {"rag_answer_prompt": "這條沒有佔位符"}})
+    check(r.status_code == 400 and "缺少" in str(body(r).get("error")),
+          "提示詞缺必需變數被擋下（400）", str(body(r).get("error"))[:56])
+
+    # ★ 合法提示詞存進 DB → 執行時（kb_search.prompt_of）立刻取到新值
+    import kb_search
+    marker = "【自檢】{context} ／ {sentinel}"
+    r = c.post("/console/kb/params", json={"values": {"rag_answer_prompt": marker}})
+    got = kb_search.prompt_of("rag_answer_prompt")
+    check(r.status_code == 200 and got == marker,
+          "提示詞存進 DB 後執行時立刻取到新值（prompt_of）", repr(got[:16]))
+    if other:
+        o2 = {i["key"]: i["value"] for i in
+              body(c.get(f"/console/kb/params?collection_id={other}"))["prompts"]}
+        check(o2.get("rag_answer_prompt") == marker,
+              f"提示詞全庫共用（另一庫 #{other} 讀到同一條）")
+
+    # 還原：先清掉自檢寫入的**全部全域項**（檢索參數 + 提示詞），再把原值整批寫回。
+    # ⚠️ 只清 scope='global' 的 key —— 全部清會把「未分組文件的分塊預設」也刪掉。
+    clear_keys = [k for k in rag_config.PARAM_SPECS
+                  if kb_db._param_scope(k) == "global"]
+    c.post("/console/kb/params", json={"values": {k: None for k in clear_keys}})
     c.post("/console/kb/params", json={"collection_id": cid,
                                        "values": dict(saved_global, **saved_chunk)})
+    kb_search.invalidate()
     after = kb_db.get_global_param_overrides()
-    check(all(after.get(k) == saved_global.get(k) for k in ("top_k", "min_score")),
-          "自檢沒有改動正式的全域檢索參數",
-          f"top_k={after.get('top_k')} min_score={after.get('min_score')}")
+    check(after == saved_global,
+          "自檢沒有改動正式的全域設定（檢索參數 + 提示詞）",
+          f"top_k={after.get('top_k')} min_score={after.get('min_score')} "
+          f"提示詞覆寫={'有' if after.get('rag_answer_prompt') else '無'}")
 
     print("\n[3] 上傳 → 解析 → 分塊")
     samples = ensure_samples()

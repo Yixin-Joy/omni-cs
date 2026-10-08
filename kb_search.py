@@ -66,8 +66,9 @@ def invalidate() -> None:
 def params_for(collection_id: int | None) -> dict:
     """執行時參數（DB 覆寫優先），5 秒 TTL。
 
-    檢索用的那幾個（top_k / min_score / …）都是**全域**的，與 `collection_id` 無關；
-    這裡仍帶 cid 是因為回傳的是整包參數（含分塊那組），方便呼叫端一次拿齊。
+    檢索參數與提示詞都是**全域**的，與 `collection_id` 無關；
+    只有分塊參數才分知識庫。這裡仍帶 cid 是因為回傳的是整包參數（含分塊那組），
+    方便呼叫端一次拿齊。
     """
     key = str(collection_id or 0)
     now = time.time()
@@ -79,6 +80,21 @@ def params_for(collection_id: int | None) -> dict:
     with _lock:
         _param_cache[key] = {"ts": now, "value": value}
     return value
+
+
+def prompt_of(name: str) -> str:
+    """提示詞的執行時值（DB 全域覆寫優先），共用參數快取（5 秒 TTL）。
+
+    ★ 這是**所有提示詞讀取的唯一入口** —— `deepseek_client` 的知識庫問答
+    （`rag_answer_prompt`）與查詢改寫（`rewrite_prompt`）都走這裡，
+    所以「在知識庫 → 參數配置 → C. 提示詞」改完約 5 秒就會反映到線上行為
+    （`POST /console/kb/params` 會立刻 `invalidate()`，通常不用等）。
+
+    `rag_config.prompt_value()` 負責型別轉換與必需佔位符檢查：
+    使用者萬一把 `{context}` 刪掉，這裡會有第二道保險退回內建預設，
+    不讓 `.format()` 在生成答案那一刻炸掉整層。
+    """
+    return rag_config.prompt_value(name, params_for(None).get(name))
 
 
 # ---------- 索引 ----------

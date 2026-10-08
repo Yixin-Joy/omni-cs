@@ -25,6 +25,7 @@ import kb_db
 import kb_ingest
 import kb_chunk
 import kb_parse
+import kb_search
 import rag_config
 
 TMP = os.path.join(HERE, "_p1_samples")
@@ -295,10 +296,10 @@ if old:
     print(f"  （清掉上次自檢的 {len(old)} 份文件）")
 check(bool(cid), f"知識庫就緒 #{cid}")
 
-# 參數覆寫（★ 檢索參數全庫共用；分塊參數才按知識庫）
-# ⚠️ 檢索參數是**全域**的 → 這裡寫的會蓋到正式設定，所以先存原值、後面還原。
-#    沒有還原的話，使用者調好的 min_score / top_k 會被清成預設（踩過）。
-_saved_global = {k: kb_db.get_global_param_overrides().get(k) for k in ("top_k", "min_score")}
+# 參數覆寫（★ 檢索參數與提示詞全庫共用；分塊參數才按知識庫）
+# ⚠️ 全域的兩組（檢索參數、提示詞）寫下去會蓋到正式設定 → 先整批存原值、後面還原。
+#    沒有還原的話，使用者調好的 min_score / 提示詞會被清成預設（踩過）。
+_saved_global = kb_db.get_global_param_overrides()      # 全量（含提示詞）
 _saved_chunk = {k: kb_db.get_param_overrides(cid).get(k) for k in ("chunk_size",)}
 kb_db.set_params(cid, {"top_k": 5, "min_score": "0.5", "chunk_size": 300})
 p = kb_db.load_params(cid)
@@ -318,12 +319,35 @@ _expect_topk = rag_config.coerce("top_k", _saved_global.get("top_k") or 6)
 check(p["top_k"] == _expect_topk and p["chunk_size"] == 500,
       "刪除覆寫後回到原本的值（檢索回原設定、分塊回預設）",
       f"top_k={p['top_k']}（預期 {_expect_topk}）size={p['chunk_size']}")
-# 還原成自檢前的正式全域設定（None = 本來就沒覆寫 → 刪掉）
-kb_db.set_params(None, dict(_saved_global, **_saved_chunk))
+
+# ★ 提示詞也是「全域參數」（工作台 知識庫 → 參數配置 → C. 提示詞 可編輯）
+#   驗三件事：DB 覆寫生效、壞值退回預設（不讓 .format 炸）、清掉後回內建預設。
+MARK = "【自檢】{context} ／ {sentinel}"
+kb_db.set_params(None, {"rag_answer_prompt": MARK})
+kb_search.invalidate()
+check(kb_search.prompt_of("rag_answer_prompt") == MARK,
+      "提示詞覆寫生效（prompt_of 取到 DB 值）")
+kb_db.set_params(None, {"rag_answer_prompt": "少了必需佔位符的提示詞"})
+kb_search.invalidate()
+check(kb_search.prompt_of("rag_answer_prompt") == rag_config.RAG_PROMPT,
+      "提示詞缺必需佔位符 → 執行時退回內建預設（不讓生成那一刻炸）")
+kb_db.set_params(None, {"rag_answer_prompt": None})
+kb_search.invalidate()
+check(kb_search.prompt_of("rag_answer_prompt") == rag_config.RAG_PROMPT,
+      "清掉提示詞覆寫 → 回到內建提示詞")
+
+# 還原成自檢前的正式設定：先清掉自檢寫入的**全部全域項**，再整批寫回。
+# ⚠️ 分塊參數要帶 cid 寫（`set_params(None, ...)` 會把它寫到「未分組文件」那批）。
+kb_db.set_params(None, {k: None for k in rag_config.PARAM_SPECS
+                        if kb_db._param_scope(k) == "global"})
+kb_db.set_params(cid, _saved_chunk)
+kb_db.set_params(None, _saved_global)
+kb_search.invalidate()
 _p = kb_db.get_global_param_overrides()
-check(all(_p.get(k) == _saved_global.get(k) for k in ("top_k", "min_score")),
-      "自檢沒有改動正式的全域檢索參數",
-      f"top_k={_p.get('top_k')} min_score={_p.get('min_score')}")
+check(_p == _saved_global,
+      "自檢沒有改動正式的全域設定（檢索參數 + 提示詞）",
+      f"top_k={_p.get('top_k')} min_score={_p.get('min_score')} "
+      f"提示詞覆寫={'有' if _p.get('rag_answer_prompt') else '無'}")
 
 doc_ids = []
 for fn in ("manual.pdf", "manual.docx", "price.xlsx", "faq.md", "warranty.txt", "stores.csv"):

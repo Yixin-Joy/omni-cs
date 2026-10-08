@@ -700,6 +700,44 @@ ck(oldHtml.indexOf('改寫問句') < 0, '沒有改寫就不顯示改寫問句');
 ok(logItemHtml(Object.assign({}, slowLog, { rewrote: true, rewritten_query: '' })),
    'rewrote=true 但沒有改寫問句（多查詢）也要能畫', 80);
 
+console.log('\n[6d] 參數彈窗・C 區提示詞（可在頁面編輯 system prompt）');
+const fxPrompt = { key: 'rag_answer_prompt', label: '知識庫問答提示詞（system）',
+                   group: 'prompt', type: 'text', help: '強調忠實於召回內容',
+                   min: null, max: null, choices: null, env: 'DEEPSEEK_RAG_PROMPT',
+                   default: '內建{context}／{sentinel}', value: '目前{context}／{sentinel}',
+                   overridden: false, rebuild: false, scope: 'global',
+                   required: ['{context}', '{sentinel}'],
+                   vars: ['{context}＝檢索到的資料', '{sentinel}＝答不出來的標記'], rows: 18 };
+const pHtml = ok(kbParamRowHtml(fxPrompt), 'kbParamRowHtml(提示詞)', 120);
+has(pHtml, '<textarea', '提示詞渲染成多行輸入框');
+has(pHtml, '{context}', '列出可用變數');
+has(pHtml, '必須保留', '標出「必須保留」的變數');
+has(pHtml, 'kbFillDefault', '有「帶入內建預設」按鈕');
+has(pHtml, '18', 'rows 帶進輸入框高度');
+ck(pHtml.indexOf('[object') < 0, '提示詞渲染不會出現 [object Object]');
+// 舊 / 壞資料（沒有 required / vars / rows）不能炸、也不能吐 undefined
+const pHtml2 = kbParamRowHtml({ key: 'x', label: 'L', type: 'text', help: 'h',
+                                env: 'E', value: 'v', scope: 'global' });
+ck(pHtml2.indexOf('<textarea') >= 0 && pHtml2.indexOf('undefined') < 0,
+   '缺 required/vars/rows 的提示詞不炸、不吐 undefined');
+// 表單讀取：text 回原字串（空字串＝清掉覆寫、回內建預設）；數字維持原行為
+ck(kbReadParamForm([{ key: 'rag_answer_prompt', type: 'text' }]).rag_answer_prompt === '',
+   'kbReadParamForm 對 text 回字串（空 → 回預設）');
+ck(kbReadParamForm([{ key: 'top_k', type: 'int' }]).top_k === null,
+   'kbReadParamForm 對數字維持原行為（空 → null）');
+ck(kbReadParamForm([{ key: 'q', type: 'bool' }]).q === false,
+   'kbReadParamForm 對 bool 維持原行為');
+// 彈窗必須真的把 C 區與 prompts 分組接上去（用函式原始碼斷言，DOM 樁看不到 innerHTML）
+const rpSrc = kbRenderParams.toString();
+has(rpSrc, 'C. 提示詞', '參數彈窗有 C 區');
+has(rpSrc, 'd.prompts', 'C 區吃後端的 prompts 分組');
+has(kbSaveParams.toString(), 'kbReadParamForm(d.prompts)', '儲存會一併送出提示詞');
+ck(kbResetParams.toString().indexOf("'prompts'") >= 0,
+   '回復預設會一併清掉提示詞覆寫');
+let countOk = true;
+try { kbCountPrompt('rag_answer_prompt'); } catch (e) { countOk = false; }
+ck(countOk, 'kbCountPrompt 在 DOM 樁下不炸');
+
 console.log('\n[7] 紀錄頁');
 arState.settings = FX.settings;
 arState.logs = FX.logs.logs || [];
