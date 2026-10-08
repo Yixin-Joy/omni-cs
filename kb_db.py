@@ -309,20 +309,23 @@ def delete_collection(cid: int) -> bool:
 # ★ 2026-10-08 定案：參數分「兩層」，分派規則寫在 `_param_target()`，
 #   set / load 兩邊共用同一套，避免又出現「寫 A 讀 B」這種不一致。
 #
+#     **只有分塊參數是按知識庫，其餘（檢索參數、提示詞）一律全域。**
+#
 #     檢索參數 group=retrieval（top_k / min_score / max_per_doc / max_context_chars /
-#         rerank_enabled / rerank_top_n）→ **全域**（collection_id IS NULL）。
+#         rerank_enabled / rerank_top_n / query_rewrite）→ **全域**（collection_id IS NULL）。
 #         所有知識庫共用一組；以前「誰的 doc_id 小就聽誰」的洞一併消失。
+#     提示詞 group=prompt（rag_answer_prompt / rewrite_prompt）→ **全域**（同上）。
 #     分塊參數 group=chunk（chunk_strategy / chunk_size / chunk_min / chunk_max /
 #         chunk_overlap / chunk_prefix）→ **按知識庫**，在分塊配置界面單獨設。
 #         未分組文件（cid=None）落在全域那批。
 # ======================================================================
 
 def _param_scope(name: str) -> str:
-    """參數的歸屬：'global'（檢索，全庫共用）/ 'collection'（分塊，按知識庫）。"""
+    """參數的歸屬：'global'（檢索／提示詞，全庫共用）/ 'collection'（分塊，按知識庫）。"""
     import rag_config
 
     spec = rag_config.PARAM_SPECS.get(name) or {}
-    return "global" if spec.get("group") == "retrieval" else "collection"
+    return "collection" if spec.get("group") == "chunk" else "global"
 
 
 def _param_target(name: str, cid: int | None) -> int | None:

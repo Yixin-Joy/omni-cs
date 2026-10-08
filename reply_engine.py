@@ -386,9 +386,11 @@ async def _rag_try(queries: list[str], flavor: str, post_context: str, score: fl
     `queries` 是引擎開頭算好的**共用查詢**（第 0 條固定是原問句，其餘是改寫句）；
     一起送去 `kb_search.search_multi()` 合併取最高分。
 
-    ⚠️ 這裡**不再自己做改寫**（舊版會多呼叫一次模型）。改寫只在引擎開頭做一次，
-    三層共用。若 `queries` 只有一條（代表這次沒改寫），且第一次沒過門檻，
-    才保留舊的「單句改寫補救」行為（給沒開改寫開關、但需要指代補齊的情境兜底）。
+    ★ 2026-10-08 定案：**這裡完全不做改寫**。整個流程的改寫只有引擎開頭那一次
+    （受 `query_rewrite` 開關控制），結果三層共用；沒開就只有原問句一條。
+    舊版這裡還有「第一次沒過門檻 → 單句改寫 → 再查一次」的兜底，已經移除 ——
+    它讓「明明關了改寫卻還在呼叫模型」變得無法解釋，而且用的是另一條提示詞，
+    與「改寫只有一條 prompt」的設計衝突。
 
     ⚠️ 第三個回傳值（明細）在**未命中時也要帶**：設計稿 §9 講得很明白 ——
     「未命中的記錄也要能點開，看它檢索到什麼、為什麼沒過門檻，這才是調參最需要的」。
@@ -399,31 +401,12 @@ async def _rag_try(queries: list[str], flavor: str, post_context: str, score: fl
     qs = [q for q in (queries or []) if (q or "").strip()] or [""]
     rewrote = len(qs) > 1
     rewritten = " ｜ ".join(qs[1:])
-    rewrite_note = ""
 
     try:
         res = await asyncio.to_thread(kb_search.search_multi, qs)
     except Exception as e:
         log.warning("知識庫檢索失敗: %s", e)
         return None, f"知識庫：檢索失敗（{e}）", {}
-
-    # 舊的單句改寫 fallback：**只在這次沒有共用改寫結果時**才做（qs 只有原問句）。
-    # 有共用查詢就代表「該補的都補過了」，再改一次只是多花一次模型呼叫。
-    if len(qs) <= 1 and not res.passed and history_text.strip() and config.DEEPSEEK_API_KEY:
-        try:
-            single = await DeepSeekClient().rewrite_table_query(qs[0], history_text)
-        except DeepSeekError as e:
-            log.debug("知識庫 query 改寫失敗（沿用原問句）: %s", e)
-            single = ""
-        if single and single != qs[0]:
-            try:
-                res2 = await asyncio.to_thread(kb_search.search, single)
-            except Exception as e:
-                log.warning("知識庫改寫後檢索失敗: %s", e)
-                res2 = None
-            if res2 is not None and res2.top1 > res.top1:
-                res, rewrote, rewritten = res2, True, single
-                rewrite_note = "（單句改寫補救）"
 
     rows = [h.as_dict() for h in res.candidates[:30]]
     extra = dict(matched_rows=rows, rag_threshold=res.threshold,
@@ -436,7 +419,7 @@ async def _rag_try(queries: list[str], flavor: str, post_context: str, score: fl
         return None, "知識庫：沒有檢索到任何知識塊", extra
     if not res.passed:
         return None, (f"知識庫：最高分 {res.top1:.3f} 未達門檻 {res.threshold:.2f}"
-                      f"（已擋下，不呼叫模型）{rewrite_note}"), extra
+                      f"（已擋下，不呼叫模型）"), extra
 
     context = res.context(int(res.params.get("max_context_chars") or 0))
     try:
@@ -456,8 +439,6 @@ async def _rag_try(queries: list[str], flavor: str, post_context: str, score: fl
               f"{res.threshold:.2f}），主要來源：{top.source}")
     if rewrote:
         detail = f"共用查詢命中（原問句「{qs[0]}」，連同改寫句「{rewritten}」）：{detail}"
-    if rewrite_note:
-        detail += rewrite_note
     return Answer(TIER_RAG, _tidy(out), score=res.top1, rewrote=rewrote,
                   rewritten_query=rewritten, history_used=history_used if rewrote else 0,
                   detail=detail, matched_rows=rows, rag_threshold=res.threshold,

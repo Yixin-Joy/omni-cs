@@ -4052,7 +4052,7 @@ async function kbRenderParams() {
 
   body.innerHTML =
     '<div class="hint" style="margin-bottom:10px">' +
-      '檢索參數是<b>全域</b>的 —— 所有知識庫共用同一組，改完對<b>全部知識庫</b>生效' +
+      '檢索參數與提示詞是<b>全域</b>的 —— 所有知識庫共用同一組，改完對<b>全部知識庫</b>生效' +
       '（存在資料庫、約 5 秒生效，不用重啟服務）。分塊參數才是<b>按知識庫</b>分開設的，' +
       '上面的下拉只切換分塊參數改哪一個。標「重建」的改動要重新切塊 + 重跑向量才會反映。</div>' +
     group('A. 檢索參數（全域 · 所有知識庫共用）',
@@ -4062,6 +4062,10 @@ async function kbRenderParams() {
           '影響檢索的最小單位。塊太長會稀釋相似度，太短會斷章取義。' +
           (cid ? '' : '目前目標是「未分組文件」的預設，其他知識庫不受影響。'),
           d.chunk || []) +
+    group('C. 提示詞（全域 · 所有知識庫共用）',
+          '模型「怎麼答」與「怎麼改寫問句」的指示。這裡改了立刻反映到下一則自動回復，' +
+          '不用重啟、不用重建。⚠️ 標「必須保留」的變數不能刪，否則存不進去。',
+          d.prompts || []) +
     '<div class="row">' +
       '<button class="btn primary" onclick="kbSaveParams()">儲存</button>' +
       '<button class="btn" onclick="kbResetParams()">回復預設</button>' +
@@ -4069,11 +4073,38 @@ async function kbRenderParams() {
         ' · ' + d.model.dim + ' 維 · 上限 ' + d.model.max_tokens + ' token</span>' : '') +
     '</div>' +
     '<div id="kbParamsNote"></div>';
+
+  // 提示詞的字數／行數（內容是 innerHTML 塞進去的，渲染完才算得準）
+  (d.prompts || []).forEach(p => kbCountPrompt(p.key));
 }
 
 function kbParamRowHtml(p) {
   const id = 'kbp_' + p.key;
   let input;
+  // 提示詞（type='text'）：整條獨占一行，用多行輸入框 —— 塞進右邊那一格沒法編輯
+  if (p.type === 'text') {
+    const need = (p.required || []).map(v => '<code>' + esc(v) + '</code>').join(' ');
+    const vars = (p.vars || []).map(v => '<code>' + esc(v) + '</code>').join(' ');
+    return '<div style="margin:14px 0 6px">' +
+      '<div><span class="sr-name">' + esc(p.label) +
+        (p.overridden ? ' <span class="pill on">已改過</span>' : '') +
+      '</span></div>' +
+      '<div class="sr-sub">' + esc(p.help) +
+        '（環境變數 <code>' + esc(p.env) + '</code>）</div>' +
+      '<textarea id="' + id + '" rows="' + (p.rows || 12) + '" spellcheck="false"' +
+        ' oninput="kbCountPrompt(\'' + p.key + '\')"' +
+        ' style="width:100%;box-sizing:border-box;margin-top:6px;padding:9px 11px;' +
+        'border:1px solid var(--border);border-radius:8px;background:#fff;' +
+        'color:var(--text);font-family:ui-monospace,Consolas,monospace;' +
+        'font-size:12px;line-height:1.55;resize:vertical">' + esc(p.value) + '</textarea>' +
+      '<div class="row" style="margin-top:6px;align-items:center">' +
+        '<button class="btn sm" onclick="kbFillDefault(\'' + p.key + '\')">帶入內建預設</button>' +
+        '<span class="hint" style="margin:0" id="' + id + '_len"></span>' +
+      '</div>' +
+      '<div class="hint" style="margin-top:2px">必須保留：' + (need || '—') +
+        '　可用變數：' + (vars || '—') + '</div>' +
+    '</div>';
+  }
   if (p.type === 'bool') {
     input = '<input type="checkbox" id="' + id + '"' + (p.value ? ' checked' : '') + '>';
   } else if (p.type === 'choice') {
@@ -4106,17 +4137,39 @@ function kbReadParamForm(items) {
     if (!el) return;
     if (p.type === 'bool') out[p.key] = el.checked;
     else if (p.type === 'choice') out[p.key] = el.value;
+    // 提示詞：空字串代表「清掉覆寫、回到內建預設」（後端 set_params 就是這個語意）
+    else if (p.type === 'text') out[p.key] = el.value;
     else out[p.key] = el.value === '' ? null : Number(el.value);
   });
   return out;
+}
+
+// 提示詞框的字數／行數（使用者改了多長要看得見）
+function kbCountPrompt(key) {
+  const el = document.getElementById('kbp_' + key);
+  const out = document.getElementById('kbp_' + key + '_len');
+  if (!el || !out) return;
+  const v = el.value || '';
+  out.textContent = v.length + ' 字 / ' + (v ? v.split('\n').length : 0) + ' 行';
+}
+
+// 把這個提示詞的內建預設填回輸入框（不清空、不自動儲存）
+function kbFillDefault(key) {
+  const d = kbCachedParams(arState.kbParamCid || 0) || {};
+  const p = (d.prompts || []).find(x => x.key === key);
+  const el = document.getElementById('kbp_' + key);
+  if (!p || !el) return;
+  el.value = p.default || '';
+  kbCountPrompt(key);
 }
 
 async function kbSaveParams() {
   const cid = arState.kbParamCid || 0;
   const note = document.getElementById('kbParamsNote');
   const d = kbCachedParams(cid) || {};
-  // 兩組一起送出，後端按 group 分派：檢索 → 全域、分塊 → cid 這個知識庫
-  const values = Object.assign({}, kbReadParamForm(d.retrieval), kbReadParamForm(d.chunk));
+  // 三組一起送出，後端按 group 分派：檢索／提示詞 → 全域、分塊 → cid 這個知識庫
+  const values = Object.assign({}, kbReadParamForm(d.retrieval),
+                               kbReadParamForm(d.chunk), kbReadParamForm(d.prompts));
   const res = await apiJson('/console/kb/params', { collection_id: cid, values: values });
   if (res.data.error) { if (note) note.innerHTML = '<div class="test-result">❌ ' + esc(res.data.error) + '</div>'; return; }
   _kbParamCache[String(cid)] = res.data.params;
@@ -4124,19 +4177,20 @@ async function kbSaveParams() {
   const note2 = document.getElementById('kbParamsNote');
   const c = ((arState.kb && arState.kb.collections) || []).find(x => x.id === cid);
   if (note2) note2.innerHTML = '<div class="test-result">✅ 已儲存 ' + res.data.saved +
-    ' 項 —— 檢索參數存到<b>全域</b>（所有知識庫共用），分塊參數存到<b>' +
+    ' 項 —— 檢索參數與提示詞存到<b>全域</b>（所有知識庫共用），分塊參數存到<b>' +
     esc(c ? ('「' + c.name + '」') : '未分組文件') + '</b>。約 5 秒後生效。</div>';
 }
 
 async function kbResetParams() {
   const cid = arState.kbParamCid || 0;
   const c = ((arState.kb && arState.kb.collections) || []).find(x => x.id === cid);
-  if (!confirm('清掉覆寫、改回 .env 預設？\n\n· 檢索參數 → 清「全域」（所有知識庫一起回預設）\n' +
+  if (!confirm('清掉覆寫、改回內建預設？\n\n· 檢索參數 → 清「全域」（所有知識庫一起回預設）\n' +
+      '· 提示詞 → 清「全域」（回內建提示詞）\n' +
       '· 分塊參數 → 只清' + (c ? '「' + c.name + '」' : '「未分組文件」') +
       '\n其他知識庫的分塊參數不受影響。')) return;
   const d = kbCachedParams(cid) || {};
   const clear = {};
-  ['retrieval', 'chunk'].forEach(g => (d[g] || []).forEach(p => { clear[p.key] = null; }));
+  ['retrieval', 'chunk', 'prompts'].forEach(g => (d[g] || []).forEach(p => { clear[p.key] = null; }));
   const res = await apiJson('/console/kb/params', { collection_id: cid, values: clear });
   if (res.data.error) { alert(res.data.error); return; }
   _kbParamCache[String(cid)] = res.data.params;

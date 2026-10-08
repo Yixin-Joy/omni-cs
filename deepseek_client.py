@@ -134,6 +134,40 @@ def masked_key() -> str:
     return f"{k[:4]}****{k[-4:]}"
 
 
+# ---------- 提示詞（可在工作台編輯；DB 覆寫優先） ----------
+
+def _db_prompt(name: str, fallback: str) -> str:
+    """取提示詞的執行時值：DB（`kb_param` 全域）有覆寫就用，否則用 `fallback`。
+
+    ★ 2026-10-08 起提示詞是**參數**（知識庫 → 參數配置 → C. 提示詞 可直接編輯），
+    所以不能在 import 期就把字串定死 —— 否則改了頁面不會生效。
+    取值走 `kb_search.prompt_of()`（共用參數快取，5 秒 TTL）。
+
+    ⚠️ 用 lazy import 是刻意的：`kb_search` 會拉進 psycopg2 / numpy，
+    「LLM 客戶端」不該在 import 期就扛這些依賴（單獨跑測試腳本也不會踩到 DB）。
+    DB 讀不到就安靜退回 fallback —— 提示詞拿不到不該讓整個知識庫層掛掉。
+    """
+    try:
+        import kb_search
+        return kb_search.prompt_of(name) or fallback
+    except Exception as e:
+        log.debug("讀取提示詞覆寫失敗（用內建預設）: %s", e)
+        return fallback
+
+
+def _fill(template: str, **values) -> str:
+    """把 `{key}` 逐個換掉，**不用 `str.format`**。
+
+    與 `rag_config` 同一套慣例：使用者自訂的提示詞裡只要出現一個孤立的 `{`
+    （例如寫「用 {} 包起來」），`format()` 就會直接 KeyError/ValueError
+    把整層打掛。逐字 replace 最笨但不會炸，多餘的 `{...}` 原樣留著。
+    """
+    out = template or ""
+    for k, v in values.items():
+        out = out.replace("{" + k + "}", str(v))
+    return out
+
+
 class DeepSeekClient:
     def __init__(
         self,
@@ -232,36 +266,6 @@ class DeepSeekClient:
         """
         return float(config.DEEPSEEK_AUX_TIMEOUT or 5)
 
-    async def rewrite_query(self, question: str, faq_questions: list) -> str:
-        """把口語化問題改寫成貼近 FAQ 風格的標準問句，只回傳問句本身。"""
-        listed = "\n".join(f"- {q}" for q in faq_questions if q and str(q).strip())
-        system = config.DEEPSEEK_REWRITE_PROMPT.replace("{faq_list}", listed)
-        out = await self.complete(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": question},
-            ],
-            temperature=0.0,
-            timeout=self.aux_timeout, retries=0,
-        )
-        return clean_rewrite(out)
-
-    async def rewrite_table_query(self, question: str, history_text: str) -> str:
-        """業務表格第一次查不到時：參考最近對話把問句補成可獨立理解的查詢。
-
-        history_text 為「客戶/客服：內容」逐行的對話文字；沒有對話時傳空字串，
-        此時退化成單純的單句改寫。
-        """
-        system = (config.DEEPSEEK_TABLE_REWRITE_PROMPT
-                  .replace("{history}", history_text.strip() or "（沒有更早的對話紀錄）")
-                  .replace("{question}", question))
-        out = await self.complete(
-            [{"role": "user", "content": system}],
-            temperature=0.0,
-            timeout=self.aux_timeout, retries=0,
-        )
-        return clean_rewrite(out)
-
     async def rewrite_queries(self, question: str, history_text: str = "",
                               count: int = 2, faq_questions: list | None = None,
                               post_context: str = "") -> list[str]:
@@ -269,10 +273,11 @@ class DeepSeekClient:
 
         這是整個自動回復流程裡**唯一**的改寫呼叫（2026-10-08 定案）——
         產出的查詢會同時用於：FAQ 二次匹配、業務表格生成、知識庫檢索。
-        舊做法是每層各自改寫，實測一次回覆因此吃掉 8 次模型呼叫。
+        舊做法是每層各自改寫（各有一條提示詞），實測一次回覆因此吃掉 8 次模型呼叫。
 
-        重點是**同音錯別字**、**上下文補齊**、以及**留一條客戶口語版**
-        （提示詞見 `rag_config.RAG_REWRITE_PROMPT`）。
+        重點是**同音錯別字**、**上下文補齊**、以及**留一條客戶口語版**。
+        提示詞是**參數**（`rewrite_prompt`），可在「知識庫 → 參數配置 → C. 提示詞」
+        直接編輯並立刻生效 —— 這裡只是取它的執行時值。
 
         `faq_questions` 可選：現有 FAQ 問句清單，注進提示詞當「用語風格參考」，
         讓改寫結果更容易被 FAQ 規則匹配到（會截斷，避免 prompt 膨脹）。
@@ -291,14 +296,15 @@ class DeepSeekClient:
             limit = max(0, int(rag_config.RAG_REWRITE_FAQ_HINT_MAX or 0))
             shown = faqs[:limit] if limit else faqs
             more = f"（另有 {len(faqs) - len(shown)} 條未列出）" if len(faqs) > len(shown) else ""
-            hint = rag_config.RAG_REWRITE_FAQ_HINT.replace(
-                "{faq_list}", "\n".join(f"- {q}" for q in shown) + more)
+            hint = _fill(rag_config.RAG_REWRITE_FAQ_HINT,
+                         faq_list="\n".join(f"- {q}" for q in shown) + more)
 
-        prompt = (rag_config.RAG_REWRITE_PROMPT
-                  .replace("{n}", str(max(1, int(count or 1))))
-                  .replace("{faq_hint}", hint)
-                  .replace("{history}", (history_text or "").strip() or "（沒有更早的對話紀錄）")
-                  .replace("{question}", question))
+        template = _db_prompt("rewrite_prompt", rag_config.RAG_REWRITE_PROMPT)
+        prompt = _fill(template,
+                       n=str(max(1, int(count or 1))),
+                       faq_hint=hint,
+                       history=(history_text or "").strip() or "（沒有更早的對話紀錄）",
+                       question=question)
         if post_context:
             prompt = f"{prompt}\n\n貼文內容（僅供理解語境）：\n{post_context}"
         out = await self.complete(
@@ -342,6 +348,10 @@ class DeepSeekClient:
                               flavor: str = "dm", post_context: str = "") -> str:
         """把知識庫檢索到的段落當上下文回答；答不出來時回含 NO_ANSWER_SENTINEL 的字串。
 
+        ★ 主體指示（`rag_answer_prompt`）是**可以在工作台編輯的參數**
+        （知識庫 → 參數配置 → C. 提示詞），所以每次呼叫都從 DB 取現行值，
+        不在 import 期定死；取不到才退回 `rag_config.RAG_PROMPT`。
+
         與 `answer_with_table` 同一套規矩：**多段指示一律合併成單一 system message**
         （部分 OpenAI 相容閘道的模板只接受最前面那一則 system，連續多則會回 HTTP 500）。
         """
@@ -352,9 +362,8 @@ class DeepSeekClient:
             parts.append(config.DEEPSEEK_COMMENT_PROMPT)
         if post_context:
             parts.append(post_context)
-        parts.append(rag_config.RAG_PROMPT.format(
-            context=rag_context, sentinel=NO_ANSWER_SENTINEL
-        ))
+        main = _db_prompt("rag_answer_prompt", rag_config.RAG_PROMPT)
+        parts.append(_fill(main, context=rag_context, sentinel=NO_ANSWER_SENTINEL))
         messages = [
             {"role": "system", "content": "\n\n".join(parts)},
             {"role": "user", "content": question},

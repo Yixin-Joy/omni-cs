@@ -104,7 +104,7 @@ DATABASE_URL = _get("DATABASE_URL", "postgresql://postgres:postgres@localhost:54
 
 
 # ===== AI 自動回復（DeepSeek）=====
-# 留空則自動回復的第二層（業務表格匹配）與 FAQ 改寫會停用，直接降級人工。
+# 留空則自動回復的第二層（業務表格）與第三層（知識庫）會停用，直接降級人工。
 DEEPSEEK_API_KEY = _get("DEEPSEEK_API_KEY")
 
 DEEPSEEK_BASE_URL = _get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
@@ -122,9 +122,6 @@ DEEPSEEK_AUX_TIMEOUT = float(_get("DEEPSEEK_AUX_TIMEOUT", "5") or 5)
 
 # 同時送出的模型呼叫上限（本地排隊，避免撞上閘道的 max_parallel_requests 而被 429）
 DEEPSEEK_MAX_CONCURRENCY = int(_get("DEEPSEEK_MAX_CONCURRENCY", "2") or 2)
-
-# FAQ 改寫模式：off = 不呼叫 AI 改寫；on_miss = 規則未命中時才改寫再匹配一次
-FAQ_REWRITE_MODE = _get("FAQ_REWRITE_MODE", "on_miss").lower()
 
 # FAQ 規則匹配門檻（0~1，越高越嚴格）
 FAQ_MATCH_THRESHOLD = float(_get("FAQ_MATCH_THRESHOLD", "0.45") or 0.45)
@@ -174,29 +171,11 @@ DEEPSEEK_TABLE_PROMPT = _get(
     "寧可只輸出這個標記，也不要編造或補充表格以外的資訊。",
 )
 
-# FAQ 改寫提示詞（{faq_list} 會被換成現有 FAQ 問句清單）
-DEEPSEEK_REWRITE_PROMPT = _get(
-    "DEEPSEEK_REWRITE_PROMPT",
-    "你是一個 FAQ 查詢改寫助手。使用者會用口語化、多變的方式提問，"
-    "請把使用者的問題改寫成一句簡潔、標準、貼近 FAQ 語境的問句，"
-    "只輸出改寫後的問句本身，不要任何解釋、引號或多餘文字。\n\n"
-    "既有 FAQ 問題（供參考用語風格）：\n{faq_list}",
-)
-
-# 業務表格「查不到時的 query 改寫」提示詞
-#   {history} 放最近幾則對話，{question} 放客戶這一句
-DEEPSEEK_TABLE_REWRITE_PROMPT = _get(
-    "DEEPSEEK_TABLE_REWRITE_PROMPT",
-    "你是一個客服查詢改寫助手。客服用語常常很簡短、有指代或省略（例如「那這個多少錢？」"
-    "「有貨嗎？」「第二個呢？」），直接拿去查資料表會查不到。\n\n"
-    "請參考下面最近的對話，把客戶最新這一句改寫成一句「可以獨立理解、意思完整」的查詢問句：\n"
-    "1. 把代名詞、指示詞（這個、那個、它、第二個）還原成對話中實際提到的商品或項目名稱。\n"
-    "2. 補齊被省略的主體（例如客戶只說「多少錢」，要補成「某商品多少錢」）。\n"
-    "3. 保留客戶原本的意圖，不要新增客戶沒問的內容，也不要自己回答問題。\n"
-    "4. 只輸出改寫後的問句本身，不要任何解釋、引號或多余文字。\n\n"
-    "最近的對話（由舊到新，客服＝我方，客戶＝對方）：\n{history}\n\n"
-    "客戶最新這一句：{question}",
-)
+# ⚠️ 「查詢改寫」的提示詞**不在這裡** ——
+#    2026-10-08 起三層（FAQ／業務表格／知識庫）共用**同一條**改寫提示詞，
+#    它是可在頁面編輯的參數 `rewrite_prompt`（`rag_config.PARAM_SPECS`，
+#    工作台「知識庫 → 參數配置 → C. 提示詞」）。原本的 FAQ 專用／表格專用
+#    提示詞與 `FAQ_REWRITE_MODE` 開關都已移除，避免「關了還在呼叫模型」。
 
 
 # ===== 自動回復支援的渠道與場景 =====

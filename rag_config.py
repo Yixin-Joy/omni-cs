@@ -48,16 +48,38 @@ RAG_VECTOR_WEIGHT = float(_get("RAG_VECTOR_WEIGHT", "0.65"))
 RAG_LEXICAL_WEIGHT = float(_get("RAG_LEXICAL_WEIGHT", "0.35"))
 
 
-# ---------- RAG 生成提示詞 ----------
+# ---------- RAG 生成提示詞（知識庫問答的 system prompt） ----------
 # ⚠️ 放在這裡而不是 config.py：RAG 的東西集中一處，config.py 不必為了第三層再長一截。
 #    {context} 放檢索到的資料，{sentinel} 放「答不出來」的標記（沿用 __NO_ANSWER__）。
+#
+# ★ 2026-10-08：這條提示詞是**參數**（group='prompt'，所有知識庫共用一組），
+#   可在工作台「知識庫 → 參數配置 → C. 提示詞」直接編輯、約 5 秒生效。
+#   這裡只是**內建預設**；執行時 `kb_search.prompt_of("rag_answer_prompt")` 取 DB 覆寫。
+#   少了 {context} / {sentinel} 會被寫入端擋下（見 `PROMPT_REQUIRED`），
+#   讀取端 `prompt_value()` 也會退回預設 —— 不讓 .format() 直接炸。
 RAG_PROMPT = _get(
     "DEEPSEEK_RAG_PROMPT",
     "以下是知识库检索到的资料（每段前有编号与来源）：\n"
     "─────\n{context}\n─────\n\n"
-    "请「只根据上述资料」回答使用者的問題。\n"
-    "涉及数据或条款的输出请组织成通顺的语句，不要带 '*'、'-' 这类分隔符号。\n"
-    "问什么答什么，严禁给出使用者没问到的额外资讯，但仍需用完整语句礼貌回答。\n"
+    "请「只根据上述资料」回答使用者的问题。\n\n"
+    "═══ 忠实原则（最重要）═══\n"
+    "1. 答案中的每一个事实都必须能在上述资料里找到出处；资料没写的，一律不说。\n"
+    "2. 若资料内容与你自己知道的知识不一致，**一律以资料为准**。\n"
+    "3. 资料只讲了一半时，就只讲那一半 —— 不要补全、不要推测、不要用常识填空。\n\n"
+    "═══ 原样输出（涉及设计 / 数据结构 / 技术细节时必守）═══\n"
+    "当问题涉及「数据结构 / 字段定义 / 接口与协议 / 请求与响应示例 / 参数配置 / 代码 / "
+    "报错信息 / 版本号 / 文件路径 / 精确数值」时：\n"
+    "· 必须先把资料中的对应内容**原封不动**抄出来，然后另起一段用文字解释。\n"
+    "· 原样保留：字段名与嵌套结构、大小写、下划线、引号、括号、逗号、缩进、换行、"
+    "单位与标点、示例值、接口路径与方法名。\n"
+    "· 资料里以代码块 / JSON / 表格呈现的内容，你也用代码块或表格原样输出，"
+    "不要塞进句子里、不要改写成叙述。\n"
+    "· **禁止**：改写或翻译字段名、用「…」省略字段、把示例值换成自己的话、"
+    "把 JSON 改写成句子、把代码改成伪代码、擅自更名路径或参数。\n"
+    "· 顺序固定为「先原文，后说明」；说明与原文分开写，不要边抄边改。\n\n"
+    "═══ 语气与格式 ═══\n"
+    "· 用通顺、礼貌的完整语句回答，问什么答什么，严禁给出使用者没问到的额外资讯。\n"
+    "· 一般叙述不要带 '*'、'-' 这类分隔符号（原样输出的代码块与表格不在此限）。\n\n"
     "═══ 最高优先规则（覆盖以上所有叙述）═══\n"
     "若上述资料完全无法回答此问题，你唯一允许的输出就是这串字元：{sentinel}\n"
     "不可用「没有」「查不到」「抱歉」等自然语言代替，也不要加上任何说明、标点或多余文字。\n"
@@ -136,9 +158,11 @@ RAG_REWRITE_FAQ_HINT = _get(
 # ---------- 參數規格（單一真相：UI 渲染 / 後端驗證 / 預設值都讀這裡） ----------
 # group: retrieval = 檢索參數 → **全域**（存在 kb_param 的 collection_id IS NULL，
 #                   所有知識庫共用同一組；2026-10-08 定案，改完約 5 秒生效）
+#        prompt    = 提示詞   → **全域**（同上；可在參數彈窗 C 區直接編輯）
 #        chunk     = 分塊參數 → **按知識庫**（在分塊配置界面單獨設；未分組文件用全域那批）
 # rebuild: True 表示改動後需要「重新切塊 + 重跑 embedding」
-# 分派規則的唯一實作在 `kb_db._param_target()`（set / load 共用同一套）。
+# 分派規則的唯一實作在 `kb_db._param_target()`（set / load 共用同一套）——
+# **只有 chunk 是按知識庫，其餘一律全域**。
 PARAM_SPECS: dict[str, dict] = {
     # ── A. 檢索參數（5 秒生效，不用重啟、不用重建）──
     "top_k": dict(
@@ -215,6 +239,27 @@ PARAM_SPECS: dict[str, dict] = {
         default=True, min=None, max=None, rebuild=True,
         help="{文件} › {章節}，與內文一起 embed",
     ),
+    # ── C. 提示詞（全域；可在參數彈窗直接編輯）──
+    # type='text'：前端渲染成多行輸入框。required = 少了它就等於壞掉的佔位符，
+    # 寫入時 kb_console 會擋下（400）、讀取端 prompt_value() 會退回預設。
+    "rag_answer_prompt": dict(
+        env="DEEPSEEK_RAG_PROMPT", label="知識庫問答提示詞（system）", group="prompt",
+        type="text", default=RAG_PROMPT, min=None, max=None, rebuild=False,
+        rows=18, required=["{context}", "{sentinel}"],
+        vars=["{context}＝檢索到的資料", "{sentinel}＝答不出來的標記"],
+        help="知識庫命中後用來生成答案的 system prompt。強調忠實於召回內容、"
+             "設計與數據結構須原樣輸出再解釋。務必保留 {context} 與 {sentinel}",
+    ),
+    "rewrite_prompt": dict(
+        env="DEEPSEEK_RAG_REWRITE_PROMPT", label="查詢改寫提示詞（三層共用）",
+        group="prompt", type="text", default=RAG_REWRITE_PROMPT,
+        min=None, max=None, rebuild=False,
+        rows=16, required=["{question}", "{n}"],
+        vars=["{n}＝要幾條", "{history}＝最近對話", "{question}＝客戶這一句",
+              "{faq_hint}＝FAQ 參考清單"],
+        help="FAQ 未命中時改寫查詢用（一次改寫、三層共用）。"
+             "重點是同音錯別字與上下文補齊。務必保留 {question} 與 {n}",
+    ),
 }
 
 
@@ -269,7 +314,35 @@ def coerce(name: str, raw):
     if t == "choice":
         s = str(raw).strip()
         return s if s in spec["choices"] else spec["default"]
+    if t == "text":
+        # 提示詞：只去頭尾空白，內部換行與排版原樣保留（那是它的一部分）
+        s = str(raw if raw is not None else "").strip()
+        return s or str(spec["default"] or "")
     return raw
+
+
+def missing_placeholders(name: str, text: str) -> list[str]:
+    """這條提示詞少了哪些「必需佔位符」（寫入端用來回 400）。沒有 = 可以存。"""
+    spec = PARAM_SPECS.get(name) or {}
+    body = str(text or "")
+    return [p for p in (spec.get("required") or []) if p not in body]
+
+
+def prompt_value(name: str, raw) -> str:
+    """提示詞的**執行時值**：轉型別 + 檢查必需佔位符，缺了就退回內建預設。
+
+    為什麼要這道保險：提示詞是用 `.format()` 填值的，使用者萬一把 `{context}`
+    刪掉，就會在生成答案那一刻丟 KeyError、把整個知識庫層打掛。
+    寧可讓那次編輯「看似沒生效」，也不能讓它變成線上事故。
+    （寫入端 `kb_console` 已經會先擋一次，這裡是第二道 —— DB 被手改也擋得住。）
+    """
+    if name not in PARAM_SPECS:
+        return str(raw or "")
+    spec = PARAM_SPECS[name]
+    s = coerce(name, raw)
+    if missing_placeholders(name, s):
+        return str(spec.get("default") or "")
+    return s
 
 
 def defaults() -> dict:
