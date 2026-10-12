@@ -72,27 +72,64 @@ async def _send(channel: str, scope: str, text: str, *, to: str = "",
 CAPTION_MAX = 900
 
 
+def public_asset_url(rel_path: str) -> str:
+    """`kb_asset.rel_path` → **Meta 抓得到的絕對網址**。
+
+    為什麼 IG / FB 一定要絕對網址：它們的 attachment 只收 `payload.url`，
+    由 Meta 的伺服器**自己去下載**那個檔案 —— 所以那個網址必須是外網可達、
+    不需登入的（私有路徑、localhost 一律不行）。
+
+    能拼出絕對網址的前提（兩個都要成立，否則回空字串）：
+      ① 圖在**公開圖片目錄**（`media/kb_assets/`，掛在 `/media`）——
+         舊圖存在 `media/kb/<uuid>/assets/` 底下，`media_url_of_rel()` 會回空；
+      ② 設了 `PUBLIC_BASE_URL`（ngrok 隧道）—— 沒設就只有相對路徑，Meta 抓不到。
+
+    回空字串 = 這張圖發不出去，呼叫端要**記下原因**而不是靜靜略過。
+    """
+    try:
+        from app.rag import rag_config
+        rel = rag_config.media_url_of_rel(rel_path or "")
+    except Exception:
+        rel = ""
+    if not rel:
+        return ""
+    base = (config.PUBLIC_BASE_URL or "").rstrip("/")  # 模組頂層已 import config
+    if not base:
+        return ""
+    if rel.startswith("http://") or rel.startswith("https://"):
+        return rel
+    return base + "/" + rel.lstrip("/")
+
+
 async def _send_assets(channel: str, scope: str, assets: list, *, to: str = "",
                        caption: str = "") -> dict:
     """圖片隨文字一起送出（知識庫「圖文結合輸出」的輸出端）。
 
     只有**私訊**才發圖 —— 貼文留言是公開場合，塞圖會很吵，也不好收回。
-    每個渠道用的函式本來就有（WhatsApp `upload_media`+`send_image`／微信 `send_image`／
-    IG、FB 的 attachment 需要公開 URL，這裡先不支援）。
 
-    回傳 `{sent, failed, skipped, captioned}`：
+    各渠道怎麼送：
+
+    | 渠道 | 方式 | 能不能帶文字 |
+    |---|---|---|
+    | WhatsApp | 上傳拿 media_id → `send_image(caption=)` | ✅ caption |
+    | 微信 | 上傳臨時素材 → `send_image` | ❌ 客服訊息沒有 caption 欄位 |
+    | **IG / FB** | `send_dm(..., "file", file_url, mime)` → Meta 自己抓 URL | ❌ attachment 只有 url |
+
+    回傳 `{sent, failed, skipped, captioned, reason}`：
 
     * ★ `captioned=True` = **文字已經隨圖片一起送出去了**（WhatsApp 的 caption），
       呼叫端**不可以再單獨發一條純文字** —— 否則客戶會收到「一條純文字 + 一條一模一樣帶圖的」
-      （實測就是這個症狀）。微信的 `send_image` 不帶 caption → 這種情況回 False，
-      由呼叫端補發文字。
+      （實測就是這個症狀）。微信／IG／FB 的圖片不帶文字 → 回 False，由呼叫端補發文字。
     * ⚠️ **caption 只貼第一張成功送出的圖**：多張圖時若每張都貼同一段說明，
       客戶端會看到同一段話重複出現。
+    * `reason` 是給人看的「為什麼沒送成」（例：沒設 `PUBLIC_BASE_URL`、
+      圖不在公開目錄、Meta 回 400）—— 以前這裡是靜默 `skipped`，
+      使用者只看到「IG 沒收到圖」卻查不出原因。
     * 圖送失敗不算回覆失敗 —— 文字另外發，圖只是加分項。
     """
     # body/status 供呼叫端寫進 forward_log.target_response（「這條到底送了什麼」的證據）
     out = {"sent": 0, "failed": 0, "skipped": 0, "captioned": False,
-           "status": None, "body": ""}
+           "status": None, "body": "", "reason": ""}
     if scope != "dm" or not assets:
         out["skipped"] = len(assets or [])
         return out
@@ -104,6 +141,7 @@ async def _send_assets(channel: str, scope: str, assets: list, *, to: str = "",
         path = os.path.join(config.MEDIA_DIR, rel)
         if not rel or not os.path.exists(path):
             out["failed"] += 1
+            out["reason"] = out["reason"] or "找不到圖檔"
             continue
         mime = a.get("mime") or "image/png"
         try:
@@ -112,6 +150,7 @@ async def _send_assets(channel: str, scope: str, assets: list, *, to: str = "",
                 mid = await whatsapp_send.upload_media(path, mime, a.get("filename") or "")
                 if not mid:
                     out["failed"] += 1
+                    out["reason"] = out["reason"] or "WhatsApp 上傳素材失敗"
                     continue
                 r = await whatsapp_send.send_image(to, mid, caption=cap_left)
                 ok = (r or {}).get("status") == 200
@@ -123,17 +162,33 @@ async def _send_assets(channel: str, scope: str, assets: list, *, to: str = "",
                 r = await asyncio.to_thread(wechat_send.send_image, to, path)
                 ok = (r or {}).get("status") == 200
                 # ⚠️ 微信圖片不帶文字 → captioned 保持 False，由呼叫端補發文字
+            elif channel in ("ig", "fb"):
+                # IG / FB：把**公開絕對網址**交給 Meta，由它自己來抓圖。
+                url = public_asset_url(rel)
+                if not url:
+                    out["skipped"] += 1
+                    out["reason"] = out["reason"] or (
+                        "圖片不在公開目錄，或沒設定 PUBLIC_BASE_URL"
+                        "（IG／FB 的圖必須是外網可達的網址，Meta 會自己來下載）")
+                    continue
+                from app.channels import igfb
+                # message_type="file" + mime=image/* → igfb 內部會挑 ig_send_attachment
+                r = await igfb.send_dm(channel, to, "file", "", url, mime)
+                ok = (r or {}).get("status") == 200
             else:
-                # IG / FB 的 attachment 要「公開可抓的 URL」，本服務沒有公開圖床 → 略過
                 out["skipped"] += 1
+                out["reason"] = out["reason"] or f"這個渠道（{channel}）不支援自動發圖"
                 continue
             out["sent" if ok else "failed"] += 1
+            if not ok:
+                out["reason"] = out["reason"] or f"送出失敗（HTTP {(r or {}).get('status')}）"
             if out["status"] is None:
                 out["status"] = (r or {}).get("status")
                 out["body"] = (r or {}).get("body") or ""
         except Exception as e:
             log.warning("自動回復附圖送出失敗（%s）：%s", a.get("id"), e)
             out["failed"] += 1
+            out["reason"] = out["reason"] or f"{type(e).__name__}: {e}"
     return out
 
 
@@ -160,7 +215,8 @@ def assets_inline_caption(channel: str, scope: str, assets: list, text: str) -> 
 
     · WhatsApp：`send_image(to, media_id, caption)` 支援（caption 上限 1024 字元）→ True。
     · 微信：客服消息的圖片**沒有 caption 欄位** → 只能文字一條、圖一條（平台限制）。
-    · IG／FB：這個服務根本不發圖（attachment 需要公開可抓的 URL）→ False。
+    · IG／FB：attachment 的 payload **只有 url、沒有 caption** → 同樣只能兩條
+      （圖會發，但文字要另外發；見 `_send_assets` 的 ig/fb 分支）。
     · 貼文留言（公開場合）不發圖 → False。
     """
     return bool(assets and scope == "dm" and channel == "whatsapp"
@@ -495,10 +551,16 @@ async def handle_inbound(
         except Exception as e:
             log.warning("自動回復附圖流程失敗（不影響文字回覆）：%s", e)
             return {"sent": 0, "failed": 0, "skipped": 0, "captioned": False}
+        # asset_note 只存「內容」，使用處自己包括號（避免「（附圖 （附圖 1/1））」疊字）
         if st["sent"] or st["failed"]:
-            asset_note = f"（附圖 {st['sent']}/{st['sent'] + st['failed']}）"
+            asset_note = f"附圖 {st['sent']}/{st['sent'] + st['failed']}"
             log.info("自動回復附圖：送出 %d、失敗 %d%s", st["sent"], st["failed"],
                      "，文字已隨圖送出" if st.get("captioned") else "")
+        elif st.get("reason"):
+            # ★ 沒送成也要留原因：以前是靜默 skipped，使用者只看到「IG 沒收到圖」
+            #   卻完全查不出為什麼（小jo 2026-10-12 就是這樣問的）。
+            log.warning("自動回復沒有附圖（%s）：%s", channel, st["reason"])
+            asset_note = "無附圖：" + st["reason"]
         return st
 
     async def _push_text() -> dict:
@@ -550,7 +612,7 @@ async def handle_inbound(
 
     # 標記要能看出「是不是帶對話改寫 query 後才命中」，以及「有沒有連圖一起發」
     reply_detail = (label + ("（改寫後命中）" if answer.rewrote else "") +
-                    (f"（附圖 {asset_note.strip('（）')}）" if asset_note else ""))
+                    (f"（{asset_note}）" if asset_note else ""))
     _mark(channel, scope, STATE_HIT, tier=answer.tier, detail=reply_detail,
           message_id=message_id, comment_id=comment_id, conversation_key=conversation_key)
 
@@ -611,7 +673,8 @@ async def handle_inbound(
           "matched_rows": answer.matched_rows,
           "send_status": "sent", **_usage(answer)}, claim_key=claim_key)
     log.info("自動回復已送出（%s/%s，%s%s%s）：%s", channel, scope, label,
-             "，改寫後命中" if answer.rewrote else "", asset_note, answer.text[:60])
+             "，改寫後命中" if answer.rewrote else "",
+             ("，" + asset_note) if asset_note else "", answer.text[:60])
     return {"state": STATE_HIT, "tier": answer.tier, "label": label, "answer": answer.text,
             "rewrote": answer.rewrote, "rewritten_query": answer.rewritten_query,
             "assets": answer.assets}
