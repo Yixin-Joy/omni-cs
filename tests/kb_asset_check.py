@@ -27,6 +27,7 @@ except Exception:
 from fastapi.testclient import TestClient
 
 import main
+from app.rag import kb_chunk
 from app.rag import kb_db
 from app.rag import kb_ingest
 from app.rag import kb_parse
@@ -561,6 +562,70 @@ try:
           "★ 微信那張圖不帶文字 → 客戶不會看到重複的一段話")
 finally:
     _restore()
+
+# ---------- [9] 標題識別 + 表格結構化（2026-10-12，「分塊效果不好」的根因） ----------
+#
+# 症狀（使用者 回報 doc#319）：格式清晰的 PDF，分塊卻一團糟 ——
+#   · 4 個圖片題注被當成章節標題，把後面 51/74 個 block 的 heading_path 全汙染了
+#   · 12 個真正的編號標題（「1.1 产品简介」）一個都沒認出來
+#   · 標題與正文黏成一行（「1.1 产品简介本智能办公助手系统是面向…」）
+#   · 表格被壓成流水文字（「故障现象 报错代码 核心原因 解决方案」後面接著糊掉的內容）
+print("\n[9] 標題識別 + 表格結構化（分塊品質的關鍵）")
+
+# 編號式章節標題：要認得出來，也要估對層級
+for t, lv in [("1. 产品概述", 1), ("3.2 完整安装步骤（图文对应）", 2),
+              ("1.1.2 细节说明", 3), ("5. 常见故障与解决方案（RAG 高频问答库）", 1)]:
+    got = kb_parse._numbered_heading_level(t)
+    check(got == lv, f"編號標題「{t}」→ 第 {lv} 層", f"實際 {got}")
+
+# ★ 這些**不能**當標題：列表項（含句中標點）、版本號（數字後沒空白）
+for t in ["1. 关闭电脑防火墙及杀毒软件拦截，避免安装包解压、组件注册被拦截",
+          "2. 首次登录强制修改密码，密码需包含大小写字母、数字、8位及以上",
+          "11.0及以上",
+          "4. 初始化完成后自动进入主功能界面，可正常使用检索、问答功能"]:
+    got = kb_parse._numbered_heading_level(t)
+    check(got == 0, f"不算標題「{t[:20]}…」", f"實際 {got}")
+
+
+def _ln(text, **kw):
+    d = {"text": text, "x0": 90, "x1": 300, "top": 200, "bottom": 212}
+    d.update(kw)
+    return d
+
+
+check(kb_parse._looks_heading(_ln("圖 2 文件解压完成目录示意图"), 595) is False,
+      "★ 圖片題注不當標題（它由 _match_caption 綁到圖上）")
+check(kb_parse._looks_heading(_ln("1.1 产品简介"), 595) is True,
+      "★ 左對齊的編號標題要認得出來（原本只認置中 → 全漏）")
+check(kb_parse._looks_heading(_ln("11.0及以上", x0=228, x1=284, in_table=True), 595) is False,
+      "★ 表格內的欄位文字不當標題（偏右會像置中）")
+check(kb_parse._looks_heading(_ln("第一章 总则"), 595) is True, "「第X章」仍認得")
+check(kb_parse._heading_level_of("第三章 总则") == 1, "_heading_level_of 認得第X章")
+
+# 表格 → markdown（列／欄關係要保住）
+md = kb_parse._rows_to_markdown([["故障现象", "报错代码"], ["软件安装完成后无\n法启动", "E001"]])
+check("| 故障现象 | 报错代码 |" in md, "表格轉成 markdown 表頭", repr(md.split("\n")[0]))
+check("| 软件安装完成后无法启动 | E001 |" in md,
+      "★ 儲存格內換行接回同一句（中文不加空格，否則「无法启动」檢索不到）",
+      repr(md.split("\n")[-1]))
+check(kb_parse._rows_to_markdown([["只有一欄"], ["x"]]) == "",
+      "只有一欄的「表」判為誤判 → 不轉", "（免得把版心框當表格）")
+check(kb_parse._rows_to_markdown([]) == "" and kb_parse._rows_to_markdown(None) == "",
+      "空表格不炸")
+
+# 前綴／內文去重（同一句別出現兩次）
+check(kb_chunk._same_as_head("RAG问答测试专用｜图文版用户说明文档",
+                             "RAG 问答测试专用｜图文版用户说明文档\n文档用途：…"),
+      "前綴與內文開頭重複（忽略空白）→ 判為重複")
+check(not kb_chunk._same_as_head("產品手冊", "耳機的保固期是 12 個月"),
+      "不相干的前綴與內文 → 不判重複")
+check(kb_chunk._drop_dup_heading("3.3 首次登录初始化设置\n软件首次打开需完成账号登录",
+                                 "3. 软件安装 › 3.3 首次登录初始化设置")
+      == "软件首次打开需完成账号登录",
+      "★ 內文開頭的章節標題會被去掉（標題已在 prefix 裡）")
+check(kb_chunk._drop_dup_heading("3.3 首次登录初始化设置", "3.3 首次登录初始化设置")
+      == "3.3 首次登录初始化设置",
+      "整塊就只有那個標題時 → 保留（去掉就空了）")
 
 # 收尾要把圖片庫也一起清掉（它不屬於 kb_document 的 cascade）
 _ick = (imgcol or {}).get("id")

@@ -149,6 +149,34 @@ def _make_prefix(title: str, heading_path: str) -> str:
     return p[:_MAX_PREFIX]
 
 
+def _same_as_head(prefix: str, text: str) -> bool:
+    """內文開頭就已經是這段前綴了嗎（比對時忽略空白與常見標點）。
+
+    忽略空白是必要的：PDF 抽出來的字常比檔名多／少空格
+    （檔名 `RAG问答测试专用｜图文版用户说明文档.pdf` vs 內文 `RAG 问答测试专用｜…`）。
+    """
+    def norm(s: str) -> str:
+        return re.sub(r"[\s·・\-–—_｜|.．、,，:：]", "", s or "")
+    a, b = norm(prefix), norm(text[:len(prefix) + 12])
+    return bool(a) and b.startswith(a)
+
+
+def _drop_dup_heading(body: str, heading_path: str) -> str:
+    """內文開頭若就是這塊的章節標題，把它去掉（標題已經在 prefix 裡了）。
+
+    ⚠️ 只在「去掉後還有內容」時才動 —— 有些塊整塊就是那個標題
+    （後面沒有正文），去掉就空了，那還不如留著。
+    """
+    hp = (heading_path or "").strip()
+    if not hp or not body:
+        return body
+    last = hp.split(" › ")[-1].strip()
+    if not last or not body.startswith(last):
+        return body
+    rest = body[len(last):].lstrip("\n").lstrip()
+    return rest if rest else body
+
+
 def _split_sentences(text: str) -> list[str]:
     out = [s.strip() for s in _SENT_RE.findall(text)]
     return [s for s in out if s]
@@ -359,7 +387,16 @@ def chunk_blocks(blocks: list[Block], *, doc_type: str = "", title: str = "",
     idx_of = {id(b): i for i, b in enumerate(n_blocks)}
     for text, first, last in packed:
         prefix = _make_prefix(title, first.heading_path) if use_prefix else ""
+        # ⚠️ 前綴與內文重複時不要再加一次：文件的**第一塊**常常就是標題本身
+        #   （PDF 的第一行就是大標題），此時 prefix = 文件名、body 開頭也是文件名
+        #   → 客戶／模型會看到同一句出現兩遍（實測 doc#319 第一塊開頭就是這樣）。
+        if prefix and _same_as_head(prefix, text):
+            prefix = ""
         body = text
+        # ★ 內文開頭如果就是這一塊的章節標題，去掉它 —— 標題已經在 prefix 裡了，
+        #   留著會變成「…› 3.3 首次登录初始化设置\n3.3 首次登录初始化设置\n軟體首次…」
+        #   同一句出現兩次（而且白佔字數、稀釋向量）。
+        body = _drop_dup_heading(body, first.heading_path)
         full = f"{prefix}\n{body}" if prefix else body
         row_from = first.row_from
         row_to = last.row_to if last.row_to is not None else last.row_from
