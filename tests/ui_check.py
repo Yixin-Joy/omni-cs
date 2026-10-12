@@ -661,63 +661,85 @@ has(kbChunkListHtml([{ id: 1, ordinal: 1, char_count: 30, text: IMG_TEXT, enable
                        embedding_status: 'done' }]),
     '<img class="md-img"', '知識塊清單的內嵌圖片預覽會渲染');
 
-console.log('\n[3g3] 新增知識庫：向下展開「文檔 / 圖片」兩顆鈕（不用 prompt / confirm 問是/否）');
+console.log('\n[3g3] 新增知識庫：小彈窗（兩個單選 + 庫名 + 添加／取消），不用 prompt / confirm');
 arState.kb = FX.overview;
 arState.kbView = 'list';
-arState.kbNewOpen = false;
 
-// 收合時：不該出現面板
-const kbNoPanel = kbTabHtml();
-hasNot(kbNoPanel, 'kb-new-panel', '沒展開時不畫面板');
-hasNot(kbNoPanel, 'kbNewName', '沒展開時沒有名稱輸入框');
-has(kbNoPanel, 'kbCreateToggle()', '「＋ 新增知識庫」是展開鈕（不是直接建立）');
-has(kbNoPanel, '＋ 新增知識庫', '收合時按鈕寫「＋ 新增知識庫」');
+// 清單頁：一顆「＋ 新增知識庫」開彈窗；彈窗本體是靜態節點，不在清單 HTML 裡
+const kbList = ok(kbTabHtml(), 'kbTabHtml()（知識庫清單）');
+has(kbList, 'openKbNew()', '「＋ 新增知識庫」開彈窗');
+has(kbList, '＋ 新增知識庫', '按鈕文字');
+// 靜態彈窗節點（從 HTML 檔抓，不是執行期產生）
+hasNot(kbList, 'kbNewOverlay', '彈窗不在清單 HTML 裡（是靜態節點，輪詢重繪不會弄丟它）');
 
-// 展開時：兩顆類型鈕
-arState.kbNewOpen = true;
-const kbPanel = ok(kbTabHtml(), 'kbTabHtml()（展開新增面板）');
-has(kbPanel, 'kb-new-panel', '展開後出現面板');
-has(kbPanel, 'kbNewName', '面板裡有名稱輸入框');
-has(kbPanel, '文檔知識庫', '有「文檔知識庫」按鈕');
-has(kbPanel, '圖片知識庫', '有「圖片知識庫」按鈕');
-has(kbPanel, "kbCreateCollection('doc')", '文檔鈕帶 kind=doc');
-has(kbPanel, "kbCreateCollection('image')", '圖片鈕帶 kind=image');
-has(kbPanel, '✕ 取消新增', '展開時按鈕變「取消新增」');
-hasNot(kbPanel, 'type="checkbox"', '沒有用勾選框（就是兩顆按鈕）');
-
-// ★ 核心驗收：整個新增流程不再彈「是/否」問句
+// ★ 核心驗收：新增流程完全不彈原生「是/否」問句
 const __create = kbCreateCollection.toString();
 ck(__create.indexOf('confirm(') < 0, 'kbCreateCollection 不再用 confirm 問「是/否」');
 ck(__create.indexOf('prompt(') < 0, 'kbCreateCollection 不再用 prompt 問名稱');
-ck(__create.indexOf("'doc'") >= 0 && __create.indexOf("'image'") >= 0,
-   'kbCreateCollection 用傳進來的 kind 決定類型', 'doc / image');
-ck(kbNewPanelHtml.toString().indexOf('confirm(') < 0 &&
-   kbNewPanelHtml.toString().indexOf('prompt(') < 0, '面板本身也沒有彈窗');
+ck(__create.indexOf('kbNewKind()') >= 0, '類型取自彈窗的單選（kbNewKind）');
+ck(openKbNew.toString().indexOf('confirm(') < 0 &&
+   openKbNew.toString().indexOf('prompt(') < 0, '開彈窗也沒有原生彈窗');
+ck(kbNewNameHint.toString().indexOf('confirm(') < 0, '提示函式也沒有原生彈窗');
 
-// 說明文案是單一來源（面板初版 = 名稱清空後回退的那份）
-ck(kbNewPanelHtml().indexOf(kbNewHintHtml()) >= 0, '面板初版與清空後用同一份說明（單一來源）');
+// 單選：預設圖片知識庫；選 doc 才會是 doc（DOM 樁的 querySelector 回 null → 先接一根假的）
+const __realQS = document.querySelector;
+let __kindVal = '';
+document.querySelector = function (sel) {
+  if (String(sel).indexOf('kbNewKind') >= 0) return { value: __kindVal, checked: true };
+  return __realQS ? null : null;
+};
+ck(kbNewKind() === 'image', '沒選時預設圖片知識庫（使用者 列在前面的那個）');
+__kindVal = 'doc';
+ck(kbNewKind() === 'doc', '選了文檔知識庫就回 doc');
 
-// 展開 / 收合切換
-arState.kbNewOpen = false;
-kbCreateToggle();
-ck(arState.kbNewOpen === true, 'kbCreateToggle() 展開');
-kbCreateToggle();
-ck(arState.kbNewOpen === false, 'kbCreateToggle() 再按一次收合');
-
-// 輸入名稱後，提示會說出「要建的名字」
+// 名稱提示：有值時要說出「建哪一種、叫什麼」
+__kindVal = 'image';
 document.getElementById('kbNewName').value = '介面截圖庫';
-kbNewHint();
-ck(document.getElementById('kbNewHint').innerHTML.indexOf('介面截圖庫') >= 0,
-   '名稱有值 → 提示說出要建的名字', document.getElementById('kbNewHint').innerHTML.slice(0, 40));
-document.getElementById('kbNewName').value = '';
-kbNewHint();
-ck(document.getElementById('kbNewHint').innerHTML.indexOf('圖片知識庫') >= 0,
-   '名稱清空 → 回到預設說明');
+kbNewNameHint();
+const hintImg = document.getElementById('kbNewHint').innerHTML;
+ck(hintImg.indexOf('介面截圖庫') >= 0, '名稱有值 → 提示說出要建的庫名', hintImg.slice(0, 40));
+ck(hintImg.indexOf('只建這一個庫') >= 0, '圖片庫提示強調「只建這一個庫」');
+__kindVal = 'doc';
+document.getElementById('kbNewName').value = '產品保固條款';
+kbNewKindPick('doc');
+const hintDoc = document.getElementById('kbNewHint').innerHTML;
+ck(hintDoc.indexOf('產品保固條款_圖片庫') >= 0,
+   '文檔庫提示說明「上傳的文件真的有圖才開 庫名_圖片庫」', hintDoc.slice(0, 60));
+ck(hintDoc.indexOf('不會先開圖片庫') >= 0, '文檔庫提示明說「現在不會先開圖片庫」');
+document.querySelector = __realQS;
 
-// 回清單要收起面板（不留半開的殘影）
-arState.kbNewOpen = true;
+// 開／關彈窗（DOM 樁的 classList 有真的 add/remove，可以直接驗）
+arState.kbView = 'list';
+openKbNew();
+ck(document.getElementById('kbNewOverlay').classList.contains('open'), 'openKbNew() 打開彈窗');
+ck(document.getElementById('kbNewName').value === '', '開彈窗會清空上次輸入的庫名');
+closeKbNew();
+ck(!document.getElementById('kbNewOverlay').classList.contains('open'), 'closeKbNew() 關閉彈窗');
+
+// 回清單要順手關掉彈窗（不留半開的殘影）
+openKbNew();
 kbGoList();
-ck(arState.kbNewOpen === false, 'kbGoList() 會收起新增面板');
+ck(!document.getElementById('kbNewOverlay').classList.contains('open'),
+   'kbGoList() 會關掉新增彈窗');
+
+console.log('\n[3g4] 圖片庫歸屬：文檔庫附帶的圖片庫不單獨列卡片');
+const colWithLib = [
+  { id: 1, name: '手冊庫', kind: 'doc', enabled: true, doc_count: 2, ready_count: 2,
+    chunk_count: 10, asset_count: 3 },
+  { id: 2, name: '手冊庫_圖片庫', kind: 'image', image_of: 1, enabled: true,
+    asset_count: 3, doc_count: 0, chunk_count: 0 },
+  { id: 3, name: '截圖庫', kind: 'image', image_of: null, enabled: true,
+    asset_count: 5, doc_count: 0, chunk_count: 0 },
+];
+arState.kb = { collections: colWithLib, totals: {}, model: {} };
+const listHtml = kbTabHtml();
+has(listHtml, '手冊庫', '文檔庫列出來');
+has(listHtml, '截圖庫', '獨立圖片庫列出來（image_of 空的照樣顯示）');
+hasNot(listHtml, '手冊庫_圖片庫', '文檔庫附帶的圖片庫不單獨列卡片');
+has(listHtml, '另有 1 個', '並說明少列了幾個附帶圖片庫');
+ck(kbBoundImageLib(1) && kbBoundImageLib(1).name === '手冊庫_圖片庫', 'kbBoundImageLib 找得到附帶的圖片庫');
+ck(kbBoundImageLib(3) === null, '獨立圖片庫不會被當成別人的附帶圖片庫');
+ck(kbBoundImageLib(2) === null, '圖片庫自己沒有附帶圖片庫');
 arState.kb = FX.overview;
 arState.kbCollection = CID;
 
@@ -1125,6 +1147,38 @@ def extract_ui_js() -> str:
     return js
 
 
+def check_kb_new_modal_markup() -> None:
+    """「新增知識庫」彈窗的**靜態節點**（JS 抽取只看 <script>，抓不到這段 HTML）。
+
+    驗到的是「這個彈窗真的存在於頁面裡」—— 沒有它，`openKbNew()` 會靜靜地什麼都不做。
+    形狀要求（使用者 指定）：兩個單選（圖片／文檔）→ 庫名 → 添加／取消。
+    """
+    path = os.path.join(HERE, "ui", "console_ui.html")
+    txt = io.open(path, encoding="utf-8").read()
+    ok_ = True
+
+    def need(cond, label, extra=""):
+        nonlocal ok_
+        check(cond, label, extra)
+        if not cond:
+            ok_ = False
+
+    need('id="kbNewOverlay"' in txt, '彈窗節點 #kbNewOverlay 存在（靜態）')
+    need('name="kbNewKind"' in txt, '有類型單選 input[name=kbNewKind]')
+    need('value="image"' in txt and 'value="doc"' in txt, '單選有兩個值：image / doc')
+    box = txt.split('id="kbNewOverlay"', 1)[-1].split('</div>\n</div>', 1)[0]
+    need(box.count('type="radio"') == 2, '正好兩個單選（圖片 / 文檔）',
+         f"找到 {box.count('type=\"radio\"')} 個")
+    need('圖片知識庫' in box and '文檔知識庫' in box, '兩個選項的文字是「圖片知識庫 / 文檔知識庫」')
+    need('id="kbNewName"' in box, '庫名輸入框 #kbNewName 存在')
+    need('id="kbNewAddBtn"' in box, '「添加」按鈕 #kbNewAddBtn 存在')
+    need('>添加<' in box, '按鈕文字是「添加」（不是「確定」）')
+    need('>取消<' in box, '按鈕文字是「取消」')
+    need('type="checkbox"' not in box, '不是勾選框（是單選）')
+    need('確定' not in box and '是否' not in box, '沒有「是/否」這種問句文字')
+    return ok_
+
+
 def main() -> int:
     if not os.path.exists(NODE):
         print(f"  ⚠ 找不到 node：{NODE}")
@@ -1133,6 +1187,10 @@ def main() -> int:
     print("=" * 72)
     print(f" 客服工作台前端自檢（真實 payload → 真實渲染函式）→ {BASE}")
     print("=" * 72)
+
+    # 靜態 HTML 本體（<script> 以外的部分）也要驗 —— JS 抽取涵蓋不到彈窗的節點
+    print("\n[0] 靜態頁面節點")
+    check_kb_new_modal_markup()
 
     fx = collect_fixtures()
     ids = seed_log_fixture(fx)
