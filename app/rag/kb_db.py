@@ -908,9 +908,11 @@ def list_assets(*, collection_id: int | None = None, doc_id: int | None = None,
 
 
 def update_asset(aid: int, **fields) -> bool:
+    # ⚠️ 少了 rel_path 會讓「搬檔後改路徑」靜默失敗（踩過：遷移腳本以為改了，
+    #    其實 allowed 沒收，資料庫還是舊路徑）。
     allowed = ("caption", "caption_source", "caption_status", "enabled",
                "filtered_reason", "collection_id", "embedding",
-               "embedding_status", "page_no")
+               "embedding_status", "page_no", "rel_path", "filename")
     sets, params = [], []
     for k, v in fields.items():
         if k not in allowed:
