@@ -33,7 +33,72 @@ _STRATEGY_BY_TYPE = {
 # 句末（中英標點）→ 用來切「超過上限的單一長段」
 _SENT_RE = re.compile(r"[^。！？!?；;\n]*[。！？!?；;\n]|[^。！？!?；;\n]+$")
 
+# markdown 圖片標記：`![題注](/media/xxx.png)`
+_MD_IMG_RE = re.compile(r"!\[[^\]\n]*\]\([^)\s]*\)")
+
 _MAX_PREFIX = 120
+
+
+def strip_md_images(text: str) -> str:
+    """把 markdown 圖片標記拿掉，只留文字。
+
+    ★ 這是「**只把文字做向量化**」的實作（小jo 定案的規則）：
+    chunk 的 text 欄位保留 `![題注](/media/xxx.png)`（前端要渲染、LLM 要看得到有圖），
+    但送進 embedding 與字面比對前必須剝掉 —— 否則 `xxx.png`／URL 這種雜訊會
+    稀釋相似度，而且同樣的圖在不同塊裡會製造假相似。
+    """
+    if not text or "![" not in text:
+        return text or ""
+    t = _MD_IMG_RE.sub("", text)
+    t = re.sub(r"[ \t]+\n", "\n", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
+def asset_embed_text(asset: dict) -> str:
+    """圖片要拿去 embedding 的文字＝它的**描述**（caption）。
+
+    ⚠️ 沒有描述就沒有可檢索文字 —— 呼叫端會先過濾掉（見 `pending_asset_embeddings`）。
+    """
+    return (asset.get("caption") or "").strip()
+
+
+def _inject_assets(blocks: list[Block], assets: list) -> list[Block]:
+    """把圖片標記接進「它最靠近的那個 Block」的尾端，回傳**複製後**的 blocks。
+
+    分塊之後那張圖自然就落在「涵蓋該 Block 的知識塊」裡 —— 這就是
+    「圖片一定和分塊綁定、命中後圖文一起輸出」最簡單也最不會走鐘的做法。
+
+    ⚠️ 一定要用 `clone_text` 複製：`blocks` 可能來自解析快取（同一份文件會被
+    反覆預覽分塊），直接改動會污染快取。
+    ⚠️ 被啟發式判為裝飾的圖（`filtered_reason`）**不注入** —— 否則 LOgo／分隔線
+    會跟著每一塊跑出來。
+    """
+    by_index: dict[int, list[str]] = {}
+    n = len(blocks)
+    for a in assets or []:
+        if getattr(a, "filtered_reason", ""):
+            continue
+        md = getattr(a, "markdown", "")
+        if not md:
+            continue
+        i = getattr(a, "anchor_block", None)
+        if i is None or not (0 <= int(i) < n):
+            i = n - 1 if n else None
+        if i is None or i < 0:
+            continue
+        by_index.setdefault(int(i), []).append(md)
+    if not by_index:
+        return list(blocks)
+    out: list[Block] = []
+    for i, b in enumerate(blocks):
+        marks = by_index.get(i)
+        if not marks:
+            out.append(b)
+            continue
+        extra = "\n".join(marks)
+        out.append(b.clone_text(f"{(b.text or '').rstrip()}\n{extra}"))
+    return out
 
 
 @dataclass
@@ -256,8 +321,13 @@ def _pack_fixed(blocks: list[Block], target: int, hi: int, overlap: int) -> list
 
 
 def chunk_blocks(blocks: list[Block], *, doc_type: str = "", title: str = "",
-                 params: dict | None = None) -> list[Chunk]:
-    """把解析區塊切成知識塊。params 見 rag_config.PARAM_SPECS（chunk_* 系列）。"""
+                 params: dict | None = None, assets: list | None = None) -> list[Chunk]:
+    """把解析區塊切成知識塊。params 見 rag_config.PARAM_SPECS（chunk_* 系列）。
+
+    `assets`（可選）＝解析出來的圖片（`ParsedAsset`）。給了就會把
+    `![題注](/media/xxx.png)` 注進「圖片最靠近的那個 Block」，
+    於是它自然落進對應的知識塊文字裡（命中時圖文一起輸出）。
+    """
     p = params or {}
     strategy = resolve_strategy(doc_type, p.get("chunk_strategy", "auto"))
     target = int(p.get("chunk_size", 500) or 500)
@@ -275,6 +345,8 @@ def chunk_blocks(blocks: list[Block], *, doc_type: str = "", title: str = "",
     n_blocks = [b for b in blocks if (b.text or "").strip()]
     if not n_blocks:
         return []
+    if assets:
+        n_blocks = _inject_assets(n_blocks, assets)
 
     if strategy == "fixed":
         packed = _pack_fixed(n_blocks, target, hi, overlap)

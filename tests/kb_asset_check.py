@@ -34,7 +34,8 @@ from app.rag import kb_search
 
 TMP = os.path.join(HERE, "_p1_samples")
 os.makedirs(TMP, exist_ok=True)
-CHECK_COLLECTION = "圖文自檢庫"
+# ⚠️ 名字要跟「使用者自己在用的庫」分開 —— 這個庫會被建立／刪除。
+CHECK_COLLECTION = "圖文自檢庫(測試)"
 FAIL = []
 
 
@@ -190,7 +191,7 @@ else:
     kb_db.update_collection(cid, {"enabled": True})     # 自檢庫一定要啟用
 
 with open(docx_path, "rb") as f:
-    up = kb_ingest.save_upload("with_image.docx", f.read(), "")
+    up = kb_ingest.save_upload("with_image.docx", f.read(), "", cid)
 did = up["doc"]["id"]
 kb_ingest.parse_and_chunk(did)
 
@@ -289,11 +290,105 @@ check(bool(hit_with_assets), "至少有一個入選塊帶著圖（Hit.assets）"
 js = sr.hits[0].as_dict() if sr.hits else {}
 check("assets" in js, "Hit.as_dict() 含 assets（寫進 matched_rows，紀錄頁才看得到）")
 
+# ======================================================================
+# [6] 圖片內嵌 markdown（2026-10-12）：圖片 → chunk 文字 / 只對文字向量化
+# ======================================================================
+
+print("\n[6] 圖片內嵌 markdown + 圖片庫可被檢索")
+from app.rag import kb_chunk as _kc          # noqa: E402
+from app.rag import rag_config as _rc        # noqa: E402
+
+kb_ingest.embed_document(did, "pending")
+kb_ingest.activate_document(did)
+kb_search.invalidate()
+
+chunks = kb_db.list_chunks(did)
+withmd = [c for c in chunks if "![" in (c["text"] or "")]
+check(bool(withmd), "chunk 文字裡有內嵌的 markdown 圖片標記",
+      (withmd[0]["text"][-90:] if withmd else "（沒有）"))
+check(any("/media/" in (c["text"] or "") for c in chunks),
+      "標記用的是公開路徑 /media/…（前端直接渲染）")
+check(any("figure 1-1 setup page" in (c["text"] or "") for c in chunks),
+      "標記的 alt 用了題注文字（沒題注才留空）")
+
+check(_kc.strip_md_images("前\n![圖 1](/media/a.png)\n後") == "前\n\n後",
+      "strip_md_images 剝掉圖片標記只留文字（向量化只吃文字）")
+check(_kc.strip_md_images("沒有圖片的文字") == "沒有圖片的文字", "沒有標記時原樣回傳")
+
+a_on = [a for a in kb_db.list_assets(doc_id=did) if a["enabled"]]
+check(bool(a_on) and all(_rc.media_url_of_rel(a["rel_path"]).startswith("/media/")
+                         for a in a_on),
+      "啟用中的圖都有公開網址 /media/…",
+      [_rc.media_url_of_rel(a["rel_path"]) for a in a_on])
+check(all(os.path.exists(os.path.join(_rc.RAG_MEDIA_DIR, os.path.basename(a["rel_path"])))
+          for a in a_on),
+      "圖檔真的落在公開目錄 media/kb_assets/（不是整包 media 都公開）")
+
+imgcol = kb_db.get_image_collection(cid)
+check(bool(imgcol) and imgcol["kind"] == "image" and imgcol["image_of"] == cid,
+      "文檔庫有對應的圖片庫（kind=image / image_of=cid）",
+      (f"#{imgcol['id']} {imgcol['name']}" if imgcol else "（沒有）"))
+check(bool(imgcol) and all(a["collection_id"] == imgcol["id"] for a in a_on),
+      "從文件抽出的圖落在該文檔庫的圖片庫",
+      [(a["id"], a["collection_id"]) for a in a_on])
+
+# 寫描述（模擬真實流程：描述寫好 → 立刻向量化 → 之後就查得到）
+own_aid = a_on[0]["id"] if a_on else None
+r = client.post("/console/kb/asset/caption",
+                json={"id": own_aid, "caption": "figure 1-1 setup page"})
+check(r.status_code == 200 and body(r)["asset"]["caption_source"] == "manual",
+      "圖片描述寫入成功（來源 manual）")
+check(kb_db.get_asset(own_aid)["embedding_status"] == "done",
+      "★ 寫完描述**立刻向量化**（圖片能被檢索的前提；以前完全沒這一步）")
+kb_search.invalidate()
+
+r = kb_search.search("figure 1-1 setup page")
+imhits = [h for h in r.candidates if h.kind == "image"]
+check(bool(imhits), "★ 圖片庫條目進得了候選池（描述可被檢索）— 以前完全搜不到",
+      [(h.kind, round(h.final, 3)) for h in r.candidates[:3]])
+own = [h for h in imhits if h.asset_id == own_aid]
+check(bool(own), "這張圖的條目在候選池裡（text 就是 markdown，前端渲染即可）",
+      (own[0].text if own else [h.text[:44] for h in imhits[:3]]))
+check(bool(own) and own[0].text.startswith("![figure 1-1"),
+      "圖片命中的 text 的 alt 用了描述", (own[0].text[:60] if own else ""))
+
+# 去重：綁在入選塊上的圖，不該同時以「圖片條目」的身分再出現一次
+bound_ids = set()
+for _arr in (kb_db.assets_for_chunks([h.chunk_id for h in r.hits
+                                      if h.kind != "image"]).values() or []):
+    bound_ids |= {int(x["id"]) for x in _arr}
+dup = [h for h in r.hits if h.kind == "image" and h.asset_id in bound_ids]
+check(not (bound_ids and dup),
+      "同一張圖同時被 chunk 與圖片庫命中時只出一次",
+      f"綁定中的圖 {sorted(bound_ids)} / 重複出現的圖片命中 {[h.asset_id for h in dup]}")
+
+
+kb_db.set_collection_enabled(cid, False)
+kb_search.invalidate()
+r2 = kb_search.search("figure 1-1 setup page")
+check(not [h for h in r2.candidates if h.kind == "image" and h.asset_id == own_aid],
+      "文檔庫停用後它的圖片庫也檢索不到（啟停用連動）")
+check(kb_db.get_collection(imgcol["id"])["enabled"] is False, "圖片庫 enabled 被連動關閉")
+kb_db.set_collection_enabled(cid, True)
+kb_search.invalidate()
+check(bool([h for h in kb_search.search("figure 1-1 setup page").candidates
+            if h.kind == "image" and h.asset_id == own_aid]), "恢復啟用後又能檢索到")
+
+# 收尾要把圖片庫也一起清掉（它不屬於 kb_document 的 cascade）
+_ick = (imgcol or {}).get("id")
+
 # ---------- 收尾 ----------
 print()
 kb_ingest.delete_document(did)
+if _ick:
+    for _a in kb_db.list_assets(collection_id=_ick):
+        kb_db.delete_asset(_a["id"])
+    kb_db.delete_collection(_ick)
 left = kb_db.asset_stats(doc_id=did).get("total") or 0
 check(left == 0, "刪文件時圖片一起清掉", f"殘留 {left}")
+
+# 自檢庫用完就刪（不要在使用者的清單裡留垃圾）
+kb_db.delete_collection(cid)
 
 print("\n" + "=" * 74)
 if FAIL:

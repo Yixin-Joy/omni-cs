@@ -40,8 +40,42 @@ RAG_HF_ENDPOINT = _get("RAG_HF_ENDPOINT", "https://hf-mirror.com")
 _here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RAG_MODEL_DIR = _get("RAG_MODEL_DIR", os.path.join(_here, "models", "fastembed"))
 
-# 上傳檔案落地目錄（media/kb/<uuid>/<原始檔>）
+# 上傳檔案落地目錄（media/kb/<uuid>/<原始檔>）—— **不對外公開**
 RAG_KB_DIR = _get("RAG_KB_DIR", os.path.join(_here, "media", "kb"))
+
+# ★ 圖片公開目錄（2026-10-12）—— 抽出來／上傳的圖一律存這裡，掛在 `/media` 之下。
+#   為什麼另開一個目錄而不是直接用 media/：
+#     ① 圖片要能被 markdown 直接引用（`![題注](/media/xxx.png)`），所以必須是公開靜態路徑；
+#     ② 但 `media/` 底下還有客戶來訊的檔案與上傳的來源文件，**不能**一起公開。
+#   落地檔名 = `<sha256 前 16 碼>.<ext>`（天然去重、無中文檔名問題），
+#   對外 URL = `/media/<檔名>`（見 `public_url()`）。
+RAG_MEDIA_DIR = _get("RAG_MEDIA_DIR", os.path.join(_here, "media", "kb_assets"))
+
+# 圖片對外網址的前綴（相對路徑 —— 換域名不用改資料）
+RAG_MEDIA_URL_PREFIX = _get("RAG_MEDIA_URL_PREFIX", "/media")
+
+
+def media_url(name: str) -> str:
+    """圖片檔名 → 對外網址（`/media/xxx.png`）。"""
+    n = os.path.basename(str(name or "").replace("\\", "/"))
+    return f"{RAG_MEDIA_URL_PREFIX.rstrip('/')}/{n}" if n else ""
+
+
+def media_url_of_rel(rel_path: str) -> str:
+    """`kb_asset.rel_path` → 對外網址。
+
+    ⚠️ 舊資料的圖存在 `kb/<uuid>/assets/xxx.png`（在 RAG_KB_DIR 底下）——
+    那些**不在**公開目錄裡，回空字串讓呼叫端退回走登入端點，
+    不要因為「看起來有 rel_path」就給出一個 404 的公開網址。
+    """
+    rel = str(rel_path or "").replace("\\", "/").lstrip("/")
+    if not rel:
+        return ""
+    base = os.path.basename(rel)
+    # 新的圖都在公開目錄（檔名就是 sha 前 16 碼 + 副檔名）
+    if os.path.exists(os.path.join(RAG_MEDIA_DIR, base)):
+        return media_url(base)
+    return ""
 
 # ---------- 混合檢索權重 ----------
 # 純向量在中文短問句（含指代）上不穩，混入 jieba 字面分數補強（RAG_DESIGN.md §8）

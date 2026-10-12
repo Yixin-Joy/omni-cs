@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -39,6 +40,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from app.llm import faq_matcher
+from app.rag import kb_chunk
 from app.rag import kb_db
 from app.rag import kb_embed
 from app.rag import kb_rank
@@ -50,14 +52,16 @@ _INDEX_TTL = 5.0
 _PARAM_TTL = 5.0
 
 _index_cache: dict[str, dict] = {}
+_asset_cache: dict[str, dict] = {}
 _param_cache: dict[str, dict] = {}
 _lock = threading.RLock()
 
 
 def invalidate() -> None:
-    """知識庫內容或參數變更後呼叫（上線 / 刪除 / 改塊 / 存參數）。"""
+    """知識庫內容或參數變更後呼叫（上線 / 刪除 / 改塊 / 存參數 / 改圖片描述）。"""
     with _lock:
         _index_cache.clear()
+        _asset_cache.clear()
         _param_cache.clear()
 
 
@@ -122,10 +126,12 @@ def _index(collection_id: int | None) -> dict:
         norms = np.linalg.norm(mat, axis=1, keepdims=True)
         mat = mat / np.where(norms == 0, 1.0, norms)
 
-    # 字面分數的預處理（jieba 分詞）也先算好，避免每次檢索重跑
+    # 字面分數的預處理（jieba 分詞）也先算好，避免每次檢索重跑。
+    # ⚠️ 先剝掉 markdown 圖片標記 —— URL 這種雜訊對字面比對只有壞處
+    #    （向量那邊也一樣，見 kb_ingest.embed_document）。
     pre = []
     for r in usable:
-        nu, ut = faq_matcher.preprocess(r["text"] or "")
+        nu, ut = faq_matcher.preprocess(kb_chunk.strip_md_images(r["text"] or ""))
         pre.append((nu, ut))
 
     value = {"rows": usable, "mat": mat, "pre": pre,
@@ -137,8 +143,115 @@ def _index(collection_id: int | None) -> dict:
 
 def index_stats(collection_id: int | None = None) -> dict:
     idx = _index(collection_id)
+    ai = _asset_index(collection_id)
     return {"chunks": len(idx["rows"]), "dim": idx["dims"],
-            "docs": len({r["doc_id"] for r in idx["rows"]})}
+            "docs": len({r["doc_id"] for r in idx["rows"]}),
+            "assets": len(ai["rows"])}
+
+
+# ---------- 圖片索引（圖片知識庫） ----------
+#
+# ★ 2026-10-12：圖片庫要能**獨立被檢索** —— 用它的「描述」（caption）當檢索文字。
+#   以前 kb_search 完全沒查圖片，`kb_db.load_ready_assets()` 是死代碼，
+#   所以圖片庫的圖（含單獨上傳的）永遠命中不了（實測：上傳了截圖 + 寫了描述，
+#   問「图文结合输出效果如何」查不到，就是這個原因）。
+#
+#   命中的 `Hit.text` 直接就是 markdown（`![題注](/media/xxx.png)`）——
+#   前端解析就渲染出圖，「圖文合併輸出」不需要另一條資料通道。
+
+def _asset_markdown(a: dict) -> str:
+    """圖片的 markdown（前端渲染用；LLM 看到的是它的文字形式）。"""
+    url = rag_config.media_url_of_rel(a.get("rel_path") or "")
+    if not url:
+        url = f"/console/kb/asset/file/{a.get('id')}"
+    cap = re.sub(r"[\r\n]+", " ", (a.get("caption") or "").strip())
+    cap = cap.replace("]", "】").replace("[", "【")
+    return f"![{cap}]({url})"
+
+
+def _asset_url(a: dict) -> str:
+    """圖片對外網址：公開目錄的圖走 `/media/...`，舊圖退回登入端點。"""
+    return (rag_config.media_url_of_rel(a.get("rel_path") or "")
+            or f"/console/kb/asset/file/{a.get('id')}")
+
+
+def _assets_bound_to(chunk_ids: list[int]) -> set:
+    """這些知識塊上綁了哪些圖片（去重用）。"""
+    ids = sorted({int(c) for c in (chunk_ids or []) if c and int(c) > 0})
+    if not ids:
+        return set()
+    rows = kb_db.query("SELECT DISTINCT asset_id FROM kb_asset_chunk "
+                       "WHERE chunk_id = ANY(%s)", (ids,))
+    return {int(r["asset_id"]) for r in rows}
+
+
+def _asset_index(collection_id: int | None) -> dict:
+    """載入可檢索的圖片（有描述 + 有向量 + 圖片庫啟用），5 秒 TTL。"""
+    key = f"a:{collection_id or '*'}"
+    now = time.time()
+    with _lock:
+        item = _asset_cache.get(key)
+        if item and now - item["ts"] < _INDEX_TTL:
+            return item["value"]
+
+    rows = kb_db.load_ready_assets(collection_id)
+    usable, vecs, pre = [], [], []
+    for r in rows:
+        emb = r.get("embedding")
+        if not emb:
+            continue
+        cap = kb_chunk.asset_embed_text(r)
+        if not cap:
+            continue
+        usable.append(r)
+        vecs.append(emb)
+        nu, ut = faq_matcher.preprocess(cap)
+        pre.append((nu, ut))
+
+    mat = np.asarray(vecs, dtype="float32") if vecs else np.zeros((0, 0), dtype="float32")
+    if mat.size:
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        mat = mat / np.where(norms == 0, 1.0, norms)
+    value = {"rows": usable, "mat": mat, "pre": pre,
+             "dims": int(mat.shape[1]) if mat.size else 0}
+    with _lock:
+        _asset_cache[key] = {"ts": now, "value": value}
+    return value
+
+
+def _score_assets(idx: dict, qvec: list[float] | None, nu: str, ut: set,
+                  query: str = "") -> list[Hit]:
+    """對圖片庫打分（向量 + 字面，權重與知識塊一致）。"""
+    rows, mat, pre = idx["rows"], idx["mat"], idx["pre"]
+    if not rows:
+        return []
+    wv = float(rag_config.RAG_VECTOR_WEIGHT)
+    wl = float(rag_config.RAG_LEXICAL_WEIGHT)
+    total = wv + wl or 1.0
+    # 向量維度要對得上才用（換 embedding 模型後舊圖尚未重算時）
+    use_vec = bool(qvec) and mat.size and mat.shape[1] == len(qvec)
+    cos = _cosine(mat, qvec) if use_vec else np.zeros(len(rows), dtype="float32")
+
+    hits: list[Hit] = []
+    for i, r in enumerate(rows):
+        nf, ft = pre[i]
+        lex, _cov = _lexical(nu, ut, nf, ft)
+        v = float(cos[i]) if i < len(cos) else 0.0
+        final = (wv * v + wl * lex) / total
+        aid = int(r["id"])
+        hits.append(Hit(
+            chunk_id=-aid, doc_id=int(r.get("doc_id") or 0),
+            collection_id=r.get("collection_id"),
+            doc_title=r.get("doc_title") or "", doc_filename=r.get("doc_filename") or "",
+            doc_type="image", ordinal=0,
+            text=_asset_markdown(r),
+            page_no=r.get("page_no"),
+            vec=v, lex=lex, final=final,
+            queries=[query] if query else [],
+            kind="image", asset_id=aid,
+        ))
+    hits.sort(key=lambda h: -h.final)
+    return hits
 
 
 # ---------- 打分 ----------
@@ -188,6 +301,17 @@ class Hit:
     # ★ 綁在這塊上的圖片（kb_asset_chunk）。命中後要「圖文結合輸出」就靠它 ——
     #   只有啟用的圖會進來（被啟發式判為裝飾的圖預設不帶出）。
     assets: list = field(default_factory=list)
+    # ★ 這是「知識塊」還是「圖片庫的一張圖」（2026-10-12）。
+    #   圖片命中的 text 就是 markdown（`![題注](/media/xxx.png)`），前端直接渲染。
+    kind: str = "chunk"              # chunk | image
+    asset_id: int | None = None
+
+    @property
+    def group_key(self):
+        """`max_per_doc` 的分組依據：圖片以自己的 id 為一組（不受單檔上限影響）。"""
+        if self.kind == "image":
+            return ("img", self.asset_id)
+        return ("doc", self.doc_id)
 
     @property
     def source(self) -> str:
@@ -205,7 +329,8 @@ class Hit:
 
     def as_dict(self) -> dict:
         """寫進 `autoreply_log.matched_rows` 的形狀（設計稿 §9）。"""
-        return {
+        d = {
+            "kind": self.kind,
             "chunk_id": self.chunk_id, "doc_id": self.doc_id,
             "doc": self.doc_title or self.doc_filename,
             "heading": self.heading_path or "",
@@ -218,11 +343,14 @@ class Hit:
             "queries": list(self.queries or []),
             # 只留精簡資訊（完整圖檔走 /console/kb/asset/file/{id}）
             "assets": [{"id": a.get("id"), "caption": a.get("caption") or "",
-                        "url": f"/console/kb/asset/file/{a.get('id')}",
+                        "url": a.get("url") or f"/console/kb/asset/file/{a.get('id')}",
                         "width": a.get("width"), "height": a.get("height")}
                        for a in (self.assets or [])],
             "text": (self.text or "")[:300],
         }
+        if self.asset_id is not None:
+            d["asset_id"] = self.asset_id
+        return d
 
 
 @dataclass
@@ -313,13 +441,14 @@ def _score_group(rows: list, pre: list, mat: np.ndarray, collection_id: int | No
 
 
 def _pick(hits: list[Hit], top_k: int, max_per_doc: int) -> list[Hit]:
-    """依 final 排序取前 top_k，同一文件最多 max_per_doc 塊。"""
+    """依 final 排序取前 top_k，同一文件最多 max_per_doc 塊（圖片各自獨立成組）。"""
     picked, per_doc = [], {}
     for h in hits:
-        if max_per_doc > 0 and per_doc.get(h.doc_id, 0) >= max_per_doc:
+        key = h.group_key
+        if max_per_doc > 0 and per_doc.get(key, 0) >= max_per_doc:
             continue
         picked.append(h)
-        per_doc[h.doc_id] = per_doc.get(h.doc_id, 0) + 1
+        per_doc[key] = per_doc.get(key, 0) + 1
         if len(picked) >= top_k:
             break
     return picked
@@ -380,7 +509,24 @@ def _score_all(idx: dict, query: str, collection_id: int | None
         merged += best
 
     merged.sort(key=lambda h: -h.final)
+
+    # ★ 圖片庫（kind='image' 的知識庫）也進同一個候選池 ——
+    #   它的檢索文字是「描述」，命中的 text 就是 `![描述](/media/xxx.png)`。
+    aidx = _asset_index(collection_id)
+    if aidx["rows"]:
+        amerged = _score_assets(aidx, qvec, nu, ut, query)
+        if amerged:
+            per_collection.append({"collection_id": -1, "kind": "image",
+                                   "chunks": len(aidx["rows"]),
+                                   "top1": round(amerged[0].final, 4)})
+            merged += amerged
+            merged.sort(key=lambda h: -h.final)
     return merged, per_collection, embed_ok
+
+
+def _has_index(collection_id: int | None) -> bool:
+    """有沒有任何可檢索的東西（知識塊或圖片）。"""
+    return bool(_index(collection_id)["rows"]) or bool(_asset_index(collection_id)["rows"])
 
 
 def _finish(res: SearchResult, merged: list[Hit], query: str) -> SearchResult:
@@ -434,25 +580,47 @@ def _finish(res: SearchResult, merged: list[Hit], query: str) -> SearchResult:
         picked = kept
     for h in picked:
         h.picked = True
+
+    # ★ 去重：同一張圖若**同時**被「內嵌它的知識塊」與「圖片庫自己的條目」命中，
+    #   只留知識塊那一份 —— 圖已經在它的文字裡了（前端渲染一次就好）。
+    #   判重靠 kb_asset_chunk 綁定：圖片庫那筆的 asset_id 有沒有綁在已入選的塊上。
+    try:
+        bound = _assets_bound_to([h.chunk_id for h in picked if h.kind != "image"])
+        if bound:
+            picked = [h for h in picked
+                      if h.kind != "image" or h.asset_id not in bound]
+    except Exception as e:
+        log.debug("圖片去重失敗（不影響檢索）：%s", e)
+
     res.hits = picked
 
     # ★ 命中後帶出圖片（「圖文結合輸出」）。
     #   只在**入選的那幾塊**上查，最多 6 塊 → 一次索引查詢，成本可忽略；
     #   失敗也只是沒圖，不該讓整次檢索掛掉。
     try:
-        amap = kb_db.assets_for_chunks([h.chunk_id for h in picked])
+        amap = kb_db.assets_for_chunks([h.chunk_id for h in picked if h.kind != "image"])
         seen: set = set()
         for h in picked:
-            got = amap.get(int(h.chunk_id)) or []
-            h.assets = got
-            for a in got:
-                if a.get("id") in seen:
-                    continue
-                seen.add(a.get("id"))
-                res.assets.append({**a, "url": f"/console/kb/asset/file/{a.get('id')}",
-                                   "chunk_id": h.chunk_id,
-                                   "chunk_heading": h.heading_path or "",
-                                   "page": h.page_no})
+            if h.kind != "image":
+                got = amap.get(int(h.chunk_id)) or []
+                h.assets = got
+                for a in got:
+                    if a.get("id") in seen:
+                        continue
+                    seen.add(a.get("id"))
+                    res.assets.append({**a, "url": _asset_url(a),
+                                       "chunk_id": h.chunk_id,
+                                       "chunk_heading": h.heading_path or "",
+                                       "page": h.page_no})
+            # 圖片庫自己命中的那張圖，也要出現在 assets 清單裡（前端統一渲染）
+            if h.kind == "image" and h.asset_id not in seen:
+                row = kb_db.get_asset(int(h.asset_id)) or {}
+                if row:
+                    seen.add(h.asset_id)
+                    res.assets.append({**row, "url": _asset_url(row),
+                                       "chunk_id": None,
+                                       "chunk_heading": h.doc_title or "",
+                                       "page": row.get("page_no")})
     except Exception as e:
         log.debug("帶出命中圖片失敗（不影響檢索）：%s", e)
 
@@ -490,7 +658,7 @@ def search(query: str, *, collection_id: int | None = None,
     res.params = _resolve_params(params, top_k, min_score, max_per_doc,
                                  max_context_chars, rerank_enabled)
     idx = _index(collection_id)
-    if not idx["rows"]:
+    if not idx["rows"] and not _asset_index(collection_id)["rows"]:
         res.reason = "empty_index"
         res.elapsed_ms = int((time.time() - t0) * 1000)
         return res
@@ -536,7 +704,7 @@ def search_multi(queries: list[str], *, collection_id: int | None = None,
     res.params = _resolve_params(params, top_k, min_score, max_per_doc,
                                  max_context_chars, rerank_enabled)
     idx = _index(collection_id)
-    if not idx["rows"]:
+    if not idx["rows"] and not _asset_index(collection_id)["rows"]:
         res.reason = "empty_index"
         res.elapsed_ms = int((time.time() - t0) * 1000)
         return res

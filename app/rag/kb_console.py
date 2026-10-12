@@ -2,10 +2,10 @@
 
 端點：
   GET  /console/kb/overview                 知識庫概覽（集合列表 + 模型狀態 + 統計）
-  GET  /console/kb/collections              知識庫列表
-  POST /console/kb/collections/create       新增知識庫
-  POST /console/kb/collections/update       更新知識庫（名稱 / 說明 / 停啟用 / 排序）
-  POST /console/kb/collections/delete       刪除知識庫
+  GET  /console/kb/collections              知識庫列表（含 kind：doc=文檔庫 / image=圖片庫）
+  POST /console/kb/collections/create       新增知識庫（kind=doc 會自動附帶「<名>_圖片庫」）
+  POST /console/kb/collections/update       更新知識庫（停/啟用會**連動圖片庫**）
+  POST /console/kb/collections/delete       刪除知識庫（文檔庫連帶刪它的圖片庫）
   GET  /console/kb/params                   參數規格 + 目前值（檢索=全域、分塊=該知識庫）
   POST /console/kb/params                   寫入參數覆寫（檢索存全域／分塊存該庫，5 秒生效）
   POST /console/kb/upload                   上傳文件（可多檔）
@@ -13,11 +13,11 @@
   GET  /console/kb/document                 文件詳情（含分塊）
   POST /console/kb/document/preview         分塊預覽（不寫庫，調參用）
   POST /console/kb/document/reparse         重新分塊（寫庫）
-  POST /console/kb/document/embed           開始 / 重跑 embedding
+  POST /console/kb/document/embed           開始 / 重跑 embedding（會連帶向量化圖片描述）
   POST /console/kb/document/activate        確認入庫（status → ready）
   POST /console/kb/document/enabled         停用 / 啟用文件
   POST /console/kb/document/delete          刪除文件
-  POST /console/kb/document/move            改放到別的知識庫（或未分組）
+  POST /console/kb/document/move            改放到別的知識庫（圖會跟著搬到新庫的圖片庫）
   POST /console/kb/chunk/update             編輯 / 停用單一知識塊
   POST /console/kb/chunk/split              拆分知識塊
   POST /console/kb/chunk/merge              與下一塊合併
@@ -26,14 +26,16 @@
   POST /console/kb/search                   同上（POST 版，參數多時好用）
                                             · 帶 rewrite=1 → 先改寫查詢再多查詢檢索
                                             · history 可給上下文（純文字或 [{direction,text}]）
+                                            · 候選池＝知識塊 + 圖片庫（圖的 text 是 markdown）
   GET  /console/kb/assets                   圖片列表（含來源／綁定數／描述狀態）+ 統計
   POST /console/kb/asset/upload             單獨上傳圖片（不屬於任何文件）
-  POST /console/kb/asset/caption            人工寫／改描述（手寫的不會被 AI 覆蓋）
+  POST /console/kb/asset/caption            人工寫／改描述（寫完立刻向量化、馬上可檢索）
   POST /console/kb/asset/caption/ai         按鈕觸發 AI 描述（逐張呼叫視覺模型）
+  POST /console/kb/asset/embed              批次補向量化（舊資料：有描述但從未向量化）
   POST /console/kb/asset/update             啟用 / 停用單張圖（救回被誤判的裝飾圖）
   POST /console/kb/asset/delete             刪除圖片
   POST /console/kb/asset/rebind             重新綁定某份文件的圖到知識塊
-  GET  /console/kb/asset/file/{id}          取圖檔（走這條，不經公開的 /files）
+  GET  /console/kb/asset/file/{id}          取圖檔（舊圖的退路；新圖走公開的 /media/…）
 """
 import asyncio
 import json
@@ -45,6 +47,7 @@ from fastapi.responses import FileResponse, Response
 
 from app.core import config
 from app.llm import deepseek_client
+from app.rag import kb_chunk
 from app.rag import kb_db
 from app.rag import kb_embed
 from app.rag import kb_ingest
@@ -134,11 +137,30 @@ async def collections():
 
 @router.post("/collections/create")
 async def collection_create(body: dict):
+    """新增知識庫。`kind='image'` = **圖片知識庫**（放圖、用描述檢索）。
+
+    · `kind='doc'`（預設）：文檔知識庫，同時會自動建立它的「<名>_圖片庫」。
+    · `kind='image'`：圖片知識庫；`independent=1`（或不給 image_of）→ 完全獨立，
+      不綁任何文檔庫；要掛在某個文檔庫底下才給 `image_of`。
+    """
     name = (body.get("name") or "").strip()
     if not name:
         return _err("知識庫名稱不能是空的")
-    doc = await asyncio.to_thread(kb_db.create_collection, name, body.get("description") or "")
-    return _ok({"collection": doc})
+    kind = str(body.get("kind") or "doc").strip().lower()
+    if kind not in ("doc", "image"):
+        return _err("kind 只能是 doc（文檔知識庫）或 image（圖片知識庫）")
+
+    image_of = _int_or_none(body.get("image_of"))
+    col = await asyncio.to_thread(kb_db.create_collection, name,
+                                  body.get("description") or "",
+                                  kind=kind, image_of=image_of)
+    out = {"collection": col}
+    if kind == "doc":
+        # 文檔知識庫一律帶一個圖片庫（從文件抽出來的圖都落那裡，啟停用連動）
+        img = await asyncio.to_thread(kb_db.ensure_image_collection, int(col["id"]))
+        out["image_collection"] = img
+    kb_search.invalidate()
+    return _ok(out)
 
 
 @router.post("/collections/update")
@@ -146,24 +168,48 @@ async def collection_update(body: dict):
     cid = int(body.get("id") or 0)
     if not cid:
         return _err("缺少知識庫 id")
-    fields = {k: body[k] for k in ("name", "description", "sort_order", "enabled")
+    # 啟停用要**連動圖片庫**，所以走 set_collection_enabled；其餘欄位照舊。
+    if "enabled" in body:
+        casc = await asyncio.to_thread(kb_db.set_collection_enabled, cid,
+                                       bool(body["enabled"]))
+    else:
+        casc = {"cascaded": []}
+    fields = {k: body[k] for k in ("name", "description", "sort_order")
               if k in body}
-    ok = await asyncio.to_thread(kb_db.update_collection, cid, fields)
-    return _ok({"ok": ok, "collection": await asyncio.to_thread(kb_db.get_collection, cid)})
+    if fields:
+        await asyncio.to_thread(kb_db.update_collection, cid, fields)
+    kb_search.invalidate()
+    return _ok({"ok": True, "cascaded": casc.get("cascaded") or [],
+                "collection": await asyncio.to_thread(kb_db.get_collection, cid)})
 
 
 @router.post("/collections/delete")
 async def collection_delete(body: dict):
+    """刪知識庫。
+
+    · 文檔庫：底下文件會變成「未分組」（資料不消失）；它的**圖片庫會一起被刪**
+      （圖片庫是它的一部分）→ 圖片本身變成未分組，不會遺失。
+    · 圖片庫：裡面的圖變成未分組（不會刪檔）。
+    """
     cid = int(body.get("id") or 0)
     if not cid:
         return _err("缺少知識庫 id")
-    n = await asyncio.to_thread(kb_db.query,
-                                "SELECT count(*) AS c FROM kb_document WHERE collection_id=%s",
-                                (cid,))
-    if (n and int(n[0]["c"]) > 0) and not body.get("force"):
-        return _err(f"這個知識庫底下還有 {n[0]['c']} 份文件，刪除後文件會變成「未分組」"
-                    "（資料不會消失）。確定要刪請再按一次。")
+    col = await asyncio.to_thread(kb_db.get_collection, cid)
+    if not col:
+        return _err(f"找不到知識庫 #{cid}", 404)
+    if not body.get("force"):
+        n = await asyncio.to_thread(kb_db.query,
+                                    "SELECT count(*) AS c FROM kb_document WHERE collection_id=%s",
+                                    (cid,))
+        a = await asyncio.to_thread(kb_db.query,
+                                    "SELECT count(*) AS c FROM kb_asset WHERE collection_id=%s",
+                                    (cid,))
+        nd, na = int((n or [{}])[0].get("c") or 0), int((a or [{}])[0].get("c") or 0)
+        if nd or na:
+            return _err(f"這個知識庫底下還有 {nd} 份文件、{na} 張圖片，刪除後都會變成"
+                        "「未分組」（資料不會消失）。確定要刪請再按一次。")
     ok = await asyncio.to_thread(kb_db.delete_collection, cid)
+    kb_search.invalidate()
     return _ok({"ok": ok})
 
 
@@ -405,8 +451,23 @@ async def document_move(body: dict):
             return _err(f"找不到知識庫 #{cid}")
 
     await asyncio.to_thread(kb_db.update_document, did, {"collection_id": cid})
+    # ★ 文件的圖要跟著搬家 —— 它們屬於「新知識庫的圖片庫」。
+    try:
+        new_img = await asyncio.to_thread(_image_cid_for, cid)
+        await asyncio.to_thread(kb_db.query,
+                                "UPDATE kb_asset SET collection_id=%s WHERE doc_id=%s",
+                                (new_img, did))
+    except Exception as e:
+        log.debug("搬移文件時同步圖片所屬庫失敗（不影響搬移）：%s", e)
     kb_search.invalidate()
     return _ok({"ok": True, "doc": await asyncio.to_thread(kb_db.get_document, did)})
+
+
+def _image_cid_for(cid: int | None) -> int | None:
+    if not cid:
+        return None
+    got = kb_db.ensure_image_collection(int(cid))
+    return int(got["id"]) if got else None
 
 
 # ======================================================================
@@ -624,13 +685,24 @@ async def doc_types():
 # ======================================================================
 
 def _asset_path(row: dict) -> str:
-    return os.path.join(config.MEDIA_DIR, row.get("rel_path") or "")
+    """圖檔的實際路徑。新資料在公開目錄（`media/kb_assets/`），舊資料在文件資料夾裡。"""
+    rel = str(row.get("rel_path") or "").replace("\\", "/")
+    base = os.path.basename(rel)
+    if base and os.path.exists(os.path.join(rag_config.RAG_MEDIA_DIR, base)):
+        return os.path.join(rag_config.RAG_MEDIA_DIR, base)
+    return os.path.join(config.MEDIA_DIR, rel)
 
 
 def _asset_view(row: dict) -> dict:
-    """給前端的圖片視圖（含取圖 URL）。"""
+    """給前端的圖片視圖（含取圖 URL）。
+
+    ★ URL 優先用**公開靜態路徑**（`/media/xxx.png`）—— 這樣它跟寫進 chunk 的
+    markdown（`![題注](/media/xxx.png)`）是同一條路，前端與 LLM 看到的圖一致；
+    還沒搬到公開目錄的舊圖才退回登入端點。
+    """
     d = dict(row)
-    d["url"] = f"/console/kb/asset/file/{row['id']}"
+    d["url"] = (rag_config.media_url_of_rel(row.get("rel_path") or "")
+                or f"/console/kb/asset/file/{row['id']}")
     d["from_doc"] = bool(row.get("doc_id"))
     return d
 
@@ -676,12 +748,17 @@ async def upload_assets(files: list[UploadFile] = File(...),
         except Exception as e:
             log.warning("圖片上傳失敗 %s: %s", f.filename, e)
             out.append({"ok": False, "filename": f.filename, "error": str(e)})
+    kb_search.invalidate()
     return _ok({"results": out})
 
 
 @router.post("/asset/caption")
 async def set_asset_caption(body: dict):
-    """人工寫／改描述（source 固定 manual —— 之後 AI 按鈕不會覆蓋它）。"""
+    """人工寫／改描述（source 固定 manual —— 之後 AI 按鈕不會覆蓋它）。
+
+    ★ 寫完立刻向量化 + 讓檢索索引失效 —— 這樣「改完描述馬上就查得到」，
+    不用等 5 秒 TTL（圖片能被檢索就是靠這個描述）。
+    """
     aid = _int_or_none(body.get("id"))
     if not aid:
         return _err("缺少圖片 id")
@@ -689,7 +766,26 @@ async def set_asset_caption(body: dict):
                                   str(body.get("caption") or ""), "manual")
     if not row:
         return _err(f"圖片不存在：#{aid}", 404)
+    try:
+        await asyncio.to_thread(_embed_one_asset, aid)
+    except Exception as e:
+        log.debug("圖片描述向量化失敗（不影響儲存）：%s", e)
+    kb_search.invalidate()
+    row = await asyncio.to_thread(kb_db.get_asset, aid) or row
     return _ok({"ok": True, "asset": _asset_view(row)})
+
+
+def _embed_one_asset(aid: int) -> None:
+    """把單張圖的描述向量化（若它還沒向量化）。"""
+    row = kb_db.get_asset(aid)
+    if not row or not (row.get("caption") or "").strip():
+        return
+    if row.get("embedding_status") == "done":
+        return
+    provider = kb_embed.get_provider()
+    vec = provider.encode_one(kb_chunk.asset_embed_text(row))
+    if vec:
+        kb_db.save_asset_embeddings([(int(aid), vec)], provider.model_name, provider.dim)
 
 
 @router.post("/asset/caption/ai")
@@ -734,10 +830,30 @@ async def ai_asset_caption(body: dict):
             results.append({"id": aid, "ok": False, "error": f"AI 描述失敗：{e}"})
             continue
         updated = await asyncio.to_thread(kb_db.set_asset_caption, aid, text, "ai")
+        try:
+            await asyncio.to_thread(_embed_one_asset, aid)     # 描述→向量（能被檢索）
+        except Exception as e:
+            log.debug("圖片描述向量化失敗（不影響描述）：%s", e)
         results.append({"id": aid, "ok": True, "caption": text,
                         "asset": _asset_view(updated or row)})
     ok_n = len([r for r in results if r.get("ok")])
+    kb_search.invalidate()
     return _ok({"ok": ok_n > 0, "done": ok_n, "total": len(ids), "results": results})
+
+
+@router.post("/asset/embed")
+async def embed_assets(body: dict):
+    """批次把「有描述但還沒向量化」的圖送進 embedding。
+
+    正常不需要手動按 —— 寫描述 / AI 描述 / 文件向量化時都會自動連帶做。
+    這裡是給「舊資料（描述早就有了但從來沒向量化）」補課用的。
+    """
+    cid = _int_or_none(body.get("collection_id"))
+    did = _int_or_none(body.get("doc_id"))
+    res = await asyncio.to_thread(kb_ingest.embed_assets_for,
+                                  doc_id=did, collection_id=cid)
+    kb_search.invalidate()
+    return _ok({**res, "ok": True})
 
 
 @router.post("/asset/update")
@@ -757,6 +873,12 @@ async def update_asset(body: dict):
     row = await asyncio.to_thread(kb_db.get_asset, aid)
     if not row:
         return _err(f"圖片不存在：#{aid}", 404)
+    if row.get("enabled"):
+        try:
+            await asyncio.to_thread(_embed_one_asset, aid)
+        except Exception as e:
+            log.debug("圖片描述向量化失敗（不影響儲存）：%s", e)
+    kb_search.invalidate()
     return _ok({"ok": ok, "asset": _asset_view(row)})
 
 
@@ -767,12 +889,13 @@ async def delete_asset(body: dict):
         return _err("缺少圖片 id")
     row = await asyncio.to_thread(kb_db.get_asset, aid)
     ok = await asyncio.to_thread(kb_db.delete_asset, aid)
-    # 只有「單獨上傳」的圖才順手刪檔（文件抽出來的圖在文件的資料夾裡，刪文件時一起清）
+    # 只有「單獨上傳 / 抽出但沒文件」的圖才順手刪檔（文件抽出的圖跟文件共存亡）
     if ok and row and not row.get("doc_id"):
         try:
             os.remove(_asset_path(row))
         except Exception as e:
             log.debug("刪圖片檔失敗（忽略）：%s", e)
+    kb_search.invalidate()
     return _ok({"ok": ok})
 
 
