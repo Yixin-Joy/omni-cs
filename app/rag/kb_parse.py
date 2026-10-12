@@ -281,6 +281,19 @@ _PARA_START_RE = re.compile(
     r")"
 )
 
+# ★ 編號式章節標題：「1. 产品概述」「3.2 完整安装步骤」「1.1.2 xxx」
+#   ⚠️ 編號與標題文字之間**必須有空白** —— 這樣才不會把「11.0及以上」（版本號）
+#      誤認成「11」+「.」+「0及以上」的章節標題（實測踩過）。
+#   ⚠️ 但「1.1产品简介」（無空白）也會被排除 —— 這是刻意取捨：漏認一個標題
+#      只是少一層路徑，誤認一個正文行則會切碎整份文件。
+_NUM_HEADING_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)\s*[.、．]?\s+(\S.*)$")
+# 標題裡不該出現的句中標點（有這些 → 是正文句子，不是標題）
+_NUM_HEADING_BAD = "，。；：,;:！？、"
+_NUM_HEADING_MAX = 24       # 標題字數上限（「1. 关闭电脑防火墙及杀毒软件拦截…」是列表項）
+_HEAD_TAIL_MAX = 40         # 「標題自己換行」的續行長度上限（再長就是正文了）
+# 第X章／第X節（這一條不受長度以外的限制）
+_CN_CHAPTER_RE = re.compile(r"^第[一二三四五六七八九十百千零〇\d]+[章節节]\s*[\s\S]{0,20}$")
+
 # 頁碼樣式。⚠️ 必須**同時**落在頁邊帶才算（否則表格裡的「1」會被誤殺）
 _PAGENO_PATTERNS = (
     re.compile(r"^[\s\-–—_]*\d{1,4}[\s\-–—_]*$"),
@@ -383,6 +396,99 @@ def _is_pageno(text: str) -> bool:
     return any(p.match(t) for p in _PAGENO_PATTERNS)
 
 
+def _looks_like_table(bbox: tuple, pg) -> bool:
+    """這個 bbox 像不像真正的表格（濾掉誤判）。
+
+    ⚠️ 「大到像整頁」的通常是版心框線被誤認成表格 —— 若照收，
+    整頁正文都會被當成表格內容（那份文件就毀了）。
+    """
+    x0, top, x1, bottom = bbox
+    if (bottom - top) < 20 or (x1 - x0) < 40:
+        return False
+    ph = float(getattr(pg, "height", 0) or 0)
+    pw = float(getattr(pg, "width", 0) or 0)
+    if ph and pw and ((bottom - top) * (x1 - x0)) > ph * pw * 0.90:
+        return False
+    return True
+
+
+def _rows_to_markdown(rows: list) -> str:
+    """表格的二維陣列 → markdown 表格（讓列／欄的關係保留下來）。
+
+    ★ 為什麼要轉（2026-10-12，doc#319 實測）：PDF 的表格被 `extract_text_lines()`
+    抽成一行行「視覺行」後會整團糊掉 ——
+    `故障现象 报错代码 核心原因 解决方案` 後面接
+    `软件安装完成后无 E001 安装路径包含中文 卸载软件，重新安法启动 或特殊符号 装至纯英文、无特`
+    （「无法启动」被斷成「无」+「法启动」、「安装」被斷成兩半）。
+    這種文字**檢索得到但讀不懂**，「E002 怎麼解」這種問題根本答不出來。
+    轉成 markdown 後每列自成一列、每欄對齊，模型也看得懂。
+    """
+    def cell_text(c) -> str:
+        """單元格文字：**儲存格內的換行是排版斷行，要接回同一句**。
+
+        ⚠️ 中文之間不能補空格（用 `_join_sep`）—— 直接換成半角空格會變成
+        「无 法启动」「重新安 装至纯英文」，明明是同一句話卻被拆開，
+        檢索時「无法启动」就匹配不到了。
+        """
+        parts = [p.strip() for p in str(c or "").split("\n")]
+        out = ""
+        for p in parts:
+            if not p:
+                continue
+            out = p if not out else (out + _join_sep(out, p) + p)
+        return out.strip()
+
+    clean: list[list[str]] = []
+    for r in (rows or []):
+        if not r:
+            continue
+        cells = [cell_text(c) for c in r]
+        if any(cells):
+            clean.append(cells)
+    if len(clean) < 2:
+        return ""
+    width = max(len(r) for r in clean)
+    if width < 2:                       # 只有一欄 → 不是表格（是誤判的框）
+        return ""
+    clean = [r + [""] * (width - len(r)) for r in clean]
+    head, body = clean[0], clean[1:]
+    lines = ["| " + " | ".join(head) + " |", "|" + "---|" * width]
+    lines += ["| " + " | ".join(r) + " |" for r in body]
+    return "\n".join(lines)
+
+
+def _page_tables(pg) -> list[tuple[tuple, str]]:
+    """這一頁的表格：`[(bbox, markdown), …]`。
+
+    pdfplumber 的 `find_tables()` 對「沒有框線、只有單元格底色」的表也抓得到
+    （靠 rect 偵測），正好涵蓋這種排版。
+    """
+    out: list[tuple[tuple, str]] = []
+    try:
+        for t in (pg.find_tables() or []):
+            bbox = tuple(float(v) for v in t.bbox)
+            if not _looks_like_table(bbox, pg):
+                continue
+            try:
+                md = _rows_to_markdown(t.extract())
+            except Exception as e:
+                log.debug("表格內容抽取失敗：%s", e)
+                md = ""
+            if md:
+                out.append((bbox, md))
+    except Exception as e:
+        log.debug("表格偵測失敗（不影響解析）：%s", e)
+    return out
+
+
+def _in_bands(ln: dict, bands: list) -> bool:
+    """這一行是否落在表格區域內（用行中線判斷）。"""
+    if not bands:
+        return False
+    cy = (ln.get("top", 0) + ln.get("bottom", 0)) / 2.0
+    return any(top - 1 <= cy <= bottom + 1 for (_x0, top, _x1, bottom) in bands)
+
+
 def _hf_lines(pages: list[dict]) -> set[tuple[int, int]]:
     """找出所有頁眉／頁腳行的 `(page_no, line_index)`。
 
@@ -454,12 +560,33 @@ def _centered(ln: dict, page_w: float) -> bool:
 
 def _looks_heading(ln: dict, page_w: float, prev: dict | None = None,
                    gap_med: float = 0.0, first_of_page: bool = False) -> bool:
-    """置中、短、不以句末標點收尾 → 標題。"""
+    """這一行的排版看起來像不像章節標題。
+
+    判準（依序，任一命中就定案）：
+      ⓪ **表格區域內的行** → 永遠不是標題（表格欄位文字常置中或偏右，會被誤判）
+      ① **題注**（「圖 3-2 請求流程」）→ 永遠不是標題 —— 它是圖的說明，
+         由 `_match_caption()` 綁到圖上，不該進 heading_path
+      ② **編號式章節標題**（「1. 产品概述」「3.2 完整安装步骤」）→ 是標題（左對齊也算）
+      ③ 「第X章／第X節」→ 是標題
+      ④ 其餘：**置中 + 短 + 不以句末標點收尾** → 標題
+
+    ⚠️ ①② 為什麼一定要加（2026-10-12，實測 doc#319）：
+      原先 ④ 是**唯一**判準（除了第X章特例）→ 這份文件的 4 個圖片題注
+      （「圖 2 文件解压完成目录示意图」）與 7 個表格碎片（「径」「问」「密码登录」
+      「PNG、JPG 析，不支持编辑」）全被判成標題，而 12 個真正的章節標題一個都沒認出。
+      後果是 heading_path 被題注汙染 **51/74 個 block（69%）**，chunk 也跟著被切碎。
+    """
     t = (ln.get("text") or "").strip()
     if not t or len(t) > 40 or _ends_sentence(t):
         return False
     if re.match(r"^[\d\s年月日./\-—:：()（）]+$", t):        # 日期／純數字行
         return False
+    if ln.get("in_table"):                                   # ⓪ 表格欄位文字
+        return False
+    if _CAPTION_RE.match(t):                                 # ① 題注（圖/表說明）
+        return False
+    if _numbered_heading_level(t) or _CN_CHAPTER_RE.match(t):  # ② ③ 明確的章節標題
+        return True
     # ⚠️ 續行不是標題：上一行沒把話說完、行距也正常 → 這行只是被排版斷開的續文
     #   （實測：「部内发送：…財務司、」被斷成下一行「政法司、职成司」而被誤判成標題）
     if prev is not None and not first_of_page:
@@ -467,16 +594,42 @@ def _looks_heading(ln: dict, page_w: float, prev: dict | None = None,
         gap = ln.get("top", 0) - prev.get("bottom", 0)
         if prev_t and not _ends_sentence(prev_t) and not (gap_med and gap > gap_med * 1.4):
             return False
-    if re.match(r"^第[一二三四五六七八九十百千零〇\d]+[章節节]\s*[\s\S]{0,20}$", t):
-        return True                                          # 「第一章 总则」
+    if len(t) < 6:                                           # ④ 太短的碎行不是標題
+        return False
     return _centered(ln, page_w)
 
 
+def _numbered_heading_level(text: str) -> int:
+    """編號式章節標題的階層（「1. 产品概述」→1、「3.2 完整安装步骤」→2）；不是就 0。
+
+    ★ 為什麼非有這條不可（2026-10-12，實測 doc#319）：
+      編號標題**左對齊**，`_centered()` 抓不到 → 整份文件 12 個章節標題**一個都沒認出來**
+      → `heading_path` 幾乎全是空的、`chunk_prefix` 只剩文件名。
+      更糟的是它**不以句末標點結尾**，於是下一行被當成它的續行併進來，
+      變成「3.3 首次登录初始化设置**软件首次打开需完成账号登录与基础配置：**」這種
+      標題與正文黏成一行的方塊。認出標題後這兩件事一起解決
+      （heading 分支會 flush → 下一行自然開新段）。
+    """
+    s = (text or "").strip()
+    m = _NUM_HEADING_RE.match(s)
+    if not m:
+        return 0
+    if len(s) > _NUM_HEADING_MAX:                 # 太長 → 是列表項／正文
+        return 0
+    if any(ch in s for ch in _NUM_HEADING_BAD):   # 含句中標點 → 是正文句子
+        return 0
+    if _ends_sentence(s):
+        return 0
+    # 「1」→1 層、「1.2」→2 層、「1.2.3」→3 層（再深就當 3，夠用）
+    return min(m.group(1).count(".") + 1, 3)
+
+
 def _heading_level_of(text: str) -> int:
-    """章節標題的階層（只有「第X章／第X節」這種能確定）。"""
-    if re.match(r"^第[一二三四五六七八九十百千零〇\d]+[章節节]", (text or "").strip()):
+    """章節標題的階層。"""
+    t = (text or "").strip()
+    if re.match(r"^第[一二三四五六七八九十百千零〇\d]+[章節节]", t):
         return 1
-    return 0
+    return _numbered_heading_level(t)
 
 
 def _should_join_across(prev: dict, cur: dict, prev_h: float, cur_h: float) -> bool:
@@ -506,6 +659,11 @@ def _is_new_para(ln: dict, prev: dict, gap_med: float, left_base: float) -> bool
     if not pt or not ct:
         return True
     if _PARA_START_RE.match(ct):                                  # 第X條 / 一、/ 1.
+        return True
+    # ★ 上一行是**題注**（「圖 2 文件解压完成目录示意图」）→ 這行一定是新段落。
+    #   題注不以句末標點結尾，若只看那條會把下一句正文併上來，變成
+    #   「圖 2 文件解压完成目录示意图步骤3：启动安装程序…」整句黏在一起。
+    if _CAPTION_RE.match(pt):
         return True
     if _ends_sentence(pt):                                        # 上一行說完了
         return True
@@ -551,6 +709,18 @@ def _lines_to_blocks(pages: list[dict], drop: set) -> tuple[list[Block], dict]:
             stats["lines"] += 1
             first_of_page = (li == 0)
 
+            # ★ 表格：整塊自成一個 Block，**不參與**行合併／標題判定。
+            #   它的文字已經是 markdown 表格（含換行），再被 `_join_sep` 併進來
+            #   就會把表格攪爛。
+            if ln.get("is_table"):
+                flush()
+                blocks.append(Block(txt, page_no=pg["no"],
+                                    heading_path=" › ".join(headings),
+                                    y0=ln.get("top"), y1=ln.get("bottom")))
+                stats["tables"] = stats.get("tables", 0) + 1
+                prev, prev_h = ln, h
+                continue
+
             if _looks_heading(ln, w, prev, gap_med, first_of_page):
                 flush()
                 lvl = _heading_level_of(txt)
@@ -568,11 +738,21 @@ def _lines_to_blocks(pages: list[dict], drop: set) -> tuple[list[Block], dict]:
             #   十幾個字的碎塊，章節路徑也只顯示半個標題。
             #   ⚠️ 必須排在「縮排判定」之前 —— 置中的續行 x0 一定比本文大，
             #   先跑縮排規則的話它會被當成新段落，就永遠併不回標題（踩過）。
+            #   ⚠️ **續行必須短**（`_HEAD_TAIL_MAX`）：不然「1.1 产品简介」會把整段正文
+            #   當成續行併進來，變成「1.1 产品简介本智能办公助手系统是面向…」這種
+            #   標題＋正文黏成一坨的方塊（實測 doc#319 有 9 個這樣的塊）。
             prev_t = (prev.get("text") or "").strip() if prev else ""
             gap_now = (ln.get("top", 0) - prev.get("bottom", 0)) if prev else 0.0
             if (not buf and heading_block is not None and prev_t
                     and not _ends_sentence(prev_t)
                     and not _PARA_START_RE.match(txt)
+                    and len(txt) <= _HEAD_TAIL_MAX
+                    # ★ 續行不含句中標點 —— 這是最可靠的一條：標題續行是「半個標題」
+                    #   （「抽检办法（试行）》的通知」），而正文續行一定有「，」「、」
+                    #   （實測「本智能办公助手系统…，集成文件解析、智能检索」剛好 40 字，
+                    #   只靠長度擋不住，仍會被併成「1.1 产品简介本智能…」）。
+                    and not any(ch in txt for ch in _NUM_HEADING_BAD)
+                    and not ln.get("in_table")        # 表格欄位不是標題的續行
                     and not (gap_med and gap_now > gap_med * 1.5)
                     and (_centered(ln, w) or abs(ln.get("x0", 0) - prev.get("x0", 0)) < w * 0.06)):
                 heading_block.text += _join_sep(heading_block.text, txt) + txt
@@ -775,17 +955,32 @@ def _parse_pdf(path: str) -> ParsedDoc:
         with pdfplumber.open(path) as pdf:
             for i, pg in enumerate(pdf.pages, start=1):
                 lines: list[dict] = []
+                tables = _page_tables(pg)     # 表格（bbox + markdown）
+                bands = [b for b, _md in tables]
                 try:
                     for ln in pg.extract_text_lines() or []:
                         t = _clean(ln.get("text") or "")
                         if not t:
                             continue
-                        lines.append({"text": t, "top": float(ln.get("top") or 0),
-                                      "bottom": float(ln.get("bottom") or 0),
-                                      "x0": float(ln.get("x0") or 0),
-                                      "x1": float(ln.get("x1") or 0)})
+                        item = {"text": t, "top": float(ln.get("top") or 0),
+                                "bottom": float(ln.get("bottom") or 0),
+                                "x0": float(ln.get("x0") or 0),
+                                "x1": float(ln.get("x1") or 0)}
+                        item["in_table"] = _in_bands(item, bands)
+                        lines.append(item)
                 except Exception as e:
                     log.debug("PDF 第 %d 頁取行失敗: %s", i, e)
+                # ★ 表格區域的那些「視覺行」整批換成一段 markdown 表格：
+                #   原本的糊成一團（見 `_rows_to_markdown` 的說明），
+                #   換掉之後表格列／欄的關係才保得住。
+                if tables:
+                    free = [ln for ln in lines if not ln.get("in_table")]
+                    for bbox, md in tables:
+                        free.append({"text": md, "top": bbox[1], "bottom": bbox[3],
+                                     "x0": bbox[0], "x1": bbox[2],
+                                     "in_table": True, "is_table": True})
+                    free.sort(key=lambda x: (x.get("top", 0), x.get("x0", 0)))
+                    lines = free
                 pages.append({"no": i, "h": float(pg.height or 0), "w": float(pg.width or 0),
                               "lines": lines, "images": list(getattr(pg, "images", None) or [])})
     except Exception as e:

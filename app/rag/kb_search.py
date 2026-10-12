@@ -578,8 +578,15 @@ def _finish(res: SearchResult, merged: list[Hit], query: str) -> SearchResult:
             kept.append(h)
             used += len(h.text)
         picked = kept
+    # ★ 「入選（picked）」的語意是：**這一塊真的會被送進模型**。
+    #   為什麼不能無條件標 True（2026-10-12，小jo 回報「很多個入選但實際都沒過門檻」）：
+    #   `_pick()` 只做「按分數排序取前 top_k」，**完全不看門檻**；
+    #   而 `_rag_try()` 在 `top1 < 門檻` 時直接 return、**一塊都不送**。
+    #   於是工作台顯示「入選 6 塊」，實際上模型一塊都沒看到 —— 兩邊的說法互相矛盾。
+    #   現在沒過門檻就一塊都不標，畫面會顯示「實際送進模型 0 塊」。
+    passed = bool(picked) and res.top1 >= res.threshold
     for h in picked:
-        h.picked = True
+        h.picked = passed
 
     # ★ 去重：同一張圖若**同時**被「內嵌它的知識塊」與「圖片庫自己的條目」命中，
     #   只留知識塊那一份 —— 圖已經在它的文字裡了（前端渲染一次就好）。
@@ -624,7 +631,7 @@ def _finish(res: SearchResult, merged: list[Hit], query: str) -> SearchResult:
     except Exception as e:
         log.debug("帶出命中圖片失敗（不影響檢索）：%s", e)
 
-    res.passed = bool(picked) and res.top1 >= res.threshold
+    res.passed = passed          # 上面算過（門檻只看 top1；picked 只是前 top_k）
 
     if not merged:
         res.reason = "no_candidates"

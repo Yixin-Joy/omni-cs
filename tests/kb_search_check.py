@@ -189,6 +189,23 @@ check(not r.passed and r.reason == "below_threshold",
 r = kb_search.search("")
 check(r.reason == "empty_query", "空查詢回 empty_query")
 
+# ★ 「入選（picked）」＝**真的會被送進模型**（2026-10-12 修，見 kb_search._finish）。
+#   以前 `_pick()` 只按分數取前 top_k、無條件標 picked=True，害工作台顯示
+#   「入選 6 塊」但 `_rag_try()` 因 top1 未過門檻**一塊都沒送** —— 兩邊說法互相矛盾。
+r_low = kb_search.search("藍牙耳機多少錢", collection_id=cid, min_score=0.99)
+check(not r_low.passed, "門檻 0.99 時 passed=False", f"top1={r_low.top1:.3f}")
+check(bool(r_low.candidates), "仍然有候選塊（召回沒問題，只是沒過門檻）",
+      f"{len(r_low.candidates)} 塊")
+check(all(not h.picked for h in r_low.candidates),
+      "★ 未過門檻時「沒有一塊算入選」（因為一塊都不會送進模型）",
+      f"被標入選的有 {[h.chunk_id for h in r_low.candidates if h.picked]} 塊")
+
+r_ok = kb_search.search("藍牙耳機多少錢", collection_id=cid, min_score=0.0)
+check(r_ok.passed, "門檻 0.0 時 passed=True", f"top1={r_ok.top1:.3f}")
+check(any(h.picked for h in r_ok.candidates) and len(r_ok.hits) > 0,
+      "過門檻時有塊被標入選、且 hits 非空",
+      f"picked={sum(1 for h in r_ok.candidates if h.picked)} / hits={len(r_ok.hits)}")
+
 print("\n[6] 上下文拼接…")
 r = kb_search.search("退貨規則跟運費", collection_id=cid)
 ctx = r.context(2000)

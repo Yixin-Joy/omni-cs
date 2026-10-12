@@ -4889,9 +4889,10 @@ function ktResultHtml(d) {
       (d.matched_rows && d.matched_rows.length
         ? '<div style="margin-top:10px">' +
             '<b style="font-size:12.5px">知識庫召回明細</b>' +
-            renderMatchedRows(d.matched_rows, true) +
+            renderMatchedRows(d.matched_rows, true, d.rag_threshold) +
             '<div class="hint" style="margin-top:4px">' +
-            '調門檻最直接的依據：把「入選」與「未入選」的分數一比，就知道該往上還是往下移。</div></div>'
+            '調門檻最直接的依據：看<b>最高分離門檻多遠</b> —— 只差一點就往下調；' +
+            '差很多、且候選句句不相關，那才是這份文件真的沒有答案（該補文件，不是調門檻）。</div></div>'
         : (arState.ktLayers.rag && d.tier !== 'rag'
             ? '<div class="hint" style="margin-top:8px">這次沒有知識庫召回紀錄（可能是知識庫層沒被勾選、已停用，或知識庫是空的）。</div>'
             : '')) +
@@ -5012,15 +5013,25 @@ async function toggleLogDetail(logId) {
    rows 是 autoreply_log.matched_rows 的形狀：每筆含 vec / lex / final / rerank /
    來源（doc / heading / page / sheet / 列） / text 片段 / picked（是否真的送進模型）。
    ⚠️ 這欄是「TEXT 存 JSON」的老坑高風險區 —— 一律不假設型別，壞資料降級成不顯示。 */
-function renderMatchedRows(rows, showAll) {
+// thr（可選）：這次的門檻。沒過門檻時把它一起說出來，使用者才知道差多少。
+function renderMatchedRows(rows, showAll, thr) {
   if (!Array.isArray(rows) || !rows.length) return '';
   const picked = rows.filter(r => r && r.picked);
   const rest = rows.filter(r => r && !r.picked);
   // 有任一塊是被「多條查詢」撈到的 → 這次是多查詢檢索，才逐塊標出命中查詢
   const multi = rows.some(r => r && Array.isArray(r.queries) && r.queries.length > 1);
+  // ★ rows 已按 final 由高到低排 —— 所以第一筆就是最高分。
+  //   ⚠️ 「入選（picked）」＝**真的會被送進模型**：沒過門檻時引擎直接降級、
+  //   一塊都不送，這裡就會是 0 塊。以前後端無條件標 picked=True，害工作台顯示
+  //   「入選 6 塊」但模型一塊都沒看到（小jo 2026-10-12 回報），現在對齊了。
+  const top1 = Number((rows[0] || {}).final || 0);
+  const thrTxt = (thr === null || thr === undefined || thr === '')
+    ? '' : ' ' + Number(thr).toFixed(2);
   const head = '<div class="hint" style="margin:0 0 6px">召回 ' + rows.length + ' 塊，' +
-    '實際送進模型 ' + picked.length + ' 塊' +
-    (picked.length ? '' : '（沒有任何一塊過門檻）') +
+    (picked.length
+      ? '實際送進模型 <b>' + picked.length + '</b> 塊'
+      : '<b>最高分 ' + top1.toFixed(3) + ' 未達門檻' + thrTxt + '</b>' +
+        ' → <b>一塊都沒送進模型</b>（不呼叫模型，直接降級人工）') +
     (multi ? '　· 多查詢檢索：每塊標出是被哪一條查詢撈到的' : '') + '</div>';  // 沒入選的只顯示前 12 筆，避免洗版；要看全部就把 showAll 帶上
   const tailLimit = showAll ? rest.length : 12;
   const tail = rest.slice(0, tailLimit);
