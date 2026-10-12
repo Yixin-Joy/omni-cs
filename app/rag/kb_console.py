@@ -139,9 +139,13 @@ async def collections():
 async def collection_create(body: dict):
     """新增知識庫。`kind='image'` = **圖片知識庫**（放圖、用描述檢索）。
 
-    · `kind='doc'`（預設）：文檔知識庫，同時會自動建立它的「<名>_圖片庫」。
-    · `kind='image'`：圖片知識庫；`independent=1`（或不給 image_of）→ 完全獨立，
-      不綁任何文檔庫；要掛在某個文檔庫底下才給 `image_of`。
+    · `kind='doc'`（預設）：文檔知識庫。
+    · `kind='image'`：圖片知識庫；不給 `image_of` → 完全獨立（不綁任何文檔庫）。
+
+    ★ **建庫只建這一個庫，絕不連帶建另一個**（小jo 2026-10-12 定案）：
+      文檔知識庫的「<名>_圖片庫」是**延後建立**的 —— 只有真的上傳了
+      「含有圖片的文檔」才會建（`kb_ingest.save_doc_assets` → `_image_collection_id()`；
+      沒有圖的文件會 early return，連碰都不碰）。這樣建一個空文檔庫不會多出一張空卡片。
     """
     name = (body.get("name") or "").strip()
     if not name:
@@ -154,13 +158,8 @@ async def collection_create(body: dict):
     col = await asyncio.to_thread(kb_db.create_collection, name,
                                   body.get("description") or "",
                                   kind=kind, image_of=image_of)
-    out = {"collection": col}
-    if kind == "doc":
-        # 文檔知識庫一律帶一個圖片庫（從文件抽出來的圖都落那裡，啟停用連動）
-        img = await asyncio.to_thread(kb_db.ensure_image_collection, int(col["id"]))
-        out["image_collection"] = img
     kb_search.invalidate()
-    return _ok(out)
+    return _ok({"collection": col, "image_collection": None})
 
 
 @router.post("/collections/update")
@@ -452,22 +451,58 @@ async def document_move(body: dict):
 
     await asyncio.to_thread(kb_db.update_document, did, {"collection_id": cid})
     # ★ 文件的圖要跟著搬家 —— 它們屬於「新知識庫的圖片庫」。
+    #   ⚠️ **這份文件一張圖都沒有時，不碰圖片庫**：不要為了一份沒有圖的文件
+    #      在新知識庫底下生出一個空的「<名>_圖片庫」（建庫只建那一個庫的原則）。
     try:
-        new_img = await asyncio.to_thread(_image_cid_for, cid)
-        await asyncio.to_thread(kb_db.query,
-                                "UPDATE kb_asset SET collection_id=%s WHERE doc_id=%s",
-                                (new_img, did))
+        if _doc_has_assets(did):
+            new_img = await asyncio.to_thread(_image_cid_for, cid)
+            await asyncio.to_thread(kb_db.query,
+                                    "UPDATE kb_asset SET collection_id=%s WHERE doc_id=%s",
+                                    (new_img, did))
     except Exception as e:
         log.debug("搬移文件時同步圖片所屬庫失敗（不影響搬移）：%s", e)
     kb_search.invalidate()
     return _ok({"ok": True, "doc": await asyncio.to_thread(kb_db.get_document, did)})
 
 
+def _doc_has_assets(did: int) -> bool:
+    """這份文件底下有沒有抽出來的圖（含被啟發式判為裝飾的）。"""
+    rows = kb_db.query("SELECT 1 FROM kb_asset WHERE doc_id=%s LIMIT 1", (int(did),))
+    return bool(rows)
+
+
 def _image_cid_for(cid: int | None) -> int | None:
+    """文檔知識庫 → 它的圖片庫 id（沒有就建）。**呼叫前先確認真的有圖要搬。**"""
     if not cid:
         return None
     got = kb_db.ensure_image_collection(int(cid))
     return int(got["id"]) if got else None
+
+
+def _assets_scope(collection_id, *, create: bool = False):
+    """把圖片端點的 `collection_id` 解析成「圖**實際**落在哪個知識庫」。
+
+    ★ 為什麼需要這個：文檔知識庫的圖**不在它自己身上** —— 一律落在它的
+    「<名>_圖片庫」（`kb_collection.image_of` 指回去的那個）。所以文檔庫頁按「圖片」
+    傳的是文檔庫 id，直接拿去查 `kb_asset.collection_id` 會永遠是 0 張。
+
+    回傳 `(要查詢的 collection_id, 這個範圍是否真的有圖片庫)`：
+    · `(None, True)`  → 不帶 id，查全部；
+    · `(圖片庫 id, True)` → 查那個圖片庫；
+    · `(None, False)` → **還沒有圖片庫**（文檔庫底下還沒出現任何圖）→ 呼叫端直接回空集合。
+      ⚠️ 第二個值很重要：不能只回 `None`，那會被 `list_assets` 當成「全部」。
+    """
+    cid = _int_or_none(collection_id)
+    if not cid:
+        return None, True
+    col = kb_db.get_collection(cid)
+    if not col:
+        return None, True                      # 庫不存在 → 維持舊行為（當作全部）
+    if (col.get("kind") or kb_db.KIND_DOC) == kb_db.KIND_DOC:
+        got = (kb_db.ensure_image_collection(cid) if create
+               else kb_db.get_image_collection(cid))
+        return (int(got["id"]), True) if got else (None, False)
+    return cid, True
 
 
 # ======================================================================
@@ -714,26 +749,40 @@ async def list_assets(collection_id: str = "", doc_id: str = "",
 
     `include_filtered=0` → 只看「像內容圖」的（預設含被啟發式判為裝飾的，
     方便使用者複查有沒有誤殺 —— 誤判可以手動啟用）。
+
+    ★ `collection_id` 給**文檔知識庫**時自動改看它的圖片庫（圖都落在那裡）；
+    文檔庫還沒有圖片庫時回空集合 + `no_image_lib=True`，讓前端講清楚原因。
     """
-    cid = _int_or_none(collection_id)
+    cid, has_lib = _assets_scope(collection_id)
     did = _int_or_none(doc_id)
     inc = str(include_filtered).strip().lower() not in ("0", "false", "no", "")
     ungr = str(ungrouped).strip().lower() in ("1", "true", "yes", "on")
+
+    if not has_lib:
+        return _ok({"assets": [], "stats": {}, "include_filtered": inc,
+                    "no_image_lib": True, "image_collection": None,
+                    "collection_id": _int_or_none(collection_id)})
 
     def _run():
         rows = kb_db.list_assets(collection_id=cid, doc_id=did,
                                  include_filtered=inc, ungrouped=ungr)
         return {"assets": [_asset_view(r) for r in rows],
                 "stats": kb_db.asset_stats(collection_id=cid, doc_id=did),
-                "include_filtered": inc}
+                "include_filtered": inc, "no_image_lib": False,
+                "image_collection": cid,
+                "collection_id": _int_or_none(collection_id)}
     return _ok(await asyncio.to_thread(_run))
 
 
 @router.post("/asset/upload")
 async def upload_assets(files: list[UploadFile] = File(...),
                         collection_id: str = Form("")):
-    """單獨上傳圖片（不屬於任何文件，只掛在知識庫底下）。"""
-    cid = _int_or_none(collection_id)
+    """單獨上傳圖片（不屬於任何文件，只掛在知識庫底下）。
+
+    `collection_id` 給文檔知識庫時 → 落進它的「<名>_圖片庫」；這個圖片庫還不存在
+    就**此時才建**（使用者主動往這個庫上傳圖，才值得為它開一個圖片庫）。
+    """
+    cid, _has_lib = _assets_scope(collection_id, create=True)
     out = []
     for f in files:
         raw = await f.read()
@@ -848,7 +897,8 @@ async def embed_assets(body: dict):
     正常不需要手動按 —— 寫描述 / AI 描述 / 文件向量化時都會自動連帶做。
     這裡是給「舊資料（描述早就有了但從來沒向量化）」補課用的。
     """
-    cid = _int_or_none(body.get("collection_id"))
+    # 文檔庫 id → 它的圖片庫（圖都在那裡；`create=False`：補課不該生新庫）
+    cid, _has_lib = _assets_scope(body.get("collection_id"))
     did = _int_or_none(body.get("doc_id"))
     res = await asyncio.to_thread(kb_ingest.embed_assets_for,
                                   doc_id=did, collection_id=cid)
