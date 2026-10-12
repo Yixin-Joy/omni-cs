@@ -113,10 +113,11 @@ with TestClient(main.app) as c:
     keys = [i["key"] for i in d.get("items", [])]
     check(r.status_code == 200 and "top_k" in keys and "chunk_size" in keys,
           f"GET /params 回 {len(keys)} 個參數")
-    # retrieval 6 → 7：多了 query_rewrite（多查詢檢索開關）；prompt 2：知識庫問答 + 查詢改寫
+    # retrieval 6 → 7：多了 query_rewrite（多查詢檢索開關）
+    # prompt 2 → 3：多了 image_caption_prompt（圖片 AI 描述按鈕用）
     check(len(d.get("retrieval", [])) == 7 and len(d.get("chunk", [])) == 6
-          and len(d.get("prompts", [])) == 2,
-          "參數分組正確（檢索 7 / 分塊 6 / 提示詞 2）",
+          and len(d.get("prompts", [])) == 3,
+          "參數分組正確（檢索 7 / 分塊 6 / 提示詞 3）",
           f"prompts={[i['key'] for i in d.get('prompts', [])]}")
     check("query_rewrite" in [i["key"] for i in d.get("retrieval", [])],
           "檢索參數含 query_rewrite（查詢改寫開關）",

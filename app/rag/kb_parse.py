@@ -1,4 +1,4 @@
-"""知識庫文件解析：把各種格式轉成「帶結構 metadata 的文字區塊」。
+"""知識庫文件解析：把各種格式轉成「帶結構 metadata 的文字區塊」+「圖片資產」。
 
 支援：pdf / docx / xlsx / md / txt / csv / html
 
@@ -6,12 +6,23 @@
 讓後面分塊、溯源、客服「命中詳情」都能顯示「這段話是從哪來的」。
 設計依據：RAG_DESIGN.md §6。
 
+★ PDF 走**行級解析**（pdfplumber，帶 y 座標），不是 `extract_text()`：
+  - 頁碼 / 頁眉 / 頁腳會被辨識並丟棄（見 `_hf_lines`）
+  - **跨頁只是物理隔斷，不產生段落分隔**：上一行沒以句末標點收尾、且本行沒有
+    段落起始特徵時，兩行直接接起來（中文不插空格、英文插一個空格）。
+    只有真正的語義段落結束才輸出 `\n\n`。
+    ⚠️ 舊版用 `extract_text()` → 每頁自己成段、跨頁句子被硬切（見 RAG_DESIGN.md §6.2）。
+
+★ 圖片（`ParsedAsset`）會一併抽出來交給呼叫端落地存檔；
+  若圖片有**題注**（「圖 3-2 xxx」），直接拿它當預設描述，不必再花 AI 讀圖。
+
 ⚠️ 掃描型 PDF（沒有文字層）**不靜默通過**：解析出 0 字元時直接拋
 `ParseError("no_text_layer")`，由呼叫端把文件標成 failed 並給客服人話提示。
 """
 from __future__ import annotations
 
 import csv
+import hashlib
 import html as _html
 import io
 import logging
@@ -62,17 +73,54 @@ class Block:
     sheet: str | None = None
     row_from: int | None = None
     row_to: int | None = None
-    kind: str = "text"          # text | table_row | code | sheet_meta
+    kind: str = "text"          # text | table_row | code | sheet_meta | heading
+    y0: float | None = None     # ★ PDF：本塊第一行的上緣（拿來把圖片配到最近的塊）
+    y1: float | None = None     # ★ PDF：本塊最後一行的下緣
 
     def clone_text(self, text: str) -> "Block":
         return Block(text, self.page_no, self.heading_path, self.sheet,
-                     self.row_from, self.row_to, self.kind)
+                     self.row_from, self.row_to, self.kind, self.y0, self.y1)
+
+
+@dataclass
+class ParsedAsset:
+    """解析出來的一張圖片（還沒落地存檔）。
+
+    ⚠️ `data` 是原始位元組，會一直留在記憶體直到呼叫端（kb_ingest）寫檔 ——
+    所以文件很大時記得別同時解析太多份。
+    """
+
+    data: bytes
+    ext: str = "png"                 # jpg / png / gif / webp …
+    page_no: int | None = None
+    bbox: dict | None = None         # PDF 座標（x0/top/x1/bottom），溯源用
+    caption: str = ""                # ★ 題注（文件裡本來就有的圖說）
+    name: str = ""                   # 原始資源名（Image25.jpg / image1.png）
+    width: int = 0
+    height: int = 0
+    index: int = 0                   # 文件內序號（0 起）
+    filtered_reason: str = ""        # 非空 = 被啟發式判為裝飾圖（仍會保留記錄）
+    # ★ 綁定錨點：這張圖「屬於」第幾個 Block（由解析階段判定）。
+    #   入庫時據此對應到涵蓋該 Block 的知識塊 —— 這是「圖必須綁到分塊」的依據。
+    #   （DOCX 沒有頁碼，只能靠這個；PDF 有座標，可以配到最近的那一塊。）
+    anchor_block: int | None = None
+
+    @property
+    def mime(self) -> str:
+        e = (self.ext or "png").lower().lstrip(".")
+        return {"jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif",
+                "webp": "image/webp", "bmp": "image/bmp"}.get(e, f"image/{e}")
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.data or b"").hexdigest()
 
 
 @dataclass
 class ParsedDoc:
     blocks: list[Block] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
+    assets: list[ParsedAsset] = field(default_factory=list)
 
     @property
     def char_count(self) -> int:
@@ -134,10 +182,16 @@ def parse(path: str, doc_type: str = "", filename: str = "") -> ParsedDoc:
     doc.meta["filename"] = name
     doc.meta["block_count"] = len(doc.blocks)
     doc.meta["char_count"] = doc.char_count
+    # 圖片統計（各 parser 會填更細的，這裡是共通的三個）
+    doc.meta["asset_count"] = len(doc.assets)
+    doc.meta["asset_filtered"] = len([a for a in doc.assets if a.filtered_reason])
+    doc.meta["asset_with_caption"] = len([a for a in doc.assets if a.caption])
 
     if doc.char_count <= 0 or not any(b.text.strip() for b in doc.blocks):
         # 最常見的原因：掃描件（只有圖沒有文字層）
-        raise ParseError("no_text_layer", "讀不到文字，這可能是掃描件（圖片型 PDF）")
+        extra = f"（偵測到 {len(doc.assets)} 張圖，但沒有文字層）" if doc.assets else ""
+        raise ParseError("no_text_layer",
+                         f"讀不到文字，這可能是掃描件（圖片型 PDF）{extra}")
     return doc
 
 
@@ -180,36 +234,568 @@ def _split_paragraphs(text: str) -> list[str]:
     return parts
 
 
-# ---------- PDF ----------
+# ---------- PDF：行級解析（不用 extract_text） ----------
+#
+# 為什麼不用 `page.extract_text()`：它只回一大坨文字，沒有座標，於是
+#   ① 頁碼／頁眉／頁腳混進內文（直接污染檢索）
+#   ② **每一頁自己成一段** → 跨頁的句子被硬切成兩段（實測見 RAG_DESIGN.md §6.2）
+# 改用 pdfplumber 拿**行級物件**（text + top/bottom/x0/x1）後，這三件事都能處理。
+
+# 句末標點（出現這些 → 這句說完了，不該跟下一行接）
+_SENT_END = "。！？!?；;…"
+# 允許跟在句末標點之後的收尾符號（「。」」這種）
+_SENT_CLOSE = "」』）)】》\"'’"
+
+# 段落起始特徵（行首比對）—— 命中就代表「這是新段落」，不接上一行
+_PARA_START_RE = re.compile(
+    r"^(?:"
+    r"第[一二三四五六七八九十百千零〇\d]+[章節节條条款項项]"
+    r"|[一二三四五六七八九十]+[、.．]"
+    r"|[（(][一二三四五六七八九十\d]+[）)]"
+    r"|\d+(?:\.\d+)*[、.．\s]"
+    r"|[•·※*]\s*"
+    r"|附[錄录件表]"
+    r"|抄\s*送"
+    r")"
+)
+
+# 頁碼樣式。⚠️ 必須**同時**落在頁邊帶才算（否則表格裡的「1」會被誤殺）
+_PAGENO_PATTERNS = (
+    re.compile(r"^[\s\-–—_]*\d{1,4}[\s\-–—_]*$"),
+    re.compile(r"^[\s\-–—_]*[ivxlcdmIVXLCDM]{1,7}[\s\-–—_]*$"),
+    re.compile(r"^第\s*\d+\s*[页頁]\s*(?:[/／]\s*共?\s*\d+\s*[页頁])?$"),
+    re.compile(r"^\d+\s*[/／]\s*\d+$"),
+    re.compile(r"^(?:page|p\.)\s*\d+", re.I),
+)
+
+# 頁邊帶比例：上方 9% 內 = 頁眉帶；下方 14% 內 = 頁腳帶
+# （實測教育部 PDF 的頁碼「— 2 —」在 762/842 = 90.5% 處）
+_HF_TOP_RATIO = 0.09
+_HF_BOTTOM_RATIO = 0.86
+_HF_MIN_PAGES = 3          # 同一段文字在邊界帶出現 ≥ 3 頁 → 視為頁眉頁腳
+
+# 題注樣式（圖表說明）—— 中英都要，對接手冊常混用
+_CAPTION_RE = re.compile(
+    r"^\s*(?:图|圖|表|figure|fig\.?|table|exhibit|chart|image|图片|圖片)"
+    r"\s*[\d一二三四五六七八九十]+(?:\s*[-–—.．]\s*\d+)*"
+    r"\s*[:：.、]?\s*(.+)$",
+    re.I,
+)
+
+# 裝飾圖判斷門檻（寧可留下也不要誤刪 —— 保留下來只是多一張圖，誤刪是資料損失）
+_MIN_PIXELS = (60, 40)          # 像素邊長下限
+_EXTREME_RATIO = 8.0            # 長寬比 ≥ 8:1 → 分隔線那類
+_MIN_AREA_RATIO = 0.012         # 顯示面積佔頁面 < 1.2% → 裝飾
+
+
+def _ends_sentence(text: str) -> bool:
+    """這一行是否以句末標點收尾（允許後面還有收尾引號／括號）。
+
+    ⚠️ ASCII 句點要**另判**：`0.5`、`v1.2`、`192.168.1.1` 這種不是句末。
+    規則：`.` 只有在「前一個字是英文字母」時才算句子結束（`warehouse.` ✅、`0.5` ❌）。
+    """
+    t = (text or "").rstrip()
+    while t and t[-1] in _SENT_CLOSE:
+        t = t[:-1].rstrip()
+    if not t:
+        return False
+    if t[-1] in _SENT_END:
+        return True
+    return t[-1] == "." and len(t) >= 2 and t[-2].isalpha()
+
+
+def _is_cjk(ch: str) -> bool:
+    return bool(ch) and ("\u3400" <= ch <= "\u9fff" or "\uff00" <= ch <= "\uffef")
+
+
+def _join_sep(prev: str, cur: str) -> str:
+    """接續兩行時用什麼分隔：**中文不加**、英文加一個空格。
+
+    ⚠️ 這裡刻意不用「一律加空格」——中文句子中間插一個空格會變成錯字級的問題。
+    """
+    a, b = (prev or "").rstrip(), (cur or "").lstrip()
+    if not a or not b:
+        return ""
+    return "" if (_is_cjk(a[-1]) or _is_cjk(b[0])) else " "
+
+
+def _img_ext(name: str, data: bytes) -> str:
+    e = os.path.splitext(name or "")[1].lower().lstrip(".")
+    if e in ("jpg", "jpeg", "png", "gif", "webp", "bmp"):
+        return "jpg" if e == "jpeg" else e
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return "png"
+
+
+def _img_pixels(data: bytes) -> tuple[int, int]:
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as im:
+            return int(im.width), int(im.height)
+    except Exception:
+        return 0, 0
+
+
+def _in_margin_band(line: dict, page_h: float) -> str:
+    """這一行落在頁眉 / 頁腳帶嗎？回 'top' / 'bottom' / ''。"""
+    if not page_h:
+        return ""
+    if line.get("bottom", 0) <= page_h * _HF_TOP_RATIO:
+        return "top"
+    if line.get("top", 0) >= page_h * _HF_BOTTOM_RATIO:
+        return "bottom"
+    return ""
+
+
+def _is_pageno(text: str) -> bool:
+    t = (text or "").strip()
+    if not t or len(t) > 24:
+        return False
+    return any(p.match(t) for p in _PAGENO_PATTERNS)
+
+
+def _hf_lines(pages: list[dict]) -> set[tuple[int, int]]:
+    """找出所有頁眉／頁腳行的 `(page_no, line_index)`。
+
+    兩個依據**並用**：
+      ① 頁碼樣式 + 落在頁邊帶  —— 抓「— 2 —」「第 2 頁」這種
+      ② 跨頁重複：同段文字在頁邊帶出現 ≥ `_HF_MIN_PAGES` 頁 —— 抓純文字頁眉
+    只用①會漏掉純文字頁眉（公司名／文件名），只用②會漏掉只有兩頁的文件。
+    """
+    drop: set[tuple[int, int]] = set()
+    counter: dict[str, set[int]] = {}
+
+    for pg in pages:
+        h = pg["h"]
+        for li, ln in enumerate(pg["lines"]):
+            if not _in_margin_band(ln, h):
+                continue
+            text = (ln.get("text") or "").strip()
+            if not text:
+                continue
+            if _is_pageno(text):
+                drop.add((pg["no"], li))
+                continue
+            key = re.sub(r"\s+", " ", text)[:80]
+            counter.setdefault(key, set()).add(pg["no"])
+
+    repeated = {k for k, ps in counter.items() if len(ps) >= _HF_MIN_PAGES}
+    if repeated:
+        for pg in pages:
+            for li, ln in enumerate(pg["lines"]):
+                if not _in_margin_band(ln, pg["h"]):
+                    continue
+                key = re.sub(r"\s+", " ", (ln.get("text") or "").strip())[:80]
+                if key in repeated:
+                    drop.add((pg["no"], li))
+    return drop
+
+
+def _median_gap(lines: list[dict]) -> float:
+    """同一頁內相鄰行的中位行距（用來判斷「行距變大 = 段落間距」）。"""
+    gaps = []
+    for a, b in zip(lines, lines[1:]):
+        g = b.get("top", 0) - a.get("bottom", 0)
+        if 0 < g < 200:
+            gaps.append(g)
+    if not gaps:
+        return 0.0
+    gaps.sort()
+    return gaps[len(gaps) // 2]
+
+
+def _body_left(lines: list[dict], page_w: float) -> float:
+    """本文左邊界（取夠長的行，避開置中的標題）。"""
+    xs = [ln.get("x0", 0) for ln in lines if len((ln.get("text") or "")) >= 8]
+    if not xs:
+        xs = [ln.get("x0", 0) for ln in lines]
+    if not xs:
+        return 0.0
+    xs.sort()
+    return xs[len(xs) // 2]
+
+
+def _centered(ln: dict, page_w: float) -> bool:
+    """左右留白都很大 → 看起來是置中排版。"""
+    if not page_w:
+        return False
+    x0, x1 = ln.get("x0", 0), ln.get("x1", page_w)
+    return x0 > page_w * 0.18 and (page_w - x1) > page_w * 0.18
+
+
+def _looks_heading(ln: dict, page_w: float, prev: dict | None = None,
+                   gap_med: float = 0.0, first_of_page: bool = False) -> bool:
+    """置中、短、不以句末標點收尾 → 標題。"""
+    t = (ln.get("text") or "").strip()
+    if not t or len(t) > 40 or _ends_sentence(t):
+        return False
+    if re.match(r"^[\d\s年月日./\-—:：()（）]+$", t):        # 日期／純數字行
+        return False
+    # ⚠️ 續行不是標題：上一行沒把話說完、行距也正常 → 這行只是被排版斷開的續文
+    #   （實測：「部内发送：…財務司、」被斷成下一行「政法司、职成司」而被誤判成標題）
+    if prev is not None and not first_of_page:
+        prev_t = (prev.get("text") or "").strip()
+        gap = ln.get("top", 0) - prev.get("bottom", 0)
+        if prev_t and not _ends_sentence(prev_t) and not (gap_med and gap > gap_med * 1.4):
+            return False
+    if re.match(r"^第[一二三四五六七八九十百千零〇\d]+[章節节]\s*[\s\S]{0,20}$", t):
+        return True                                          # 「第一章 总则」
+    return _centered(ln, page_w)
+
+
+def _heading_level_of(text: str) -> int:
+    """章節標題的階層（只有「第X章／第X節」這種能確定）。"""
+    if re.match(r"^第[一二三四五六七八九十百千零〇\d]+[章節节]", (text or "").strip()):
+        return 1
+    return 0
+
+
+def _should_join_across(prev: dict, cur: dict, prev_h: float, cur_h: float) -> bool:
+    """上一頁最後一行 + 本頁第一行，是否屬於同一段（被分頁硬切）。
+
+    ★ 這是「跨頁只是物理隔斷」的實作 —— 只有這裡回 True 才不產生段落分隔。
+    """
+    pt = (prev.get("text") or "").strip()
+    ct = (cur.get("text") or "").strip()
+    if not pt or not ct:
+        return False
+    if _ends_sentence(pt):                    # 上一頁已經把話說完
+        return False
+    if _PARA_START_RE.match(ct):              # 本行是「第X條 / 一、/ 1.」起頭
+        return False
+    if prev_h and prev.get("bottom", 0) < prev_h * 0.82:   # 上一行不在頁底 → 不是被切斷
+        return False
+    if cur_h and cur.get("top", 0) > cur_h * 0.22:         # 本行不在頁頂
+        return False
+    return True
+
+
+def _is_new_para(ln: dict, prev: dict, gap_med: float, left_base: float) -> bool:
+    """同一頁內，這一行是否開啟新段落。"""
+    pt = (prev.get("text") or "").strip()
+    ct = (ln.get("text") or "").strip()
+    if not pt or not ct:
+        return True
+    if _PARA_START_RE.match(ct):                                  # 第X條 / 一、/ 1.
+        return True
+    if _ends_sentence(pt):                                        # 上一行說完了
+        return True
+    if gap_med and (ln.get("top", 0) - prev.get("bottom", 0)) > gap_med * 1.5:
+        return True                                               # 行距變大 = 段落間距
+    if left_base and (ln.get("x0", 0) - left_base) > 18:           # 首行縮排（中文兩格）
+        return True
+    return False
+
+
+def _lines_to_blocks(pages: list[dict], drop: set) -> tuple[list[Block], dict]:
+    """行級物件 → Block（含跨頁接續與標題堆疊）。"""
+    blocks: list[Block] = []
+    buf = ""
+    buf_page: int | None = None
+    buf_y0: float | None = None
+    buf_y1: float | None = None
+    headings: list[str] = []
+    heading_block: Block | None = None      # 最近一個標題塊（供「標題續行」併回去）
+    prev: dict | None = None
+    prev_h = 0.0
+    stats = {"lines": 0, "dropped_hf": len(drop), "cross_page_joins": 0,
+             "blocks": 0, "chars": 0}
+
+    def flush():
+        nonlocal buf, buf_page, buf_y0, buf_y1
+        t = (buf or "").strip()
+        if t:
+            blocks.append(Block(t, page_no=buf_page, heading_path=" › ".join(headings),
+                                y0=buf_y0, y1=buf_y1))
+        buf, buf_page = "", None
+        buf_y0 = buf_y1 = None
+
+    for pg in pages:
+        h, w = pg["h"], pg["w"]
+        lines = [ln for li, ln in enumerate(pg["lines"]) if (pg["no"], li) not in drop]
+        gap_med = _median_gap(lines)
+        left_base = _body_left(lines, w)
+        for li, ln in enumerate(lines):
+            txt = (ln.get("text") or "").strip()
+            if not txt:
+                continue
+            stats["lines"] += 1
+            first_of_page = (li == 0)
+
+            if _looks_heading(ln, w, prev, gap_med, first_of_page):
+                flush()
+                lvl = _heading_level_of(txt)
+                headings = headings[:max(0, lvl - 1)] if lvl else headings[:0]
+                headings.append(txt)
+                heading_block = Block(txt, page_no=pg["no"],
+                                      heading_path=" › ".join(headings), kind="heading",
+                                      y0=ln.get("top"), y1=ln.get("bottom"))
+                blocks.append(heading_block)
+                prev, prev_h = ln, h
+                continue
+
+            # ★ 標題續行：標題自己也會換行（實測：「教育部关于印发《本科毕业论文（设计）」
+            #   + 「抽检办法（试行）》的通知」）。這種續行要併回標題，否則會多出一個
+            #   十幾個字的碎塊，章節路徑也只顯示半個標題。
+            #   ⚠️ 必須排在「縮排判定」之前 —— 置中的續行 x0 一定比本文大，
+            #   先跑縮排規則的話它會被當成新段落，就永遠併不回標題（踩過）。
+            prev_t = (prev.get("text") or "").strip() if prev else ""
+            gap_now = (ln.get("top", 0) - prev.get("bottom", 0)) if prev else 0.0
+            if (not buf and heading_block is not None and prev_t
+                    and not _ends_sentence(prev_t)
+                    and not _PARA_START_RE.match(txt)
+                    and not (gap_med and gap_now > gap_med * 1.5)
+                    and (_centered(ln, w) or abs(ln.get("x0", 0) - prev.get("x0", 0)) < w * 0.06)):
+                heading_block.text += _join_sep(heading_block.text, txt) + txt
+                if headings:
+                    headings[-1] = heading_block.text
+                prev, prev_h = ln, h
+                continue
+
+            if prev is None:
+                start_new = True
+            elif first_of_page:
+                start_new = not _should_join_across(prev, ln, prev_h, h)
+            else:
+                start_new = _is_new_para(ln, prev, gap_med, left_base)
+
+            if start_new:
+                flush()
+                buf, buf_page = txt, pg["no"]
+                buf_y0, buf_y1 = ln.get("top"), ln.get("bottom")
+            else:
+                if first_of_page:
+                    stats["cross_page_joins"] += 1
+                if not buf:
+                    # ⚠️ 緩衝區是空的（例如前面剛出現一個標題、或剛 flush 過）——
+                    #    這行其實是「新段落的開頭」，頁碼／座標要在這裡補上，
+                    #    否則這塊的 page_no 會是 None（圖片就綁不到它了）。
+                    buf_page = pg["no"]
+                    buf_y0 = ln.get("top")
+                buf += _join_sep(buf, txt) + txt
+                buf_y1 = ln.get("bottom")
+            prev, prev_h = ln, h
+
+    flush()
+    stats["blocks"] = len(blocks)
+    stats["chars"] = sum(len(b.text) for b in blocks)
+    return blocks, stats
+
+
+def _caption_candidates(lines: list[dict]) -> list[dict]:
+    """這一頁裡看起來像題注的行。"""
+    out = []
+    for ln in lines:
+        t = (ln.get("text") or "").strip()
+        if not t:
+            continue
+        if _CAPTION_RE.match(t):
+            out.append({"text": t, "top": ln.get("top", 0), "bottom": ln.get("bottom", 0)})
+    return out
+
+
+def _match_caption(cands: list[dict], bbox: dict | None, max_dist: float = 70.0) -> str:
+    """圖片附近的題注（通常在下緣，少數在上緣）→ 取距離最近的那一條。"""
+    if not cands:
+        return ""
+    if not bbox:
+        return cands[0]["text"] if len(cands) == 1 else ""
+    top, bottom = bbox.get("top", 0), bbox.get("bottom", 0)
+    best, best_d = "", None
+    for c in cands:
+        d = (c["top"] - bottom) if c["top"] >= bottom else (top - c["bottom"])
+        if d < 0:                     # 與圖重疊 → 大概是圖內文字，不是題注
+            continue
+        if d <= max_dist and (best_d is None or d < best_d):
+            best, best_d = c["text"], d
+    return best
+
+
+def _decor_reason(a: ParsedAsset, page_w: float, page_h: float) -> str:
+    """啟發式判斷「這是不是裝飾圖」。回空字串 = 看起來是內容圖。"""
+    if a.width and a.height:
+        if a.width < _MIN_PIXELS[0] or a.height < _MIN_PIXELS[1]:
+            return f"太小（{a.width}×{a.height}px）"
+        ratio = max(a.width / a.height, a.height / a.width)
+        if ratio >= _EXTREME_RATIO:
+            return f"長寬比極端（{ratio:.1f}:1）"
+    if a.bbox and page_w and page_h:
+        x0, x1 = a.bbox.get("x0", 0), a.bbox.get("x1", 0)
+        tp, bt = a.bbox.get("top", 0), a.bbox.get("bottom", 0)
+        dw, dh = abs(x1 - x0), abs(bt - tp)
+        if (dw * dh) / (page_w * page_h) < _MIN_AREA_RATIO:
+            return "面積過小"
+        # 頁首的扁橫幅（紅頭文件那種「XX文件」抬頭）
+        if (tp < page_h * 0.25 and dh < page_h * 0.12
+                and dw > page_w * 0.5 and not a.caption):
+            return "頁首扁橫幅（抬頭）"
+    return ""
+
+
+def _nearest_block(a: ParsedAsset, blocks: list[Block]) -> int | None:
+    """這張圖最靠近哪一個 Block —— 「圖片必須綁到分塊」的依據。
+
+    PDF 有座標 → 取同頁上「離圖最近」的那一塊（比塊的上緣與下緣，誰近算誰）；
+    沒有座標（DOCX 之類）→ 退化成「同頁第一塊」。
+    """
+    if not blocks:
+        return None
+    if not a.bbox:
+        for i, b in enumerate(blocks):
+            if a.page_no is not None and b.page_no == a.page_no:
+                return i
+        return None
+    itop, ibot = a.bbox.get("top", 0.0), a.bbox.get("bottom", 0.0)
+    best: int | None = None
+    best_d: float | None = None
+    for i, b in enumerate(blocks):
+        if a.page_no is not None and b.page_no != a.page_no:
+            continue
+        if b.y0 is None or b.y1 is None:
+            continue
+        # 圖在塊下方 → 比「圖上緣 vs 塊下緣」；圖在塊上方 → 比「圖下緣 vs 塊上緣」
+        d = min(abs(b.y1 - itop), abs(ibot - b.y0))
+        if best_d is None or d < best_d:
+            best, best_d = i, d
+    if best is None:
+        for i, b in enumerate(blocks):
+            if a.page_no is not None and b.page_no == a.page_no:
+                return i
+    return best
+
+
+def _pdf_images(path: str, pages: list[dict]) -> list[ParsedAsset]:
+    """抽 PDF 圖片：**座標用 pdfplumber、位元組用 pypdf**（兩者都已實測可用）。
+
+    ⚠️ 兩邊的圖片清單是「同一頁內同序」的，所以按索引配對；
+    數量對不上時就放棄座標（圖還是會留下，只是沒有 bbox 可溯源）。
+    """
+    assets: list[ParsedAsset] = []
+    raw_by_page: dict[int, list[tuple[str, bytes]]] = {}
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(path)
+        for i, page in enumerate(reader.pages, start=1):
+            items: list[tuple[str, bytes]] = []
+            try:
+                for im in page.images:
+                    items.append((getattr(im, "name", "") or "", im.data or b""))
+            except Exception as e:
+                log.debug("PDF 第 %d 頁抽圖失敗: %s", i, e)
+            raw_by_page[i] = items
+    except Exception as e:
+        log.warning("PDF 圖片抽取失敗（只做文字）：%s", e)
+        return assets
+
+    idx = 0
+    for pg in pages:
+        items = raw_by_page.get(pg["no"], [])
+        boxes = list(pg.get("images") or [])
+        cands = _caption_candidates(pg["lines"])
+        for j, (name, data) in enumerate(items):
+            if not data:
+                continue
+            box = boxes[j] if j < len(boxes) else None
+            bbox = None
+            if box:
+                bbox = {k: round(float(box.get(k) or 0), 1)
+                        for k in ("x0", "top", "x1", "bottom")}
+            w, h = _img_pixels(data)
+            a = ParsedAsset(data=data, ext=_img_ext(name, data), page_no=pg["no"],
+                            bbox=bbox, caption=_match_caption(cands, bbox),
+                            name=name, width=w, height=h, index=idx)
+            a.filtered_reason = _decor_reason(a, pg["w"], pg["h"])
+            assets.append(a)
+            idx += 1
+
+    _mark_repeats(assets)
+    return assets
+
+
+def _mark_repeats(assets: list[ParsedAsset], min_count: int = 3) -> None:
+    """同一張圖重複出現很多次 → 大概是 LOGO／浮水印（標記但仍保留記錄）。"""
+    from collections import Counter
+    counter = Counter(a.sha256 for a in assets)
+    for a in assets:
+        if not a.filtered_reason and counter[a.sha256] >= min_count:
+            a.filtered_reason = f"重複出現 {counter[a.sha256]} 次（LOGO／浮水印？）"
+
+
+def _docx_media_map(d) -> dict[str, tuple[str, bytes]]:
+    """rId → (檔名, 位元組)：DOCX 的內嵌媒體（`word/media/*`）。"""
+    out: dict[str, tuple[str, bytes]] = {}
+    try:
+        for rid, rel in d.part.rels.items():
+            tp = getattr(rel, "target_part", None)
+            ct = str(getattr(tp, "content_type", "") or "")
+            if not ct.startswith("image/"):
+                continue
+            pn = str(getattr(tp, "partname", "") or "")
+            out[str(rid)] = (pn.rsplit("/", 1)[-1], tp.blob)
+    except Exception as e:
+        log.debug("DOCX 讀內嵌媒體失敗: %s", e)
+    return out
+
 
 def _parse_pdf(path: str) -> ParsedDoc:
-    from pypdf import PdfReader
+    """PDF → 帶座標的 Block + 圖片資產。"""
+    import pdfplumber
 
-    reader = PdfReader(path)
-    if getattr(reader, "is_encrypted", False):
-        try:
-            reader.decrypt("")     # 空密碼（很多 PDF 只是設定權限密碼）
-        except Exception:
-            raise ParseError("encrypted", "PDF 有密碼保護，請先解除密碼再上傳")
-
-    blocks: list[Block] = []
-    for i, page in enumerate(reader.pages, start=1):
-        try:
-            raw = page.extract_text() or ""
-        except Exception as e:
-            log.debug("PDF 第 %d 頁抽字失敗: %s", i, e)
-            continue
-        for para in _split_paragraphs(raw):
-            blocks.append(Block(para, page_no=i))
-
-    meta = {"pages": len(reader.pages), "page_blocks": len(blocks)}
+    pages: list[dict] = []
     try:
-        info = reader.metadata or {}
+        with pdfplumber.open(path) as pdf:
+            for i, pg in enumerate(pdf.pages, start=1):
+                lines: list[dict] = []
+                try:
+                    for ln in pg.extract_text_lines() or []:
+                        t = _clean(ln.get("text") or "")
+                        if not t:
+                            continue
+                        lines.append({"text": t, "top": float(ln.get("top") or 0),
+                                      "bottom": float(ln.get("bottom") or 0),
+                                      "x0": float(ln.get("x0") or 0),
+                                      "x1": float(ln.get("x1") or 0)})
+                except Exception as e:
+                    log.debug("PDF 第 %d 頁取行失敗: %s", i, e)
+                pages.append({"no": i, "h": float(pg.height or 0), "w": float(pg.width or 0),
+                              "lines": lines, "images": list(getattr(pg, "images", None) or [])})
+    except Exception as e:
+        # pdfplumber 掛掉（加密／損壞）→ 轉成人話
+        msg = str(e)
+        if "encrypt" in msg.lower() or "password" in msg.lower():
+            raise ParseError("encrypted", "PDF 有密碼保護，請先解除密碼再上傳") from e
+        raise ParseError("parse_failed", f"PDF 解析失敗（{type(e).__name__}: {e}）") from e
+
+    drop = _hf_lines(pages)
+    blocks, stats = _lines_to_blocks(pages, drop)
+    assets = _pdf_images(path, pages)
+    for a in assets:                       # 綁定錨點（圖片 → 最近的塊）
+        a.anchor_block = _nearest_block(a, blocks)
+
+    meta = {
+        "pages": len(pages),
+        "page_blocks": len(blocks),
+        "dropped_header_footer": stats["dropped_hf"],
+        "cross_page_joins": stats["cross_page_joins"],
+        "assets": len(assets),
+        "assets_filtered": len([a for a in assets if a.filtered_reason]),
+        "assets_with_caption": len([a for a in assets if a.caption]),
+    }
+    try:
+        from pypdf import PdfReader
+        info = PdfReader(path).metadata or {}
         if info.get("/Title"):
             meta["pdf_title"] = str(info["/Title"])
     except Exception:
         pass
-    return ParsedDoc(blocks, meta)
+    return ParsedDoc(blocks, meta, assets)
 
 
 # ---------- DOCX ----------
@@ -251,32 +837,68 @@ def _table_to_rows(table) -> list[list[str]]:
 
 def _parse_docx(path: str) -> ParsedDoc:
     import docx as _docx
+    from docx.oxml.ns import qn
 
     d = _docx.Document(path)
     body = d.element.body
     blocks: list[Block] = []
+    assets: list[ParsedAsset] = []
     headings: list[str] = []          # 目前的標題堆疊（依階層）
-    heading_levels: list[int] = []
     table_count = 0
+    rel_map = _docx_media_map(d)
+    children = list(body.iterchildren())
 
-    from docx.oxml.ns import qn
+    def _ptext(ch) -> str:
+        if ch is None or ch.tag != qn("w:p"):
+            return ""
+        try:
+            return _clean(_docx_paragraph(ch, d).text)
+        except Exception:
+            return ""
 
-    for child in body.iterchildren():
+    def _collect_images(node, own_text: str, next_texts: list[str]) -> None:
+        """收下 node 底下的圖片（含題注與錨點）。
+
+        DOCX 沒有頁碼，所以錨點取「目前最後一個 Block」—— 圖片通常緊接在
+        它的說明文字之後；題注優先取「同段落的文字」，其次才是後面幾段。
+        """
+        for blip in node.findall(".//" + qn("a:blip")):
+            rid = blip.get(qn("r:embed")) or blip.get(qn("r:link"))
+            item = rel_map.get(str(rid)) if rid else None
+            if not item:
+                continue
+            name, data = item
+            w, h = _img_pixels(data)
+            cap = own_text if _CAPTION_RE.match(own_text) else ""
+            if not cap:
+                for t2 in next_texts:
+                    if t2:
+                        if _CAPTION_RE.match(t2):
+                            cap = t2
+                        break
+            a = ParsedAsset(data=data, ext=_img_ext(name, data), caption=cap,
+                            name=name, width=w, height=h, index=len(assets),
+                            anchor_block=(len(blocks) - 1 if blocks else 0))
+            a.filtered_reason = _decor_reason(a, 0.0, 0.0)
+            assets.append(a)
+
+    for ci, child in enumerate(children):
         if child.tag == qn("w:p"):
             p = _docx_paragraph(child, d)
             txt = _clean(p.text)
+            _collect_images(child, txt,
+                            [_ptext(children[j]) for j in range(ci + 1, min(ci + 4, len(children)))])
             if not txt:
                 continue
             lvl = _heading_level(getattr(p.style, "name", "") or "")
             if lvl:
                 headings = headings[:max(0, lvl - 1)] if lvl > 0 else []
-                heading_levels = heading_levels[:max(0, lvl - 1)] if lvl > 0 else []
                 headings.append(txt)
-                heading_levels.append(lvl)
                 blocks.append(Block(txt, heading_path=" › ".join(headings), kind="heading"))
             else:
                 blocks.append(Block(txt, heading_path=" › ".join(headings)))
         elif child.tag == qn("w:tbl"):
+            _collect_images(child, "", [])      # 表格裡也可能放圖
             tbl = _docx_table(child, d)
             rows = _table_to_rows(tbl)
             if not rows:
@@ -286,8 +908,8 @@ def _parse_docx(path: str) -> ParsedDoc:
             # 每列轉成「欄名：值；欄名：值」——讓 embedding 抓到語義
             for ri, r in enumerate(rows[1:], start=2):
                 pairs = []
-                for ci, val in enumerate(r):
-                    col = header[ci] if ci < len(header) and header[ci] else f"欄{ci + 1}"
+                for ci2, val in enumerate(r):
+                    col = header[ci2] if ci2 < len(header) and header[ci2] else f"欄{ci2 + 1}"
                     if val:
                         pairs.append(f"{col}：{val}")
                 if pairs:
@@ -295,9 +917,11 @@ def _parse_docx(path: str) -> ParsedDoc:
                                         heading_path=" › ".join(headings),
                                         row_from=ri, row_to=ri, kind="table_row"))
 
+    _mark_repeats(assets, min_count=5)         # DOCX 沒有頁碼，用「出現次數」
     return ParsedDoc(blocks, {"paragraphs": len([b for b in blocks if b.kind == "text"]),
                               "tables": table_count,
-                              "headings": len([b for b in blocks if b.kind == "heading"])})
+                              "headings": len([b for b in blocks if b.kind == "heading"])},
+                     assets)
 
 
 # ---------- XLSX ----------

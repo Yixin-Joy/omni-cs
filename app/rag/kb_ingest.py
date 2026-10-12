@@ -20,6 +20,7 @@ import re
 import threading
 import uuid
 
+from app.core import config
 from app.rag import kb_chunk
 from app.rag import kb_db
 from app.rag import kb_embed
@@ -172,6 +173,203 @@ def preview_chunks(doc_id: int, params: dict | None = None, limit: int = 30) -> 
     }
 
 
+# ======================================================================
+# 圖片資產：落地 + 去重 + 綁定分塊
+# ======================================================================
+
+def _media_rel(path: str) -> str:
+    """絕對路徑 → 相對 `media/` 的路徑（給 `/files/<rel>` 取用）。"""
+    try:
+        rel = os.path.relpath(path, config.MEDIA_DIR)
+    except Exception:
+        rel = path
+    return rel.replace(os.sep, "/")
+
+
+def _assets_dir(doc: dict) -> str:
+    """圖片落地目錄：跟來源檔同一個 uuid 資料夾底下的 `assets/`。
+
+    這樣「刪文件」時把整個資料夾砍掉就一併清了圖（見 delete_document）。
+    """
+    src = doc.get("source_path") or ""
+    base = (os.path.dirname(src) if src
+            else os.path.join(rag_config.RAG_KB_DIR, f"doc_{doc.get('id')}"))
+    return os.path.join(base, "assets")
+
+
+def save_doc_assets(doc: dict, parsed) -> list[tuple]:
+    """把解析出來的圖落地存檔 + 寫 `kb_asset`（同 sha256 去重）。
+
+    回傳 `[(ParsedAsset, asset_row), …]`，**順序與 `parsed.assets` 一致** ——
+    綁定分塊時要靠這個對應關係（ParsedAsset 上的 anchor_block 不會存進 DB）。
+
+    ⚠️ 沒有任何 AI 呼叫：題注有就填進去，沒有就留空等人填／等按鈕生成。
+    """
+    out: list[tuple] = []
+    assets = list(getattr(parsed, "assets", None) or [])
+    if not assets:
+        return out
+    cid = doc.get("collection_id")
+    did = doc.get("id")
+    folder = _assets_dir(doc)
+    made_dir = False
+
+    for pa in assets:
+        sha = pa.sha256
+        row = kb_db.find_asset_by_sha(sha, doc_id=did)
+        if row:                       # 同一張圖（例如每頁都有的 LOGO）只存一份
+            out.append((pa, row))
+            continue
+        if not made_dir:
+            os.makedirs(folder, exist_ok=True)
+            made_dir = True
+        name = f"{sha[:16]}.{pa.ext}"          # 用 sha 命名：天然去重、無中文檔名問題
+        abs_path = os.path.join(folder, name)
+        try:
+            if not os.path.exists(abs_path):
+                with open(abs_path, "wb") as f:
+                    f.write(pa.data)
+        except Exception as e:
+            log.warning("圖片落地失敗（跳過）%s: %s", name, e)
+            continue
+        row = kb_db.create_asset(
+            rel_path=_media_rel(abs_path), collection_id=cid, doc_id=did,
+            page_no=pa.page_no, filename=pa.name or name, mime=pa.mime,
+            size_bytes=len(pa.data), width=pa.width, height=pa.height, sha256=sha,
+            caption=pa.caption, caption_source=("doc" if pa.caption else ""),
+            bbox=pa.bbox, enabled=not pa.filtered_reason,
+            filtered_reason=pa.filtered_reason)
+        out.append((pa, row))
+    if out:
+        log.info("文件 #%s 圖片：抽出 %d、落地 %d、有題注 %d",
+                 did, len(assets), len(out),
+                 len([p for p, _ in out if p.caption]))
+    return out
+
+
+def bind_doc_assets(created: list[tuple], chunks: list, chunk_ids: list[int]) -> int:
+    """把圖片綁到知識塊 —— **這是「命中後圖片結合輸出」的關鍵**。
+
+    優先按解析階段記下的 `anchor_block`（圖片最靠近哪個 Block）落在哪一塊的區間；
+    沒有錨點（例如整份文件只有圖）才退化成「同頁碼的塊」。
+    """
+    pairs: list[tuple[int, int]] = []
+    for pa, row in created or []:
+        hits: list[int] = []
+        if pa.anchor_block is not None:
+            for i, c in enumerate(chunks):
+                if c.block_from is None or c.block_to is None:
+                    continue
+                if c.block_from <= pa.anchor_block <= c.block_to:
+                    hits.append(chunk_ids[i])
+        if not hits and pa.page_no is not None:
+            hits = [chunk_ids[i] for i, c in enumerate(chunks) if c.page_no == pa.page_no]
+        for cid in hits:
+            pairs.append((int(row["id"]), int(cid)))
+    if not pairs:
+        return 0
+    kb_db.executemany("INSERT INTO kb_asset_chunk(asset_id, chunk_id) VALUES (%s, %s) "
+                      "ON CONFLICT DO NOTHING", pairs)
+    return len(pairs)
+
+
+# 可上傳的圖片格式（單獨上傳走這條）
+IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
+
+
+def save_uploaded_asset(filename: str, content: bytes, mime: str = "",
+                        collection_id: int | None = None) -> dict:
+    """使用者**單獨上傳**的一張圖（不屬於任何文件，只掛在知識庫底下）。
+
+    與文件抽出來的圖共用同一張表；差別是 `doc_id IS NULL`，
+    所以不會（也不需要）綁到知識塊 —— 它靠自己的描述被檢索到。
+    """
+    if not content:
+        raise IngestError("圖片是空的")
+    ext = kb_parse._img_ext(filename or "", content)
+    if ext.lstrip(".").lower() not in IMAGE_EXTS:
+        raise ParseError("unsupported_format",
+                         f"不支援的圖片格式：{os.path.splitext(filename or '')[1] or filename}")
+    w, h = kb_parse._img_pixels(content)
+    if not w or not h:
+        raise IngestError("讀不出圖片尺寸，可能不是有效的圖片檔")
+
+    sha = hashlib.sha256(content).hexdigest()
+    dup = kb_db.find_asset_by_sha(sha, collection_id=collection_id)
+    if dup and not dup.get("doc_id"):
+        return dup                                  # 同一張圖上傳兩次 → 直接沿用
+
+    folder = os.path.join(rag_config.RAG_KB_DIR, "uploads")
+    os.makedirs(folder, exist_ok=True)
+    name = f"{sha[:16]}.{ext}"
+    abs_path = os.path.join(folder, name)
+    if not os.path.exists(abs_path):
+        with open(abs_path, "wb") as f:
+            f.write(content)
+
+    a = kb_parse.ParsedAsset(data=content, ext=ext, name=filename or name,
+                             width=w, height=h)
+    a.filtered_reason = kb_parse._decor_reason(a, 0.0, 0.0)
+    row = kb_db.create_asset(
+        rel_path=_media_rel(abs_path), collection_id=collection_id, doc_id=None,
+        filename=filename or name, mime=mime or a.mime, size_bytes=len(content),
+        width=w, height=h, sha256=sha, enabled=not a.filtered_reason,
+        filtered_reason=a.filtered_reason)
+    log.info("單獨上傳圖片：%s（%dx%d，asset#%s）", filename, w, h, row["id"])
+    return row
+
+
+def rebind_doc_assets(doc_id: int) -> int:
+    """重算某份文件的「圖 ↔ 知識塊」綁定（重跑分塊後、或綁定看起來不對時用）。
+
+    先試著用解析快取裡的 `anchor_block`（最準）；拿不到或塊數對不上，
+    就退化成「同頁碼的塊」——PDF 一定有頁碼，DOCX 沒有頁碼則只能靠錨點。
+    """
+    doc = kb_db.get_document(doc_id)
+    if not doc:
+        raise IngestError(f"文件不存在：#{doc_id}")
+    chunk_rows = kb_db.list_chunks(doc_id)
+    kb_db.clear_doc_bindings(doc_id)
+    if not chunk_rows:
+        return 0
+
+    try:
+        parsed = parse_cached(doc)
+        use = doc.get("parse_params") or kb_db.load_params(doc.get("collection_id"))
+        chunks = kb_chunk.chunk_blocks(parsed.blocks, doc_type=doc.get("doc_type") or "",
+                                       title=doc.get("title") or "", params=use)
+        if len(chunks) == len(chunk_rows):
+            created = [(pa, {"id": r["id"]}) for pa, r in
+                       zip(parsed.assets, _assets_in_order(doc_id))]
+            if len(created) == len(parsed.assets):
+                return bind_doc_assets(created, chunks, [r["id"] for r in chunk_rows])
+    except Exception as e:
+        log.debug("重綁時解析快取不可用（改用頁碼）：%s", e)
+
+    # 退路：按頁碼
+    pairs = []
+    for a in kb_db.list_assets(doc_id=doc_id):
+        if a.get("page_no") is None:
+            continue
+        for c in chunk_rows:
+            if c.get("page_no") == a["page_no"]:
+                pairs.append((int(a["id"]), int(c["id"])))
+    if pairs:
+        kb_db.executemany("INSERT INTO kb_asset_chunk(asset_id, chunk_id) VALUES (%s, %s) "
+                          "ON CONFLICT DO NOTHING", pairs)
+    return len(pairs)
+
+
+def _assets_in_order(doc_id: int) -> list[dict]:
+    """文件抽出圖的**解析順序**（anchor_block 的索引就是對到這個順序）。
+
+    ⚠️ `list_assets` 排的是 (page_no, id)，而 `parsed.assets` 是解析順序 ——
+    兩者不一定一致，所以要用 id 排序還原「建立順序」。
+    """
+    rows = kb_db.list_assets(doc_id=doc_id)
+    return sorted(rows, key=lambda r: int(r["id"]))
+
+
 def parse_and_chunk(doc_id: int, params: dict | None = None) -> dict:
     """解析檔案並切塊（整批取代舊塊）。回傳更新後的文件。
 
@@ -199,13 +397,21 @@ def parse_and_chunk(doc_id: int, params: dict | None = None) -> dict:
 
         kb_db.replace_chunks(doc_id, chunks)
         total_chars = sum(c.char_count for c in chunks)
+
+        # ★ 圖片：落地 → 去重 → 綁到剛產生的知識塊
+        created = save_doc_assets(doc, parsed)
+        kb_db.clear_doc_bindings(doc_id)      # 舊塊已整批換掉，舊綁定要清
+        rows = kb_db.list_chunks(doc_id)      # 依 ordinal，與 chunks 同序
+        n_bind = bind_doc_assets(created, chunks, [r["id"] for r in rows])
+
         kb_db.update_document(doc_id, {
             "status": kb_db.STATUS_DRAFT, "progress": 0, "error": None,
             "chunk_count": len(chunks), "char_count": total_chars,
             "parse_params": use,
         })
         kb_db.finish_job(job, True)
-        log.info("文件 #%s 分塊完成：%d 塊 / %d 字", doc_id, len(chunks), total_chars)
+        log.info("文件 #%s 分塊完成：%d 塊 / %d 字 / 圖片 %d 張（綁定 %d）",
+                 doc_id, len(chunks), total_chars, len(created), n_bind)
     except Exception as e:
         reason = e.reason if isinstance(e, ParseError) else "parse_failed"
         msg = kb_parse.describe_error(reason) if isinstance(e, ParseError) else str(e)

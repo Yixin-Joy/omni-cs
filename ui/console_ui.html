@@ -745,8 +745,9 @@ const arState = {
   openLogId: null,      // 展開中的紀錄（召回明細是點開才去撈的）
   logDetail: null,
   scopeFilter: { channel: '', scope: '' },
-  // ---- 知識庫（第三層）：四個可跳轉的頁面 ----
+  // ---- 知識庫（第三層）：五個可跳轉的頁面 ----
   // kbView: 'list' 知識庫清單 → 'docs' 某庫的文件 → 'doc' 某文件的分塊 → 'new' 新增文檔
+  //         'assets' 圖片庫（文件抽出的圖 + 單獨上傳的圖）
   // 一頁只做一件事，靠麵包屑往回走，不把全部塞在同一頁。
   kb: null,             // GET /console/kb/overview
   kbView: 'list',
@@ -760,6 +761,13 @@ const arState = {
   kbParamCid: 0,        // 參數彈窗是針對哪個知識庫
   kbUploadNote: '',     // 上傳結果的說明（跟著跳到文件頁一起帶過去）
   kbBusy: '',
+  // ---- 圖片庫（知識庫的圖）----
+  kbAssets: null,       // GET /console/kb/assets 的回應
+  kbAssetCid: 0,        // 目前看哪個知識庫的圖（0 = 全部）
+  kbAssetAll: false,    // 是否連「被過濾掉的裝飾圖」一起顯示
+  kbAssetBusy: '',      // 正在跑 AI 描述的那張圖 id
+  kbAssetNote: '',      // 操作結果訊息
+  kbDocAssets: null,    // 某份文件的圖（文件分塊頁上方那一條縮圖）
   // ---- 命中測試 ----
   ktResult: null,
   ktLayers: { faq: true, table: true, rag: true },
@@ -2536,6 +2544,7 @@ function renderSettingsTab() {
       if (!arState.kb) loadKbOverview();
       else if (arState.kbView === 'doc' && arState.kbDocId) kbOpenDoc(arState.kbDocId);
       else if (arState.kbView === 'docs') kbLoadDocs();
+      else if (arState.kbView === 'assets') kbLoadAssets();
     };
   } else if (arState.tab === 'hittest') {
     ktSyncLayers();          // 先照「自動回復」頁的實際開關對齊（只做一次）
@@ -3160,6 +3169,7 @@ function kbTabHtml() {
   if (v === 'docs') return kbDocsPageHtml();
   if (v === 'doc') return kbDocPageHtml();
   if (v === 'new') return kbNewPageHtml();
+  if (v === 'assets') return kbAssetsPageHtml();
   return kbListPageHtml();
 }
 
@@ -3218,6 +3228,7 @@ function kbListPageHtml() {
       '<div class="kb-pg-head"><h3>知識庫</h3>' +
         '<div class="spacer" style="flex:1"></div>' +
         '<button class="btn primary" onclick="kbCreateCollection()">＋ 新增知識庫</button>' +
+        '<button class="btn sm" onclick="kbOpenAssets(0)">圖片庫</button>' +
         '<button class="btn sm" onclick="openKbParams(0)">參數配置（檢索全域 · 分塊預設）</button>' +
         '<button class="btn sm" onclick="kbReload()">重新讀取</button>' +
       '</div>' +
@@ -3240,6 +3251,245 @@ function kbColCardHtml(c) {
     '<span class="pill ' + (c.enabled ? 'on' : 'off') + '">' + (c.enabled ? '啟用' : '停用') + '</span>' +
     '<span class="kc-go">›</span>' +
   '</div>';
+}
+
+/* --- 圖片庫（第 5 頁）：文件抽出的圖 + 單獨上傳的圖 --- */
+
+function kbOpenAssets(cid) {
+  arState.kbView = 'assets';
+  arState.kbAssetCid = Number(cid) || 0;
+  arState.kbAssetNote = '';
+  kbForgetDoc();
+  kbRender();
+  kbLoadAssets();
+}
+
+async function kbLoadAssets() {
+  const cid = arState.kbAssetCid || 0;
+  let d;
+  try {
+    d = await api('/console/kb/assets' +
+      (cid ? '?collection_id=' + cid + '&' : '?') +
+      'include_filtered=' + (arState.kbAssetAll ? '1' : '0'));
+  } catch (e) {
+    d = { assets: [], stats: {}, error: e.message };
+  }
+  arState.kbAssets = d;
+  kbRender();
+}
+
+function kbAssetScopeName() {
+  const cid = arState.kbAssetCid || 0;
+  if (!cid) return '全部知識庫';
+  const c = ((arState.kb && arState.kb.collections) || []).find(x => x.id === cid);
+  return c ? c.name : ('#' + cid);
+}
+
+function kbAssetThumb(a, big) {
+  const w = big ? 160 : 84;
+  const h = big ? 120 : 62;
+  return '<img src="' + esc(a.url) + '" alt="" loading="lazy"' +
+    ' style="width:' + w + 'px;height:' + h + 'px;object-fit:contain;' +
+    'border:1px solid var(--border);border-radius:7px;background:#fafbfc;cursor:zoom-in"' +
+    ' title="' + esc(a.caption || a.filename || '') + '"' +
+    ' onclick="window.open(\'' + esc(a.url) + '\',\'_blank\')">';
+}
+
+function kbAssetCardHtml(a) {
+  const busy = arState.kbAssetBusy === a.id;
+  const src = a.from_doc
+    ? ('來自文件' + (a.doc_title || a.doc_filename ? '：' + esc(a.doc_title || a.doc_filename) : '') +
+       (a.page_no ? ' · 第 ' + a.page_no + ' 頁' : '') +
+       ' · 綁定 ' + (a.chunk_count || 0) + ' 塊')
+    : '單獨上傳';
+  const srcPill = a.caption_source === 'doc' ? '<span class="pill on">題注</span>'
+    : a.caption_source === 'manual' ? '<span class="pill on">人工</span>'
+    : a.caption_source === 'ai' ? '<span class="pill on">AI</span>'
+    : '<span class="pill miss">待填描述</span>';
+  const noChunk = (a.from_doc && !(a.chunk_count || 0))
+    ? '<span class="pill miss">未綁定分塊</span>' : '';
+  const filt = (a.filtered_reason && a.enabled)
+    ? '<span class="pill miss">可能誤判</span>' : '';
+
+  return '<div class="kb-col' + (a.enabled ? '' : ' off') + '" style="align-items:flex-start;gap:12px">' +
+    kbAssetThumb(a, true) +
+    '<span style="flex:1;min-width:220px">' +
+      '<span class="kc-sub" style="display:block;margin-bottom:5px">' + src + ' ' +
+        srcPill + noChunk + filt +
+        (a.filtered_reason ? ' <span class="pill off" title="' + esc(a.filtered_reason) + '">' +
+          esc(a.filtered_reason) + '</span>' : '') +
+      '</span>' +
+      '<textarea id="kba_' + a.id + '" rows="3" spellcheck="false"' +
+        ' placeholder="這個圖在講什麼？（描述會一起被檢索到）"' +
+        ' style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);' +
+        'border-radius:8px;font-size:12.5px;line-height:1.5;resize:vertical">' +
+        esc(a.caption || '') + '</textarea>' +
+      '<div class="row" style="margin-top:6px">' +
+        '<button class="btn sm primary" onclick="kbSaveCaption(' + a.id + ')">儲存描述</button>' +
+        '<button class="btn sm" onclick="kbAiCaption(' + a.id + ')"' + (busy ? ' disabled' : '') + '>' +
+          (busy ? 'AI 生成中…' : 'AI 描述') + '</button>' +
+        '<button class="btn sm" onclick="kbToggleAsset(' + a.id + ',' + (!a.enabled) + ')">' +
+          (a.enabled ? '停用' : '啟用') + '</button>' +
+        '<button class="btn sm danger" onclick="kbDeleteAsset(' + a.id + ')">刪除</button>' +
+        '<span class="hint" style="margin:0">' +
+          (a.width && a.height ? a.width + '×' + a.height + 'px · ' : '') +
+          '#' + a.id + '</span>' +
+      '</div>' +
+    '</span>' +
+  '</div>';
+}
+
+function kbAssetsPageHtml() {
+  const d = arState.kbAssets;
+  const cid = arState.kbAssetCid || 0;
+  const crumbs = [{ label: '知識庫', onclick: 'kbGoList()' }];
+  if (cid) {
+    crumbs.push({ label: kbAssetScopeName(), onclick: 'kbOpenCollection(' + cid + ')' });
+  }
+  crumbs.push({ label: '圖片庫' });
+
+  const head = '<div class="kb-pg-head"><h3>圖片庫 · ' + esc(kbAssetScopeName()) + '</h3>' +
+    '<div class="spacer" style="flex:1"></div>' +
+    '<label class="btn primary sm">＋ 上傳圖片' +
+      '<input type="file" id="kbAssetInput" accept="image/*" multiple style="display:none"' +
+      ' onchange="kbUploadAssets(this)"></label>' +
+    '<button class="btn sm" onclick="kbAiCaptionPending()">AI 描述（未填的）</button>' +
+    '<button class="btn sm" onclick="kbToggleAssetFilter()">' +
+      (arState.kbAssetAll ? '只顯示內容圖' : '顯示被過濾的') + '</button>' +
+    '<button class="btn sm" onclick="kbLoadAssets()">重新讀取</button>' +
+  '</div>';
+
+  if (!d) {
+    return kbCrumbs(crumbs) + '<div class="card">' + head +
+      '<div class="empty-note">載入中…</div></div>';
+  }
+  if (d.error) {
+    return kbCrumbs(crumbs) + '<div class="card">' + head +
+      '<div class="empty-note">讀取失敗：' + esc(d.error) + '</div></div>';
+  }
+
+  const st = d.stats || {};
+  const list = d.assets || [];
+  const stats = '<div class="kb-stat">' +
+    '<div class="ks">圖片<b>' + (st.total || 0) + '</b></div>' +
+    '<div class="ks">已啟用<b>' + (st.enabled || 0) + '</b></div>' +
+    '<div class="ks">有描述<b>' + (st.with_caption || 0) + '</b></div>' +
+    '<div class="ks">題注帶入<b>' + (st.from_doc || 0) + '</b></div>' +
+    '<div class="ks">人工／AI<b>' + ((st.manual || 0) + (st.ai || 0)) + '</b></div>' +
+    '<div class="ks">判為裝飾<b>' + (st.filtered || 0) + '</b></div>' +
+  '</div>';
+
+  return kbCrumbs(crumbs) +
+    '<div class="card">' + head +
+      '<div class="hint">' +
+        '來自文件的圖<b>一定會綁到知識塊</b>：那個塊被檢索命中時，圖就會跟著一起輸出' +
+        '（工作台顯示、自動回復私訊時連圖發送）。單獨上傳的圖只靠自己的<b>描述</b>被檢索到。' +
+        '<br>描述<b>預設由人工填</b>；文件裡本來就有題注（「圖 1-2 …」）的會自動帶入。' +
+        '要讓模型看圖寫描述，按該張的「AI 描述」——<b>不會覆蓋你手寫的</b>。' +
+      '</div>' +
+      stats +
+      (arState.kbAssetNote || '') +
+      '<div id="kbAssetNote"></div>' +
+    '</div>' +
+    '<div class="card">' +
+      (list.length ? list.map(kbAssetCardHtml).join('')
+        : '<div class="empty-note">' +
+          (arState.kbAssetAll ? '這裡還沒有任何圖片。'
+            : '沒有「像內容圖」的圖片。被啟發式判為裝飾的圖（太小、長寬比極端、重複的 LOGO）' +
+              '預設不列出來，可按「顯示被過濾的」複查。') +
+          '</div>') +
+    '</div>';
+}
+
+function kbToggleAssetFilter() {
+  arState.kbAssetAll = !arState.kbAssetAll;
+  kbLoadAssets();
+}
+
+async function kbUploadAssets(input) {
+  const files = input.files || [];
+  if (!files.length) return;
+  const fd = new FormData();
+  const cid = arState.kbAssetCid || 0;
+  if (cid) fd.append('collection_id', String(cid));
+  for (let i = 0; i < files.length; i++) fd.append('files', files[i]);
+  input.value = '';
+  arState.kbAssetNote = '<div class="test-result">上傳中…</div>';
+  kbRender();
+  try {
+    const r = await fetch('/console/kb/asset/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.error) { arState.kbAssetNote = '<div class="test-result">❌ ' + esc(d.error) + '</div>'; }
+    else {
+      const okN = (d.results || []).filter(x => x.ok).length;
+      const bad = (d.results || []).filter(x => !x.ok);
+      arState.kbAssetNote = '<div class="test-result">✅ 成功上傳 ' + okN + ' 張' +
+        (bad.length ? '，失敗 ' + bad.length + '：' + esc(bad[0].error || '') : '') + '</div>';
+    }
+  } catch (e) {
+    arState.kbAssetNote = '<div class="test-result">❌ 上傳失敗：' + esc(e.message) + '</div>';
+  }
+  await kbLoadAssets();
+}
+
+async function kbSaveCaption(id) {
+  const el = document.getElementById('kba_' + id);
+  if (!el) return;
+  const res = await apiJson('/console/kb/asset/caption', { id: id, caption: el.value });
+  if (res.data.error) {
+    arState.kbAssetNote = '<div class="test-result">❌ ' + esc(res.data.error) + '</div>';
+    kbRender();
+    return;
+  }
+  arState.kbAssetNote = '<div class="test-result">✅ 描述已儲存（人工）</div>';
+  await kbLoadAssets();
+}
+
+async function kbAiCaption(id) {
+  arState.kbAssetBusy = id;
+  kbRender();
+  try {
+    const res = await apiJson('/console/kb/asset/caption/ai', { id: id });
+    const r0 = (res.data.results || [])[0] || {};
+    arState.kbAssetNote = r0.ok
+      ? '<div class="test-result">✅ AI 描述完成</div>'
+      : '<div class="test-result">❌ ' + esc(r0.error || res.data.error || '失敗') + '</div>';
+  } catch (e) {
+    arState.kbAssetNote = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+  }
+  arState.kbAssetBusy = '';
+  await kbLoadAssets();
+}
+
+async function kbAiCaptionPending() {
+  const d = arState.kbAssets || {};
+  const todo = (d.assets || []).filter(a => a.enabled && !(a.caption || '').trim());
+  if (!todo.length) {
+    arState.kbAssetNote = '<div class="test-result">沒有待填描述的圖。</div>';
+    kbRender();
+    return;
+  }
+  if (!confirm('對 ' + todo.length + ' 張圖跑 AI 描述？\n每張都要呼叫一次模型（含推理，約數秒），這會花錢。')) return;
+  arState.kbAssetNote = '<div class="test-result">AI 描述中…（共 ' + todo.length + ' 張，請稍候）</div>';
+  kbRender();
+  const res = await apiJson('/console/kb/asset/caption/ai', { ids: todo.map(a => a.id) });
+  const okN = (res.data.results || []).filter(x => x.ok).length;
+  arState.kbAssetNote = '<div class="test-result">✅ 完成 ' + okN + ' / ' + todo.length + ' 張</div>';
+  await kbLoadAssets();
+}
+
+async function kbToggleAsset(id, enabled) {
+  const res = await apiJson('/console/kb/asset/update', { id: id, enabled: enabled });
+  if (res.data.error) { alert(res.data.error); return; }
+  await kbLoadAssets();
+}
+
+async function kbDeleteAsset(id) {
+  if (!confirm('刪除這張圖片？\n（來自文件的圖在重新分塊時會被重新抽出來）')) return;
+  const res = await apiJson('/console/kb/asset/delete', { id: id });
+  if (res.data.error) { alert(res.data.error); return; }
+  arState.kbAssetNote = '<div class="test-result">已刪除 #' + id + '</div>';
+  await kbLoadAssets();
 }
 
 /* --- 第 2 頁：某個知識庫裡的文件 --- */
@@ -3280,6 +3530,8 @@ function kbDocsPageHtml() {
           : '<span class="pill ' + (c.enabled ? 'on' : 'off') + '">' + (c.enabled ? '啟用' : '停用') + '</span>') +
         '<div class="spacer" style="flex:1"></div>' +
         '<button class="btn primary" onclick="kbNewDoc()">＋ 新增文檔</button>' +
+        (arState.kbUngrouped ? '' :
+          '<button class="btn sm" onclick="kbOpenAssets(' + arState.kbCollection + ')">圖片</button>') +
         '<button class="btn sm" onclick="kbReload()">重新讀取</button>' +
       '</div>' +
       (arState.kbUngrouped
@@ -3465,6 +3717,26 @@ function kbChunkListHtml(chunks) {
       '</div>').join('') + '</div>';
 }
 
+function kbDocAssetsHtml() {
+  const list = arState.kbDocAssets;
+  if (!list || !list.length) return '';
+  return '<div class="card"><h3>這份文件的圖片（' + list.length + '）</h3>' +
+    '<div class="hint">這些圖已經綁到對應的知識塊 —— 那個塊被命中時，圖會跟著一起輸出。' +
+    '描述可以在「圖片庫」改。</div>' +
+    '<div class="row" style="flex-wrap:wrap;gap:10px;align-items:flex-start">' +
+      list.map(function (a) {
+        return '<div style="width:104px">' + kbAssetThumb(a, false) +
+          '<div class="hint" style="margin:2px 0 0;font-size:11.5px;line-height:1.35">' +
+            (a.caption ? esc(a.caption.slice(0, 34)) : '<span style="color:#b45309">未填描述</span>') +
+            (a.enabled ? '' : ' <span class="pill off">裝飾</span>') +
+          '</div></div>';
+      }).join('') +
+    '</div>' +
+    '<div class="row"><button class="btn sm" onclick="kbOpenAssets(' +
+      (arState.kbCollection || 0) + ')">到圖片庫編輯</button></div>' +
+  '</div>';
+}
+
 function kbDocPageHtml() {
   const dd = arState.kbDoc;
   const title = (dd && dd.doc) ? (dd.doc.title || dd.doc.filename) : '讀取中…';
@@ -3554,7 +3826,9 @@ function kbDocPageHtml() {
         '<button class="btn danger" onclick="kbDeleteDoc(' + d.id + ')">刪除這份文件</button>' +
       '</div>' +
       '<div id="kbDocNote"></div>' +
-    '</div>';
+    '</div>' +
+
+    kbDocAssetsHtml();
 }
 
 /* ----- 知識庫：導覽（每一頁都是跳轉，不把全部塞在同一頁） ----- */
@@ -3642,6 +3916,15 @@ async function kbOpenDoc(docId) {
   } catch (e) {
     arState.kbDoc = { doc: { id: docId, filename: '（讀取失敗）', error: e.message }, stats: {} };
   }
+  // 這份文件的圖（先清空避免殘影，抓到再重畫）
+  arState.kbDocAssets = null;
+  kbRender();
+  try {
+    const ad = await api('/console/kb/assets?doc_id=' + docId + '&include_filtered=1');
+    arState.kbDocAssets = ad.assets || [];
+  } catch (e) {
+    arState.kbDocAssets = [];
+  }
   kbRender();
   kbMaybePoll();
 }
@@ -3661,7 +3944,7 @@ async function loadKbOverview(keepDocs) {
   } catch (e) {
     arState.kb = { collections: [], totals: {}, model: {}, error: e.message };
   }
-  if (!keepDocs && arState.kbView !== 'list') await kbLoadDocs();
+  if (!keepDocs && arState.kbView !== 'list' && arState.kbView !== 'assets') await kbLoadDocs();
   kbRender();
   refreshDeepseekPill();
 }
@@ -3684,6 +3967,7 @@ async function kbReload() {
   await loadKbOverview(true);
   if (arState.kbView === 'doc' && arState.kbDocId) await kbOpenDoc(arState.kbDocId);
   else if (arState.kbView === 'docs') await kbLoadDocs();
+  else if (arState.kbView === 'assets') await kbLoadAssets();
   else kbRender();
 }
 
@@ -3699,6 +3983,7 @@ function kbMaybePoll() {
     if (arState.tab !== 'kb') return;
     if (arState.kbView === 'doc' && arState.kbDocId) kbOpenDoc(arState.kbDocId);
     else if (arState.kbView === 'docs') kbLoadDocs();
+      else if (arState.kbView === 'assets') kbLoadAssets();
   }, 2500);
 }
 
@@ -4513,6 +4798,24 @@ function kbHitHtml(r, isPicked, showQueries) {
                  ? ('列 ' + r.row_from + '-' + r.row_to) : '']
     .filter(Boolean).map(esc).join(' › ');
   const n = v => (v == null ? '—' : Number(v).toFixed(3));
+  // 這一塊帶出來的圖（「圖文結合輸出」的證據：命中時客戶會一起收到這些圖）
+  const atts = Array.isArray(r.assets) ? r.assets.filter(a => a && a.id) : [];
+  const attHtml = atts.length
+    ? '<div class="hint" style="margin:6px 0 0">命中附圖 ' + atts.length + ' 張：</div>' +
+      '<div class="row" style="flex-wrap:wrap;gap:8px;margin-top:4px">' +
+        atts.map(function (a) {
+          return '<div style="width:96px">' +
+            '<img src="' + esc(a.url) + '" alt="" loading="lazy"' +
+              ' style="width:96px;height:68px;object-fit:contain;border:1px solid var(--border);' +
+              'border-radius:7px;background:#fafbfc;cursor:zoom-in"' +
+              ' title="' + esc(a.caption || '') + '"' +
+              ' onclick="window.open(\'' + esc(a.url) + '\',\'_blank\')">' +
+            '<div class="hint" style="margin:2px 0 0;font-size:11.5px;line-height:1.35">' +
+              (a.caption ? esc(String(a.caption).slice(0, 30))
+                         : '<span style="color:#b45309">未填描述</span>') + '</div></div>';
+        }).join('') +
+      '</div>'
+    : '';
   return '<div class="kb-hit' + (isPicked ? ' picked' : '') + '">' +
     '<div class="kh-head">' + (isPicked ? '<span class="pill on">入選</span>'
                                         : '<span class="pill off">未入選</span>') +
@@ -4521,11 +4824,13 @@ function kbHitHtml(r, isPicked, showQueries) {
     '</div>' +
     '<div class="kb-score">總分 <b>' + n(r.final) + '</b>' +
       ' · 向量 ' + n(r.vec) + ' · 字面 ' + n(r.lex) +
-      (r.rerank != null ? ' · rerank ' + n(r.rerank) : '') + '</div>' +
+      (r.rerank != null ? ' · rerank ' + n(r.rerank) : '') +
+      (atts.length ? ' · <b>附圖 ' + atts.length + '</b>' : '') + '</div>' +
     (showQueries && Array.isArray(r.queries) && r.queries.length
       ? '<div class="kb-score">命中查詢：' +
         r.queries.map(esc).join(' ｜ ') + '</div>' : '') +
     (r.text ? '<div style="margin-top:3px">' + esc(r.text) + '</div>' : '') +
+    attHtml +
   '</div>';
 }
 

@@ -185,6 +185,9 @@ class Hit:
     # 這塊是被「哪幾條查詢」撈到的（多查詢檢索才有意義；單查詢時就一條）。
     # 排錯時最有用：可以一眼看出某塊是靠改寫句救回來的，還是原問句本來就撈得到。
     queries: list = field(default_factory=list)
+    # ★ 綁在這塊上的圖片（kb_asset_chunk）。命中後要「圖文結合輸出」就靠它 ——
+    #   只有啟用的圖會進來（被啟發式判為裝飾的圖預設不帶出）。
+    assets: list = field(default_factory=list)
 
     @property
     def source(self) -> str:
@@ -213,6 +216,11 @@ class Hit:
             "rerank": (round(self.rerank, 4) if self.rerank is not None else None),
             "picked": self.picked,
             "queries": list(self.queries or []),
+            # 只留精簡資訊（完整圖檔走 /console/kb/asset/file/{id}）
+            "assets": [{"id": a.get("id"), "caption": a.get("caption") or "",
+                        "url": f"/console/kb/asset/file/{a.get('id')}",
+                        "width": a.get("width"), "height": a.get("height")}
+                       for a in (self.assets or [])],
             "text": (self.text or "")[:300],
         }
 
@@ -232,6 +240,8 @@ class SearchResult:
     elapsed_ms: int = 0
     # 這次實際拿去檢索的查詢句（多查詢檢索時 > 1 條，第 0 條固定是客戶原問句）
     queries: list = field(default_factory=list)
+    # ★ 這次命中帶出來的圖片（去重、依命中塊的順序）——「圖文結合輸出」的資料源
+    assets: list = field(default_factory=list)
 
     def context(self, max_chars: int = 0) -> str:
         """把入選的塊拼成給模型看的文字（每段前有編號與來源）。"""
@@ -257,6 +267,7 @@ class SearchResult:
             "hits": [self._hit_dict(h, with_text) for h in self.hits],
             "candidates": [self._hit_dict(h, with_text) for h in self.candidates[:candidates]],
             "per_collection": self.per_collection,
+            "assets": self.assets,
         }
         return out
 
@@ -424,6 +435,27 @@ def _finish(res: SearchResult, merged: list[Hit], query: str) -> SearchResult:
     for h in picked:
         h.picked = True
     res.hits = picked
+
+    # ★ 命中後帶出圖片（「圖文結合輸出」）。
+    #   只在**入選的那幾塊**上查，最多 6 塊 → 一次索引查詢，成本可忽略；
+    #   失敗也只是沒圖，不該讓整次檢索掛掉。
+    try:
+        amap = kb_db.assets_for_chunks([h.chunk_id for h in picked])
+        seen: set = set()
+        for h in picked:
+            got = amap.get(int(h.chunk_id)) or []
+            h.assets = got
+            for a in got:
+                if a.get("id") in seen:
+                    continue
+                seen.add(a.get("id"))
+                res.assets.append({**a, "url": f"/console/kb/asset/file/{a.get('id')}",
+                                   "chunk_id": h.chunk_id,
+                                   "chunk_heading": h.heading_path or "",
+                                   "page": h.page_no})
+    except Exception as e:
+        log.debug("帶出命中圖片失敗（不影響檢索）：%s", e)
+
     res.passed = bool(picked) and res.top1 >= res.threshold
 
     if not merged:
