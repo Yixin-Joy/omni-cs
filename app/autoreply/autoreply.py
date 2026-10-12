@@ -118,6 +118,31 @@ async def _send_assets(channel: str, scope: str, assets: list, *, to: str = "",
 
 # ---------- 標記 ----------
 
+def _strip_images(text: str) -> str:
+    """把回覆文字裡的 markdown 圖片標記拿掉（客戶端不認 markdown）。
+
+    圖不是丟掉 —— 它由 `_send_assets()` 以真正的圖片訊息送出。
+    """
+    try:
+        from app.rag import kb_chunk
+        return kb_chunk.strip_md_images(text or "")
+    except Exception:
+        import re as _re
+        return _re.sub(r"!\[[^\]\n]*\]\([^)\s]*\)", "", text or "").strip()
+
+
+def _assets_caption(assets: list) -> str:
+    """純圖片回覆時的文字說明（用題注／描述，沒有就用一句通用話）。"""
+    caps = []
+    for a in assets or []:
+        c = (a or {}).get("caption") or ""
+        if c.strip():
+            caps.append(c.strip())
+    if not caps:
+        return "請參考下圖。"
+    return f"請參考下圖（{'、'.join(caps[:3])}）。"
+
+
 def _mark(channel: str, scope: str, state: str, tier: str = "", detail: str = "",
           *, message_id: str = "", comment_id: str = "", conversation_key: str = "") -> None:
     """把自動回復狀態寫進原始訊息列（供工作台顯示標記）。"""
@@ -411,8 +436,14 @@ async def handle_inbound(
         return {"state": STATE_MISS, "reason": answer.reason, "detail": answer.detail}
 
     # 7) 命中 → 送出
+    # ⚠️ 客戶端（WhatsApp／微信）不會渲染 markdown，`![題注](/media/x.png)` 直接送出去
+    #    會變成一行看不懂的網址字串。所以文字要**剝掉圖片標記**，圖改由附圖通道真的發。
+    #    紀錄裡仍存完整 markdown（工作台會渲染出圖）。
+    send_text = _strip_images(answer.text)
+    if not send_text.strip() and getattr(answer, "assets", None):
+        send_text = _assets_caption(answer.assets)   # 純圖片回覆：文字用題注當說明
     try:
-        result = await _send(channel, scope, answer.text, to=to, comment_id=comment_id)
+        result = await _send(channel, scope, send_text, to=to, comment_id=comment_id)
     except Exception as e:
         log.warning("自動回復送出失敗 %s/%s: %s", channel, scope, e)
         result = {"ok": False, "status": None, "body": str(e)}
@@ -422,7 +453,7 @@ async def handle_inbound(
     if result.get("ok") and getattr(answer, "assets", None):
         try:
             st = await _send_assets(channel, scope, answer.assets, to=to,
-                                    caption=answer.text[:900])
+                                    caption=send_text[:900])
             if st["sent"] or st["failed"]:
                 asset_note = f"（附圖 {st['sent']}/{st['sent'] + st['failed']}）"
                 log.info("自動回復附圖：送出 %d、失敗 %d", st["sent"], st["failed"])

@@ -115,13 +115,19 @@ with TestClient(main.app) as c:
           f"GET /params 回 {len(keys)} 個參數")
     # retrieval 6 → 7：多了 query_rewrite（多查詢檢索開關）
     # prompt 2 → 3：多了 image_caption_prompt（圖片 AI 描述按鈕用）
-    check(len(d.get("retrieval", [])) == 7 and len(d.get("chunk", [])) == 6
+    # retrieval 7 → 8：多了 rag_answer_gate（模型可否決已過門檻的命中）
+    check(len(d.get("retrieval", [])) == 8 and len(d.get("chunk", [])) == 6
           and len(d.get("prompts", [])) == 3,
-          "參數分組正確（檢索 7 / 分塊 6 / 提示詞 3）",
+          "參數分組正確（檢索 8 / 分塊 6 / 提示詞 3）",
           f"prompts={[i['key'] for i in d.get('prompts', [])]}")
     check("query_rewrite" in [i["key"] for i in d.get("retrieval", [])],
           "檢索參數含 query_rewrite（查詢改寫開關）",
           f"scope={next((i.get('scope') for i in d.get('retrieval', []) if i['key'] == 'query_rewrite'), None)}")
+    _gate = next((i for i in d.get("retrieval", []) if i["key"] == "rag_answer_gate"), None)
+    check(bool(_gate) and _gate.get("type") == "choice"
+          and set(_gate.get("choices") or []) == {"image", "on", "off"},
+          "檢索參數含 rag_answer_gate（模型可否決命中；choice image/on/off）",
+          f"{_gate and _gate.get('value')} / {_gate and _gate.get('choices')}")
     check(all(i.get("scope") == "global" for i in d.get("retrieval", [])),
           "檢索參數全部標成全域（改了全庫一起生效）")
 
