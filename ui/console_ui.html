@@ -454,6 +454,49 @@
   .switch-row .sr-name { font-size: 13px; font-weight: 700; flex: 1; }
   .switch-row .sr-sub { font-size: 11px; color: var(--text-soft); font-weight: 400; display: block; margin-top: 2px; }
   .switch-row.on { border-color: var(--accent); background: var(--accent-soft); }
+  .switch-row .sr-acts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+  /* ★ 「i」圓標：把解釋性文字收進提示，滑鼠移上去才顯示（頁面少一堆字） */
+  .infotip {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%; box-sizing: border-box;
+    border: 1px solid var(--text-soft); color: var(--text-soft);
+    font-size: 10px; font-weight: 700; font-style: normal; font-family: var(--font-sans);
+    line-height: 1; cursor: help; position: relative; vertical-align: middle;
+    margin-left: 6px; flex-shrink: 0;
+  }
+  .infotip:hover { border-color: var(--accent); color: var(--accent-dark); }
+  .infotip::after {
+    content: attr(data-tip);
+    position: absolute; left: 50%; top: calc(100% + 7px); transform: translateX(-50%);
+    background: #1f2937; color: #fff; font-size: 12px; font-weight: 400;
+    line-height: 1.6; padding: 8px 11px; border-radius: 8px;
+    width: max-content; max-width: 290px; text-align: left;
+    opacity: 0; visibility: hidden; pointer-events: none; z-index: 900;
+    transition: opacity .12s ease-out;
+  }
+  .infotip:hover::after, .infotip:focus::after { opacity: 1; visibility: visible; }
+  /* 靠右邊的元素：提示往左展開，免得超出面板 */
+  .infotip.tip-right::after { left: auto; right: 0; transform: none; }
+
+  /* 滑動開關（全部開／關） */
+  .sw-toggle {
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+    background: none; border: 0; padding: 0; font: inherit;
+  }
+  .sw-toggle .sw-track {
+    width: 40px; height: 22px; border-radius: 999px; background: #cbd5e1;
+    position: relative; transition: background .15s; flex-shrink: 0;
+  }
+  .sw-toggle .sw-knob {
+    position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; transition: left .15s;
+    box-shadow: 0 1px 2px rgba(0,0,0,.25);
+  }
+  .sw-toggle .sw-label { font-size: 12.5px; font-weight: 700; color: var(--text-soft); white-space: nowrap; }
+  .sw-toggle.on .sw-track { background: var(--accent); }
+  .sw-toggle.on .sw-knob { left: 21px; }
+  .sw-toggle.on .sw-label { color: var(--accent-dark); }
 
   .btn {
     padding: 7px 14px; border-radius: 9px; border: 1px solid var(--border); background: #fafbfc;
@@ -793,6 +836,9 @@ const arState = {
   openLogId: null,      // 展開中的紀錄（召回明細是點開才去撈的）
   logDetail: null,
   scopeFilter: { channel: '', scope: '' },
+  // 紀錄頁裡的兩個子頁（0 = 正常紀錄列表；1 = 命中情況統計）
+  logsSub: 0,
+  stats: null,          // GET /console/autoreply/stats 的快取（子頁開著才畫）
   // ---- 知識庫（第三層）：五個可跳轉的頁面 ----
   // kbView: 'list' 知識庫清單 → 'docs' 某庫的文件 → 'doc' 某文件的分塊 → 'new' 新增文檔
   //         'assets' 圖片庫（文件抽出的圖 + 單獨上傳的圖）
@@ -2482,6 +2528,7 @@ function closeSettings() {
 
 function switchSettingsTab(tab) {
   arState.tab = tab;
+  arState.logsSub = 0;   // 紀錄頁回到「紀錄列表」子頁，不留在統計頁
   document.querySelectorAll('.sp-tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tab === tab));
   renderSettingsTab();
@@ -2580,8 +2627,7 @@ function renderSettingsTab() {
   }
   let html, after = null;
   if (arState.tab === 'autoreply') {
-    html = autoreplyTabHtml();
-    after = loadStats;
+    html = autoreplyTabHtml();     // 成效統計已搬到「紀錄」頁，這裡沒有要撈的資料
   } else if (arState.tab === 'faq') {
     html = faqTabHtml();
     after = function () { if (!arState.faqs.length) loadFaqs(); };
@@ -2602,14 +2648,19 @@ function renderSettingsTab() {
     html = hittestTabHtml();
     after = null;   // 結果由使用者按「開始測試」產生，切頁不自動跑（會打模型）
   } else {
+    // 紀錄頁（含「命中情況統計」子頁）：統計子頁開著時要自己重撈資料填進去
     html = logsTabHtml();
-    after = function () { if (!arState.logs.length) loadLogs(); };
+    after = function () {
+      if (arState.logsSub === 1) {
+        loadStats().then(d => renderStatsInto(document.getElementById('logStatsBox'), d));
+      } else if (!arState.logs.length) {
+        loadLogs();
+      }
+    };
   }
 
   if (renderSettingsBody(html)) {
     if (after) after();
-  } else if (arState.tab === 'autoreply') {
-    loadStats();   // 沒重繪時只更新唯讀的成效統計，絕不碰輸入框
   }
   refreshDeepseekPill();
 }
@@ -2639,112 +2690,132 @@ function autoreplyTabHtml() {
   const s = arState.settings;
   if (!s) return '<div class="empty-note">設定載入中…</div>';
 
+  /* 右上角滑動開關的三種狀態 —— ★ 標籤不能騙人。
+     ⚠️ 「全域」**不是總開關**：`effective_scope_mode()` 的優先序是
+        `渠道+場景 > 渠道 > 全域 > 預設關閉`，所以全域關閉時，
+        已單獨設定的渠道照樣在跑（實測 global=False 但 WhatsApp 私訊 effective=True）。
+        因此狀態要看**每一把開關的 effective**，不是看 global。 */
+  const nOn = s.scopes.filter(sc => sc.effective).length;
+  const allOn = s.scopes.length > 0 && nOn === s.scopes.length;
+  const swLabel = allOn ? '全部開' : (nOn === 0 ? '全部關' : '部分開啟');
+
   const scopeRows = s.scopes.map(sc => {
-    const follow = sc.stored === null || sc.stored === undefined;
     const eff = sc.effective;
     return '<div class="switch-row' + (eff ? ' on' : '') + '">' +
-      '<span class="sr-name">' + esc(sc.label) +
-        '<span class="sr-sub">' + (follow ? '跟隨全域設定' : '已單獨設定') +
-        ' · 目前實際：' + (eff ? '開啟' : '關閉') + '</span>' +
+      '<span class="sr-name">' + esc(sc.label) + '</span>' +
+      '<span class="sr-acts">' +
+        '<button class="btn sm' + (eff ? '' : ' primary') +
+          '" onclick="setScope(\'' + sc.channel + '\',\'' + sc.scope + '\',true)">開啟</button>' +
+        '<button class="btn sm" onclick="setScope(\'' + sc.channel + '\',\'' + sc.scope + '\',false)">關閉</button>' +
       '</span>' +
-      '<button class="btn sm" onclick="setScope(\'' + sc.channel + '\',\'' + sc.scope + '\',true)">開啟</button>' +
-      '<button class="btn sm" onclick="setScope(\'' + sc.channel + '\',\'' + sc.scope + '\',false)">關閉</button>' +
-      (follow ? '' : '<button class="btn sm" onclick="clearScopeOverride(\'' + sc.channel + '\',\'' + sc.scope + '\')" title="改回跟隨全域">跟隨全域</button>') +
       '</div>';
   }).join('');
 
   return '' +
     '<div class="card">' +
-      '<h3>總開關</h3>' +
-      '<div class="hint">關閉後，所有渠道都不會自動回復（個別開關保留設定，重新開啟即恢復）。</div>' +
-      '<div class="row">' +
-        '<button class="btn ' + (s.global ? 'danger' : 'primary') + '" onclick="setGlobal(' + (!s.global) + ')">' +
-          (s.global ? '關閉全域自動回復' : '開啟全域自動回復') + '</button>' +
-        '<span class="pill ' + (s.global ? 'on' : 'off') + '">全域：' + (s.global ? '開啟' : '關閉') + '</span>' +
+      '<div class="kb-pg-head" style="margin-bottom:8px">' +
+        '<h3 style="margin:0">各渠道的自動回復' +
+          infotip('每個渠道的「私訊」與「貼文留言」各自一把開關。三層都停用或都未命中時，' +
+                  '該則訊息降級人工回復，並標為「自動回復未命中，待處理」。') +
+        '</h3>' +
+        '<div class="spacer" style="flex:1"></div>' +
+        '<button class="sw-toggle' + (allOn ? ' on' : '') + '" onclick="setAllScopes(' + (!allOn) + ')"' +
+          ' title="' + (allOn ? '全部關閉' : '全部開啟（含目前沒開的）') + '">' +
+          '<span class="sw-track"><span class="sw-knob"></span></span>' +
+          '<span class="sw-label">' + swLabel + '</span>' +
+        '</button>' +
       '</div>' +
-    '</div>' +
-
-    '<div class="card">' +
-      '<h3>各渠道的自動回復</h3>' +
-      '<div class="hint">每個渠道的「私訊」與「貼文留言」各自一把開關。' +
-      '未單獨設定時跟隨全域。</div>' +
       scopeRows +
     '</div>' +
 
     '<div class="card">' +
-      '<h3>三層資料的停啟用</h3>' +
-      '<div class="hint">由上而下依序嘗試：FAQ 問答對 → 業務表格 → 知識庫。' +
-      '停用某層就在該層直接跳到下一層；三層都停用（或都未命中）＝ 降級人工回復，' +
-      '該則訊息會標為「自動回復未命中，待處理」。</div>' +
+      '<h3>三層資料的停啟用' +
+        infotip('由上而下依序嘗試：FAQ 問答對 → 業務表格 → 知識庫。' +
+                '停用某層就在該層直接跳到下一層。命中測試在「命中測試」分頁。') +
+      '</h3>' +
       '<div class="switch-row' + (s.faq_layer ? ' on' : '') + '">' +
         '<span class="sr-name">第一層：FAQ 問答對' +
           '<span class="sr-sub">共 ' + s.faq_count + ' 組，啟用中 ' + s.faq_enabled_count + ' 組</span>' +
         '</span>' +
-        '<button class="btn sm" onclick="setLayer(\'faq\',' + (!s.faq_layer) + ')">' +
-          (s.faq_layer ? '停用' : '啟用') + '</button>' +
-        '<span class="pill ' + (s.faq_layer ? 'on' : 'off') + '">' + (s.faq_layer ? '啟用' : '停用') + '</span>' +
+        '<span class="sr-acts">' +
+          '<button class="btn sm" onclick="setLayer(\'faq\',' + (!s.faq_layer) + ')">' +
+            (s.faq_layer ? '停用' : '啟用') + '</button>' +
+        '</span>' +
       '</div>' +
       '<div class="switch-row' + (s.table_layer ? ' on' : '') + '">' +
         '<span class="sr-name">第二層：業務表格（DeepSeek 理解）' +
           '<span class="sr-sub">共 ' + s.table_count + ' 張表、' + s.row_count + ' 列資料</span>' +
         '</span>' +
-        '<button class="btn sm" onclick="setLayer(\'table\',' + (!s.table_layer) + ')">' +
-          (s.table_layer ? '停用' : '啟用') + '</button>' +
-        '<span class="pill ' + (s.table_layer ? 'on' : 'off') + '">' + (s.table_layer ? '啟用' : '停用') + '</span>' +
+        '<span class="sr-acts">' +
+          '<button class="btn sm" onclick="setLayer(\'table\',' + (!s.table_layer) + ')">' +
+            (s.table_layer ? '停用' : '啟用') + '</button>' +
+        '</span>' +
       '</div>' +
       '<div class="switch-row' + (s.rag_layer ? ' on' : '') + '">' +
         '<span class="sr-name">第三層：知識庫（RAG 檢索）' +
           '<span class="sr-sub">' + kbSummaryText(s.kb) + '</span>' +
         '</span>' +
-        '<button class="btn sm" onclick="setLayer(\'rag\',' + (!s.rag_layer) + ')">' +
-          (s.rag_layer ? '停用' : '啟用') + '</button>' +
-        '<span class="pill ' + (s.rag_layer ? 'on' : 'off') + '">' + (s.rag_layer ? '啟用' : '停用') + '</span>' +
-        '<button class="btn sm" onclick="openSettings(\'kb\')">管理知識庫</button>' +
+        '<span class="sr-acts">' +
+          '<button class="btn sm" onclick="setLayer(\'rag\',' + (!s.rag_layer) + ')">' +
+            (s.rag_layer ? '停用' : '啟用') + '</button>' +
+          '<button class="btn sm" onclick="openSettings(\'kb\')">管理</button>' +
+        '</span>' +
       '</div>' +
     '</div>' +
 
     '<div class="card">' +
-      '<h3>DeepSeek</h3>' +
-      '<div class="hint">API Key 由 .env 的 <code>DEEPSEEK_API_KEY</code> 提供；' +
-      '第二層業務表格、第三層知識庫的整理回答，以及 FAQ 問句改寫都靠它。</div>' +
+      '<div class="kb-pg-head" style="margin-bottom:8px">' +
+        '<h3 style="margin:0">DeepSeek' +
+          infotip('API Key 由 .env 的 DEEPSEEK_API_KEY 提供。第二層業務表格、' +
+                  '第三層知識庫的整理回答，以及查詢改寫都靠它。') +
+        '</h3>' +
+        '<div class="spacer" style="flex:1"></div>' +
+        '<button class="btn sm" onclick="testDeepseek()">測試連線</button>' +
+      '</div>' +
       '<div class="row">' +
         '<span class="pill ' + (s.deepseek.configured ? 'on' : 'off') + '">' +
           (s.deepseek.configured ? esc(s.deepseek.masked_key) : '未設定 Key') + '</span>' +
         '<span class="hint" style="margin:0">模型 <b>' + esc(s.deepseek.model) + '</b>' +
         ' · 查詢改寫 <b>' + (s.deepseek.query_rewrite ? '開' : '關') + '</b>' +
         ' · FAQ 門檻 <b>' + s.deepseek.threshold + '</b></span>' +
-        '<div class="spacer" style="flex:1"></div>' +
-        '<button class="btn sm" onclick="testDeepseek()">測試連線</button>' +
       '</div>' +
       '<div id="dsResult"></div>' +
     '</div>' +
 
     '<div class="card">' +
-      '<h3>防護</h3>' +
-      '<div class="hint">避免同一會話被自動回復洗版。改 .env 後重啟服務生效。</div>' +
-      '<div class="hint">同一會話冷卻：<b>' + s.guards.cooldown_seconds + '</b> 秒' +
-      ' · 每日每會話上限：<b>' + (s.guards.max_per_day || '不限') + '</b> 則</div>' +
-    '</div>' +
-
-    '<div class="card">' +
-      '<h3>試跑會走哪一層</h3>' +
-      '<div class="hint">試跑移到「<b>命中測試</b>」分頁了 —— 那裡可以逐層勾選（預設照這頁的開關）、' +
-      '看到每一層的分數，知識庫那層還會列出每個候選塊的召回明細。' +
-      '一樣不會發送任何訊息、也不寫任何紀錄。</div>' +
-      '<div class="row"><button class="btn primary" onclick="openSettings(\'hittest\')">去命中測試</button></div>' +
-    '</div>' +
-
-    '<div class="card">' +
-      '<h3>各渠道成效</h3>' +
-      '<div class="hint">自動回復送出與未命中的累計次數（未命中且未處理的會顯示為待處理）。</div>' +
-      '<div id="arStats"><div class="empty-note">載入中…</div></div>' +
+      '<h3>防護' + infotip('避免同一會話被自動回復洗版。改 .env 後重啟服務生效。') + '</h3>' +
+      '<div class="hint" style="margin:0">同一會話冷卻 <b>' + s.guards.cooldown_seconds + '</b> 秒' +
+      ' · 每日每會話上限 <b>' + (s.guards.max_per_day || '不限') + '</b> 則</div>' +
     '</div>';
 }
 
-async function clearScopeOverride(channel, scope) {
-  const res = await apiJson('/console/autoreply/settings/scope', { channel, scope, enabled: null });
-  if (res.data.error) { alert('設定失敗：' + res.data.error); return; }
+// 「i」圓標：解釋性文字收進提示，滑鼠移上去才顯示（頁面不要一堆字）。
+// 純 CSS tooltip（.infotip::after 讀 data-tip）—— esc() 已把引號轉義，不會破版。
+// 靠面板右緣的元素可以加 tip-right 讓提示往左展開。
+function infotip(text) {
+  return '<i class="infotip" tabindex="0" data-tip="' + esc(text) + '">i</i>';
+}
+
+// 右上角的滑動開關「全部開／關」：把**每一個渠道＋場景**都設成同一個值。
+//
+// ⚠️ 為什麼不能只改「全域」：`effective_scope_mode()` 的優先序是
+//    `渠道+場景 > 渠道 > 全域 > 預設關閉` —— 全域只是「沒有單獨設定的渠道」的預設值，
+//    關掉全域並不會讓已經單獨開啟的渠道停下來（實測 global=False 但
+//    WhatsApp 私訊仍是 effective=True）。所以「全部」就必須逐把設定；
+//    順便把全域一起寫成同值，新的／未設定的場景才會跟著。
+async function setAllScopes(on) {
+  const scopes = (arState.settings && arState.settings.scopes) || [];
+  try {
+    await apiJson('/console/autoreply/settings/global', { enabled: on });
+    for (const sc of scopes) {
+      await apiJson('/console/autoreply/settings/scope',
+                    { channel: sc.channel, scope: sc.scope, enabled: on });
+    }
+  } catch (e) {
+    alert('設定失敗：' + e.message);
+  }
   await loadAutoSettings();
+  if (on) await offerBackfill(null);   // 開了才問要不要補做未處理訊息
 }
 
 async function setLayer(layer, enabled) {
@@ -2764,30 +2835,57 @@ async function testDeepseek() {
   }
 }
 
+// 各渠道命中統計（原本在「自動回復」頁，改成紀錄頁的子頁；用快取避免每次重繪都打一次）
 async function loadStats() {
+  if (arState.stats) return arState.stats;
   try {
-    const d = await api('/console/autoreply/stats');
-    const box = document.getElementById('arStats');
-    if (!box) return;
-    box.innerHTML = '<table class="data-table"><thead><tr>' +
-      '<th>渠道</th><th>場景</th><th>開關</th><th>FAQ 命中</th><th>表格命中</th>' +
-      '<th title="第三層知識庫檢索命中">知識庫命中</th>' +
-      '<th title="業務表格 / 知識庫第一次沒查到、帶對話改寫 query 後才命中">改寫救回</th>' +
-      '<th>未命中</th><th>待處理</th></tr></thead><tbody>' +
-      d.scopes.map(s => '<tr>' +
-        '<td>' + esc(AR_CHANNEL_LABEL[s.channel] || s.channel) + '</td>' +
-        '<td>' + (s.scope === 'dm' ? '私訊' : '貼文留言') + '</td>' +
-        '<td><span class="pill ' + (s.enabled ? 'on' : 'off') + '">' + (s.enabled ? '開' : '關') + '</span></td>' +
-        '<td>' + s.faq + '</td><td>' + s.table + '</td>' +
-        '<td>' + (s.rag || 0) + '</td>' +
-        '<td>' + (s.rewritten || 0) + '</td>' +
-        '<td>' + s.miss + '</td>' +
-        '<td>' + (s.pending_miss ? '<span class="pill miss">' + s.pending_miss + '</span>' : '0') + '</td>' +
-      '</tr>').join('') + '</tbody></table>' +
-      '<div class="hint" style="margin-top:8px">「改寫救回」＝第一次沒查到，' +
-      '帶入最近對話讓模型改寫問句後才命中（這些原本會降級人工）。' +
-      '累計 ' + (d.rewritten_total || 0) + ' 次。</div>';
-  } catch (e) { /* 忽略 */ }
+    arState.stats = await api('/console/autoreply/stats');
+  } catch (e) {
+    arState.stats = { __error__: e.message };
+  }
+  return arState.stats;
+}
+
+// 統計表只有在「紀錄 → 命中情況統計」子頁開著時才畫（不重新打 API）
+function renderStatsInto(el, d) {
+  if (!el) return;
+  if (!d || !d.scopes) {
+    el.innerHTML = '<div class="empty-note">讀不到統計資料' +
+      (d && d.__error__ ? '：' + esc(d.__error__) : '') + '</div>';
+    return;
+  }
+  el.innerHTML = '<table class="data-table"><thead><tr>' +
+    '<th>渠道</th><th>場景</th><th>開關</th><th>FAQ 命中</th><th>表格命中</th>' +
+    '<th title="第三層知識庫檢索命中">知識庫命中</th>' +
+    '<th title="業務表格 / 知識庫第一次沒查到、帶對話改寫 query 後才命中">改寫救回</th>' +
+    '<th>未命中</th><th>待處理</th></tr></thead><tbody>' +
+    d.scopes.map(s => '<tr>' +
+      '<td>' + esc(AR_CHANNEL_LABEL[s.channel] || s.channel) + '</td>' +
+      '<td>' + (s.scope === 'dm' ? '私訊' : '貼文留言') + '</td>' +
+      '<td><span class="pill ' + (s.enabled ? 'on' : 'off') + '">' + (s.enabled ? '開' : '關') + '</span></td>' +
+      '<td>' + s.faq + '</td><td>' + s.table + '</td>' +
+      '<td>' + (s.rag || 0) + '</td>' +
+      '<td>' + (s.rewritten || 0) + '</td>' +
+      '<td>' + s.miss + '</td>' +
+      '<td>' + (s.pending_miss ? '<span class="pill miss">' + s.pending_miss + '</span>' : '0') + '</td>' +
+    '</tr>').join('') + '</tbody></table>' +
+    '<div class="hint" style="margin-top:8px">「改寫救回」＝第一次沒查到，' +
+    '帶入最近對話讓模型改寫問句後才命中（這些原本會降級人工）。' +
+    '累計 ' + (d.rewritten_total || 0) + ' 次。</div>';
+}
+
+// 紀錄頁 →「命中情況統計」子頁
+async function openLogsStats() {
+  arState.logsSub = 1;
+  arState.stats = null;                 // 每次進來重撈，數字才是新的
+  renderSettingsBody(logsTabHtml());
+  const d = await loadStats();
+  renderStatsInto(document.getElementById('logStatsBox'), d);
+}
+
+function backToLogs() {
+  arState.logsSub = 0;
+  renderSettingsBody(logsTabHtml());
 }
 
 /* ----- 分頁二：FAQ ----- */
@@ -2798,9 +2896,10 @@ function faqTabHtml() {
     : '<tr><td colspan="6"><div class="empty-note">尚無 FAQ。可新增、貼上 JSON，或上傳 Excel / CSV。</div></td></tr>';
   return '' +
     '<div class="card">' +
-      '<h3>FAQ 問答對（第一層）</h3>' +
-      '<div class="hint">規則匹配：繁簡正規化 + 分詞 + 字元相似度加權打分，達門檻即直接回覆，不呼叫 AI。' +
-      '每個問答對可單獨停啟用；「關鍵詞」欄可填同一問題的其他問法（逗號分隔），會一起參與匹配。</div>' +
+      '<h3>FAQ 問答對（第一層）' +
+        infotip('規則匹配：繁簡正規化 + 分詞 + 字元相似度加權打分，達門檻即直接回覆，不呼叫 AI。' +
+                '「關鍵詞」欄可填同一問題的其他問法（逗號分隔），會一起參與匹配。') +
+      '</h3>' +
       '<div class="row">' +
         '<button class="btn primary" onclick="addFaq()">＋ 新增一組</button>' +
         '<button class="btn" onclick="saveAllFaqs()">儲存全部修改</button>' +
@@ -2973,10 +3072,10 @@ function tableTabHtml() {
 
   return '' +
     '<div class="card">' +
-      '<h3>業務表格（第二層）</h3>' +
-      '<div class="hint">FAQ 未命中時，把這裡的表格內容交給 DeepSeek 理解後回答；' +
-      '模型判斷表格答不出來時，直接降級人工回復。' +
-      '表格與資料列都可單獨停啟用；整個功能可在「自動回復」分頁停用。</div>' +
+      '<h3>業務表格（第二層）' +
+        infotip('FAQ 未命中時，把這裡的表格內容交給 DeepSeek 理解後回答；' +
+                '模型判斷表格答不出來時，直接降級人工回復。整個功能可在「自動回復」分頁停用。') +
+      '</h3>' +
       '<div class="row">' +
         '<button class="btn primary" onclick="createTable()">＋ 新增空白表格</button>' +
         '<label class="btn" style="cursor:pointer">上傳 Excel / CSV 建新表' +
@@ -3264,10 +3363,11 @@ function kbListPageHtml() {
 
   return '' +
     '<div class="card">' +
-      '<h3>知識庫概覽（第三層）</h3>' +
-      '<div class="hint">FAQ 與業務表格都沒命中時，會到知識庫做混合檢索（向量 + 字面），' +
-      '把最相關的幾塊交給 DeepSeek 整理成回覆；檢索不到就降級人工。' +
-      '文件要先「確認入庫」才會被搜到。</div>' +
+      '<h3>知識庫概覽（第三層）' +
+        infotip('FAQ 與業務表格都沒命中時，會到知識庫做混合檢索（向量 + 字面），' +
+                '把最相關的幾塊交給 DeepSeek 整理成回覆；檢索不到就降級人工。' +
+                '文件要先「確認入庫」才會被搜到。') +
+      '</h3>' +
       '<div class="row">' +
         modelPill +
         '<span class="hint" style="margin:0">' + esc(m.model || '') +
@@ -3286,17 +3386,18 @@ function kbListPageHtml() {
     '</div>' +
 
     '<div class="card">' +
-      '<div class="kb-pg-head"><h3>知識庫</h3>' +
+      '<div class="kb-pg-head"><h3>知識庫' +
+          infotip('分兩種：文檔知識庫（放文件；文件裡真的有圖時，才會自動開一個「名稱_圖片庫」' +
+                  '接那些圖）與圖片知識庫（放圖片，用描述檢索）。' +
+                  '檢索參數（門檻 / 召回數）所有知識庫共用一組；分塊參數可以每個庫各自設。' +
+                  '停用的整庫不參與檢索（文檔庫停用時，它的圖片庫一起停）。') +
+        '</h3>' +
         '<div class="spacer" style="flex:1"></div>' +
         '<button class="btn primary" onclick="openKbNew()">＋ 新增知識庫</button>' +
         '<button class="btn sm" onclick="kbOpenAssets(0)">全部圖片</button>' +
-        '<button class="btn sm" onclick="openKbParams(0)">參數配置（檢索全域 · 分塊預設）</button>' +
+        '<button class="btn sm" onclick="openKbParams(0)">參數配置</button>' +
         '<button class="btn sm" onclick="kbReload()">重新讀取</button>' +
       '</div>' +
-      '<div class="hint">知識庫分兩種：<b>文檔知識庫</b>（放文件；文件裡真的有圖時，才會自動開一個' +
-      '「<名稱>_圖片庫」接那些圖）與<b>圖片知識庫</b>（放圖片，用描述檢索）。' +
-      '點一個進去就會看到它的內容。檢索參數（門檻 / 召回數）<b>所有知識庫共用一組</b>；' +
-      '分塊參數可以每個庫各自設。停用的整庫不參與檢索（文檔庫停用時，它的圖片庫一起停）。</div>' +
       colCards + libNote + ungroupedCard +
     '</div>';
 }
@@ -3456,7 +3557,13 @@ function kbAssetsPageHtml() {
   const standalone = !!(cid && col && col.kind === 'image' && !col.image_of);
   const title = standalone ? scope : ('圖片庫 · ' + scope);
 
-  const head = '<div class="kb-pg-head"><h3>' + esc(title) + '</h3>' +
+  const head = '<div class="kb-pg-head"><h3>' + esc(title) +
+    infotip('圖片庫的檢索靠「描述」：寫好描述（或按 AI 描述）會立刻向量化，之後用自然語言問' +
+            '就能查到這張圖。來自文件的圖一定會綁到知識塊，圖的 markdown 標記已經內嵌在' +
+            '那一塊的文字裡，所以那一塊被命中時圖會跟著一起輸出。' +
+            '描述預設由人工填；文件裡本來就有題注的會自動帶入，' +
+            '「AI 描述」不會覆蓋你手寫的。') +
+    '</h3>' +
     '<div class="spacer" style="flex:1"></div>' +
     '<label class="btn primary sm">＋ 上傳圖片' +
       '<input type="file" id="kbAssetInput" accept="image/*" multiple style="display:none"' +
@@ -3502,15 +3609,6 @@ function kbAssetsPageHtml() {
 
   return kbCrumbs(crumbs) +
     '<div class="card">' + head +
-      '<div class="hint">' +
-        '圖片庫的檢索靠<b>描述</b>：寫好描述（或按 AI 描述）會<b>立刻向量化</b>，' +
-        '之後用自然語言問就能查到這張圖 —— 命中時前端直接把圖渲染出來（圖文合併輸出）。' +
-        '<br>來自文件的圖<b>一定會綁到知識塊</b>，圖的 markdown 標記' +
-        '（<code>![題注](/media/xxx.png)</code>）也已經內嵌在那一塊的文字裡，' +
-        '所以那一塊被命中時圖就會跟著一起輸出。' +
-        '<br>描述<b>預設由人工填</b>；文件裡本來就有題注（「圖 1-2 …」）的會自動帶入。' +
-        '「AI 描述」按鈕<b>不會覆蓋你手寫的</b>（要覆蓋要另外指定）。' +
-      '</div>' +
       stats +
       (arState.kbAssetNote || '') +
       '<div id="kbAssetNote"></div>' +
@@ -4762,10 +4860,12 @@ function hittestTabHtml() {
   const r = arState.ktResult;
   return '' +
     '<div class="card">' +
-      '<h3>命中測試（逐層勾選，只影響這一次）</h3>' +
-      '<div class="hint">用真實客戶問句試跑，看它會落在哪一層。' +
-      '<b>不會發送任何訊息、不會改上面的開關、也不寫任何紀錄</b> —— ' +
-      '純粹是「我想知道這句會怎樣」的工具。想看目前正式設定下的結果，用「自動回復」分頁的試跑。</div>' +
+      '<h3>命中測試' +
+        infotip('用真實客戶問句試跑，看它會落在哪一層。不會發送任何訊息、不會改上面的開關、' +
+                '也不寫任何紀錄 —— 純粹是「我想知道這句會怎樣」的工具。' +
+                '勾選的層依固定順序由上而下嘗試（FAQ → 表格 → 知識庫）；' +
+                '全部取消勾選 = 直接看「降級人工」。') +
+      '</h3>' +
       '<div class="row" style="margin-bottom:10px">' +
         '<input type="text" id="ktQuery" placeholder="例如：保固期內人為損壞要收費嗎？" ' +
           'onkeydown="if(event.key===\'Enter\')runHitTest()" ' +
@@ -4781,9 +4881,15 @@ function hittestTabHtml() {
         '<label class="hint" style="margin:0;display:flex;align-items:center;gap:6px">' +
           '<input type="checkbox" id="ktNoHistory"' + (arState.ktNoHistory ? ' checked' : '') +
           ' onchange="arState.ktNoHistory=this.checked">' +
-          '不要把該會話的最近對話帶進來（表格／知識庫的 query 改寫會用到）</label>' +
+          '不帶入最近對話' +
+          infotip('表格／知識庫的查詢改寫會用「該會話的最近對話」來補齊主語；' +
+                  '勾起來就是模擬「客戶第一次開口」的情況。') +
+        '</label>' +
         '<label class="hint" style="margin:0;display:flex;align-items:center;gap:6px">' +
-          '查詢改寫（三層共用）' +
+          '查詢改寫' +
+          infotip('規則層（FAQ）沒命中時，請模型把問句改寫成 2 條（修同音錯別字、' +
+                  '補齊「這個」的指代、並保留一條客戶原話版）。這一組查詢三層共用：' +
+                  'FAQ 再匹配一次、業務表格拿去問、知識庫拿去檢索 —— 整個流程只呼叫模型一次。') +
           '<select onchange="arState.ktRewrite=this.value" ' +
             'style="padding:4px 7px;border:1px solid var(--border);border-radius:7px">' +
             '<option value=""' + (arState.ktRewrite === '' ? ' selected' : '') +
@@ -4793,14 +4899,6 @@ function hittestTabHtml() {
             '<option value="off"' + (arState.ktRewrite === 'off' ? ' selected' : '') +
               '>這次強制關閉</option>' +
           '</select></label>' +
-      '</div>' +
-      '<div class="hint" style="margin-top:6px">' +
-        '勾選的層會<b>依固定順序</b>由上而下嘗試（FAQ → 表格 → 知識庫）；全部取消勾選 = 直接看「降級人工」。' +
-        '預設照「自動回復」分頁的實際開關，改勾選只影響這一次。<br>' +
-        '「查詢改寫」＝規則層（FAQ）沒命中時，請模型把問句改寫成 2 條' +
-        '（修同音錯別字、補齊「這個」的指代、並保留一條客戶原話版），' +
-        '<b>這一組查詢三層共用</b>：FAQ 再匹配一次、業務表格拿去問、知識庫拿去檢索 —— ' +
-        '<b>整個流程只呼叫模型一次</b>。上方選單可以只這一次開／關，方便比較差別，不改正式設定。' +
       '</div>' +
       '<div class="row" style="margin-top:8px">' +
         '<button class="btn sm" onclick="ktAllLayers(true)">全選</button>' +
@@ -4909,11 +5007,32 @@ function logsTabHtml() {
     ? arState.logs.map(logItemHtml).join('')
     : '<div class="empty-note">尚無自動回復紀錄</div>';
 
+  // ── 子頁：命中情況統計（原本是「自動回復」頁的一張卡，搬到這裡）──
+  if (arState.logsSub === 1) {
+    return '' +
+      '<div class="card">' +
+        '<div class="kb-pg-head" style="margin-bottom:8px">' +
+          '<h3 style="margin:0">命中情況統計' +
+            infotip('自動回復送出與未命中的累計次數（未命中且未處理的顯示為待處理）。' +
+                    '「改寫救回」＝第一次沒查到、帶對話改寫問句後才命中。') +
+          '</h3>' +
+          '<div class="spacer" style="flex:1"></div>' +
+          '<button class="btn sm" onclick="backToLogs()">← 回紀錄列表</button>' +
+        '</div>' +
+        '<div id="logStatsBox"><div class="empty-note">載入中…</div></div>' +
+      '</div>';
+  }
+
   return '' +
     '<div class="card">' +
-      '<h3>自動回復紀錄</h3>' +
-      '<div class="hint">每次自動回復的處置都會留痕：命中哪一層、未命中的原因、送出結果。' +
-      '點任一筆可展開檢索明細（知識庫那層會列出每個候選塊的分數與是否入選）。</div>' +
+      '<div class="kb-pg-head" style="margin-bottom:8px">' +
+        '<h3 style="margin:0">自動回復紀錄' +
+          infotip('每次自動回復的處置都會留痕：命中哪一層、未命中的原因、送出結果。' +
+                  '點任一筆可展開檢索明細（知識庫那層會列出每個候選塊的分數與是否入選）。') +
+        '</h3>' +
+        '<div class="spacer" style="flex:1"></div>' +
+        '<button class="btn sm" onclick="openLogsStats()">命中情況統計</button>' +
+      '</div>' +
       '<div class="row">' +
         '<select id="logChannel" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
           '<option value="">全部渠道</option>' + opts + '</select>' +

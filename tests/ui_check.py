@@ -755,7 +755,7 @@ ck(crumbOwn.indexOf('圖片庫</span>') < 0 && crumbOwn.indexOf('圖片庫</a>')
 has(crumbOwn, '截圖庫', '麵包屑有庫名');
 hasNot(crumbOwn, 'kbOpenCollection(3)', '★ 庫名不可點（點下去會進空文檔頁）');
 ck(crumbOwn.indexOf('c-cur">截圖庫') >= 0, '庫名是最後一層（c-cur）');
-has(crumbOwn, '<h3>截圖庫</h3>', '標題直接用庫名（不再是「圖片庫 · 截圖庫」）');
+has(crumbOwn, '<h3>截圖庫<i class="infotip"', '標題直接用庫名（不再是「圖片庫 · 截圖庫」）');
 
 // ② 文檔庫附帶的圖片庫：知識庫 › 文檔庫 › 圖片庫（這一層有意義，要能回去）
 arState.kbAssetCid = 2;
@@ -822,7 +822,8 @@ ck(arState.ktLayers.faq === !!FX.settings.faq_layer &&
    JSON.stringify(arState.ktLayers));
 const tabsHtml = hittestTabHtml();
 ok(tabsHtml, 'hittestTabHtml()', 200);
-has(tabsHtml, '命中測試（逐層勾選，只影響這一次）', '標題說明「只影響這次」');
+has(tabsHtml, '<h3>命中測試', '標題是「命中測試」');
+has(tabsHtml, 'infotip', '解釋性文字收進「i」圓標（不再佔版面）');
 has(tabsHtml, 'kt_faq', '有第一層勾選');
 has(tabsHtml, 'kt_table', '有第二層勾選');
 has(tabsHtml, 'kt_rag', '有第三層勾選');
@@ -836,19 +837,89 @@ has(tabsHtml, '目前開關：', '顯示實際開關狀態');
 has(tabsHtml, 'ktTarget', '有渠道 / 場景選擇');
 has(tabsHtml, '不會發送任何訊息、不會改上面的開關、也不寫任何紀錄', '明講不會有副作用');
 // 查詢改寫：三態選擇（跟隨設定 / 這次強制開 / 這次強制關）
-has(tabsHtml, '查詢改寫（三層共用）', '有查詢改寫的選擇（標明三層共用）');
+has(tabsHtml, '查詢改寫', '有查詢改寫的選擇（說明收進「i」圓標）');
+has(tabsHtml, '三層共用', '「i」圓標說明仍是三層共用');
 has(tabsHtml, '依知識庫設定', '查詢改寫預設「依知識庫設定」');
 has(tabsHtml, 'arState.ktRewrite=this.value', '選擇會寫進 arState.ktRewrite');
 ck(arState.ktRewrite === '', '查詢改寫預設不覆寫（不影響正式設定）',
    JSON.stringify(arState.ktRewrite));
 
-console.log('\n[4b] 試跑卡片已從「自動回復」頁搬走（設計稿 §11.2）');
+console.log('\n[4b] 「自動回復」頁瘦身：試跑卡 / 總開關 / 成效統計都搬走');
+arState.settings = FX.settings;
 const arHtml = autoreplyTabHtml();
 hasNot(arHtml, 'arTestResult', '自動回復頁不再有試跑結果區');
 hasNot(arHtml, 'arTestText', '自動回復頁不再有試跑輸入框');
-has(arHtml, '去命中測試', '自動回復頁有指路按鈕');
-has(arHtml, "openSettings('hittest')", '指路按鈕真的切到命中測試分頁');
+hasNot(arHtml, '總開關', '總開關那一欄已刪（右上角滑動開關取代）');
+hasNot(arHtml, '各渠道成效', '各渠道成效已搬到「紀錄」頁');
 ck(typeof testEngine === 'undefined', 'testEngine() 已移除（不留死碼）');
+ck(typeof clearScopeOverride === 'undefined', '「跟隨全域」按鈕已刪（不留死碼）');
+
+console.log('\n[4b2] 頁面瘦身：說明收進「i」圓標 + 右上角滑動開關');
+// ① infotip() 是純 CSS tooltip（.infotip::after 讀 data-tip），要靠 esc() 防破版
+const tip = infotip('測試"引號\' 與 <b>標籤</b>');
+ck(tip.indexOf('data-tip="') > 0, 'infotip() 產生 data-tip', tip.slice(0, 60));
+ck(tip.indexOf('<b>') < 0, '★ infotip() 會把 HTML 轉義（不會破版／注入）');
+ck(tip.indexOf('&quot;') > 0 && tip.indexOf('&#39;') > 0, '引號被轉義');
+ck(/^<i class="infotip"/.test(tip), 'infotip() 是 <i> 圓標');
+
+// ② 各渠道那一區的右上角是滑動開關（不是把整塊按鈕塞在 header）
+const arFull = autoreplyTabHtml();
+has(arFull, 'sw-toggle', '有滑動開關樣式');
+has(arFull, "setAllScopes(", '滑動開關綁 setAllScopes()');
+has(arFull, '全部開', '開關標籤寫「全部開」');
+ck(typeof setAllScopes === 'function', 'setAllScopes() 已定義');
+// 「全部開」＝全域 + 每一把都開，標籤才名副其實
+const __all = setAllScopes.toString();
+ck(__all.indexOf('settings/global') >= 0 && __all.indexOf('settings/scope') >= 0,
+   'setAllScopes(true) 會同時開全域與每個渠道');
+
+// ③ 標籤要跟著「每一把開關的 effective」走，**不是看 global**
+//    ⚠️ 全域只是「沒單獨設定」的預設值（優先序 渠道+場景 > 渠道 > 全域 > 預設關），
+//    所以 global 值不能拿來當「全部」的依據。
+const mk = effs => ({ ...FX.settings,
+                      scopes: FX.settings.scopes.map((s, i) => ({ ...s, effective: effs[i] })) });
+arState.settings = mk(FX.settings.scopes.map(() => true));
+ck(autoreplyTabHtml().indexOf('全部開') > 0, '每把都開 → 顯示「全部開」');
+arState.settings = mk(FX.settings.scopes.map(() => false));
+ck(autoreplyTabHtml().indexOf('全部關') > 0, '每把都關 → 顯示「全部關」');
+const mix = mk(FX.settings.scopes.map((_, i) => i > 0));
+arState.settings = {...mix, global: false};
+const mixHtml = autoreplyTabHtml();
+ck(mixHtml.indexOf('部分開啟') > 0, '★ 有開有關 → 顯示「部分開啟」（標籤不騙人）');
+ck(mixHtml.indexOf('全部關</span>') < 0, '不能因為 global=false 就騙人說「全部關」');
+arState.settings = FX.settings;
+// 全部開/關必須**逐把**設定（只改全域不會讓已單獨開啟的渠道停下來）
+ck(setAllScopes.toString().indexOf('settings/scope') >= 0,
+   '★ setAllScopes() 逐把設定每個渠道（只改 global 是沒用的）');
+
+// ④ 各渠道成效：搬到紀錄頁，且用子頁切換（不是塞在列表下面）
+hasNot(autoreplyTabHtml(), 'arStats', '自動回復頁不再有成效統計容器');
+arState.logsSub = 0;
+const logsMain = logsTabHtml();
+has(logsMain, 'openLogsStats()', '紀錄頁有「命中情況統計」入口');
+hasNot(logsMain, 'logStatsBox', '主頁不畫統計表（點了才去撈）');
+arState.logsSub = 1;
+const logsSub = logsTabHtml();
+has(logsSub, 'logStatsBox', '子頁有統計表容器');
+has(logsSub, 'backToLogs()', '子頁有「回紀錄列表」');
+hasNot(logsSub, 'openLogsStats()', '子頁不再顯示入口自己');
+backToLogs();
+ck(arState.logsSub === 0, 'backToLogs() 回到列表子頁');
+openLogsStats();
+ck(arState.logsSub === 1, 'openLogsStats() 進入統計子頁');
+switchSettingsTab('logs');
+ck(arState.logsSub === 0, '切分頁會離開統計子頁（不留殘影）');
+// 統計表本身（餵假資料，不打 API）
+const stBox = document.getElementById('logStatsBox');
+renderStatsInto(stBox, { rewritten_total: 3, scopes: [
+  { channel: 'whatsapp', scope: 'dm', enabled: true, faq: 5, table: 2, rag: 7,
+    rewritten: 3, miss: 1, pending_miss: 2 }] });
+has(stBox.innerHTML, '改寫救回', '統計表有「改寫救回」欄');
+has(stBox.innerHTML, '累計 3 次', '統計表顯示改寫救回累計');
+has(stBox.innerHTML, 'pill miss', '待處理數字有醒目標記');
+renderStatsInto(stBox, null);
+has(stBox.innerHTML, '讀不到統計資料', '沒資料時給說明，不是白畫面');
+arState.logsSub = 0;
 
 console.log('\n[4c] 逐層勾選的操作');
 ktAllLayers(false);
@@ -1102,11 +1173,10 @@ has(at, '第三層：知識庫', '第三層');
 has(at, "setLayer('rag'", '第三層的開關鈕綁 rag');
 const kbLine = kbSummaryText(FX.settings.kb);
 ck(at.indexOf(kbLine) >= 0, '顯示知識庫規模摘要', kbLine);
-has(at, '管理知識庫', '有跳分頁的按鈕');
+has(at, "'kb'", '第三層有跳去知識庫分頁的按鈕');
 ck(at.indexOf('未設定 Key') >= 0 || /\*{4}/.test(at), 'DeepSeek 有顯示 Key 狀態（遮罩）');
 has(at, '測試連線', 'DeepSeek 連線測試鈕');
 has(at, '同一會話冷卻', '顯示防護（冷卻）設定');
-has(at, '各渠道成效', '有成效統計卡片');
 
 console.log('\n[10] 訊息上的自動回復標記（autoTag）');
 const tagCases = [
