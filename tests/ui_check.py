@@ -636,6 +636,31 @@ ck(mdImages(null) === '' && mdImages(undefined) === '', 'mdImages(null/undefined
 ck(mdImageCount('![a](/media/a.png) xx ![b](/media/b.png)') === 2, 'mdImageCount 數得對');
 ck(mdImageCount('沒有圖') === 0, 'mdImageCount 沒有圖回 0');
 
+// ★ 回歸閘門：任何「會顯示回覆／內文」的地方都必須走 mdImages()，不能只 esc()。
+//   實際踩過：客戶端收到圖了，工作台卻只顯示 `![圖 1 …](/media/xx.png)` 這行原始標記
+//   （因為那幾處渲染只做了 esc）。這裡逐處盯住。
+const IMG_TEXT = '伺服器轉發成功日誌如下：\n![圖 1 服務器端轉發成功日志截圖](/media/b3917526b7f36da3.png)';
+const bubbleImg = msgHtml({ direction: 'outbound', text: IMG_TEXT, time: '2026-10-12 11:00', files: [] }, 0);
+has(bubbleImg, '<img class="md-img"', '聊天氣泡內文的圖會渲染（不是原始 markdown）');
+hasNot(bubbleImg, '!\[圖 1', '聊天氣泡不再顯示 ![…] 原始標記');
+const pvImg = kbPreviewHtml({ count: 1, avg_chars: 30, min_chars: 30, max_chars: 30, strategy: 'plain',
+                              chunks: [{ char_count: 30, text: IMG_TEXT }] });
+has(pvImg, '<img class="md-img"', '分塊草稿預覽的圖會渲染');
+arState.ktLayers = {};
+const ktImg = ktResultHtml({ tier: 'rag', label: '自動回復-知識庫命中', would_send: true,
+                             text: IMG_TEXT, matched_rows: [] });
+has(ktImg, '<img class="md-img"', '命中測試「回覆內容」的圖會渲染');
+const logImg = logItemHtml({ id: 264, tier: 'rag', send_status: 'sent', channel: 'whatsapp',
+                             reply_scope: 'dm', created_at: '2026-10-12 11:00',
+                             question: '服务器端转发成功日志长啥样？', answer: IMG_TEXT });
+has(logImg, '<img class="md-img"', '紀錄列表「回覆」的圖會渲染');
+// 明細／知識塊那兩處本來就接了，一併盯住免得被改回去
+has(kbHitHtml({ final: 0.64, vec: 0.6, lex: 0.7, text: IMG_TEXT, picked: true }, true, false),
+    '<img class="md-img"', '召回明細的圖會渲染');
+has(kbChunkListHtml([{ id: 1, ordinal: 1, char_count: 30, text: IMG_TEXT, enabled: true,
+                       embedding_status: 'done' }]),
+    '<img class="md-img"', '知識塊清單的內嵌圖片預覽會渲染');
+
 console.log('\n[3h] 導覽：三頁互跳');
 arState.kb = FX.overview;
 arState.tab = 'kb';

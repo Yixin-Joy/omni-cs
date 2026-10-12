@@ -1420,7 +1420,10 @@ function msgHtml(m, idx) {
         '</div></div>';
     }).join('');
   }
-  if (m.text) content += '<div class="text">' + esc(m.text) + '</div>';
+  // ★ 內文要走 mdImages 而不是純 esc：知識庫「圖文合併輸出」會把 `![題注](/media/xxx.png)`
+  //   寫進回覆文字，而紀錄裡存的就是完整 markdown（workbench 負責畫出來）。
+  //   只 esc 會讓客戶端收到圖、工作台卻顯示一行看不懂的標記。
+  if (m.text) content += '<div class="text">' + mdImages(m.text) + '</div>';
 
   const fail = (!inbound && m.status === 'failed') ? '<span class="status-fail">● 發送失敗</span>' : '';
   // 命中標記只掛在「客戶來訊」上；我方回覆氣泡不標（回覆內容本身已說明結果）
@@ -3741,7 +3744,7 @@ function kbPreviewHtml(pv) {
       (c.page_no ? '<span>第 ' + c.page_no + ' 頁</span>' : '') +
       (c.heading_path ? '<span>' + esc(c.heading_path) + '</span>' : '') +
       (c.sheet ? '<span>工作表 ' + esc(c.sheet) + '</span>' : '') +
-    '</div><div>' + esc(c.text) + '</div></div>').join('');
+    '</div><div>' + mdImages(c.text) + '</div></div>').join('');
   return '<div style="margin-top:12px"><b style="font-size:12.5px">分塊預覽（草稿，未寫庫）</b>' +
     note + list + '</div>';
 }
@@ -4710,7 +4713,7 @@ function ktResultHtml(d) {
               esc(q)).join('\n') + '\n' : '') +
         (d.rag_threshold != null
           ? '知識庫門檻：' + d.rag_threshold + '（召回 ' + (d.rag_candidates || 0) + ' 塊）\n' : '') +
-        (d.text ? '\n回覆內容：\n' + esc(d.text) : '（沒有可送出的回覆）') +
+        (d.text ? '\n回覆內容：\n' + mdImages(d.text) : '（沒有可送出的回覆）') +
       '</div>' +
       ((d.history && d.history.length)
         ? '<div class="hint" style="margin-top:8px">參考到的最近對話（query 改寫用）：<br>' +
@@ -4805,7 +4808,7 @@ function logItemHtml(r) {
       ? '<div class="lg-q">改寫問句：' + esc(r.rewritten_query) +
         (r.history_used ? '（帶入 ' + r.history_used + ' 則對話）' : '') + '</div>'
       : (r.rewrote ? '<div class="lg-q">改寫後命中</div>' : '')) +
-    (r.answer ? '<div>回覆：' + esc(r.answer) + '</div>' : '') +
+    (r.answer ? '<div class="lg-a">回覆：' + mdImages(r.answer) + '</div>' : '') +
     (r.detail ? '<div class="lg-q">' + esc(r.detail) + '</div>' : '') +
     (r.reason && r.reason !== 'sent' ? '<div class="lg-q">原因：' + esc(r.reason) + '</div>' : '') +
     (showDetail ? '<div class="lg-detail" id="logDetailBox">' +
