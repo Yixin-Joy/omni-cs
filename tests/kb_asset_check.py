@@ -374,6 +374,194 @@ kb_search.invalidate()
 check(bool([h for h in kb_search.search("figure 1-1 setup page").candidates
             if h.kind == "image" and h.asset_id == own_aid]), "恢復啟用後又能檢索到")
 
+# ---------- [7] 送出端：文字與圖片只發一條（客戶不會收到一對重複的） ----------
+#
+# 症狀（使用者 實測）：知識庫命中帶圖時，客戶端收到
+#   「一條不帶圖的純文字」+「一條一模一樣、但帶圖的」。
+# 根因：舊版固定「文字一條 → 圖一張（caption 又是同一段文字）」。
+# 修法：能帶 caption 的渠道（WhatsApp）把文字塞進圖片一起發，只發一條；
+#       不能帶的（微信）維持文字 + 圖，但圖不帶文字、順序是「先說明後圖」。
+print("\n[7] 送出端：圖文只發一條（不再「一條純文字 + 一條一模一樣帶圖的」）")
+
+import asyncio
+
+from app.autoreply import autoreply
+from app.channels import whatsapp_send, wechat_send
+
+_a = kb_db.get_asset(own_aid)
+_asset = dict(_a or {})
+_text = "伺服器端轉發成功的日誌如下圖所示。"
+
+# 策略判斷（純函式）
+check(autoreply.assets_inline_caption("whatsapp", "dm", [_asset], _text) is True,
+      "WhatsApp 私訊 + 有圖 + 有文字 → 走「圖文一條」")
+check(autoreply.assets_inline_caption("wechat", "dm", [_asset], _text) is False,
+      "微信圖片沒有 caption → 不宣稱能一條（平台限制，只能文字+圖）")
+check(autoreply.assets_inline_caption("whatsapp", "comment", [_asset], _text) is False,
+      "貼文留言不發圖（公開場合）")
+check(autoreply.assets_inline_caption("whatsapp", "dm", [], _text) is False,
+      "沒有圖 → 沒什麼好 inline 的")
+check(autoreply.assets_inline_caption("whatsapp", "dm", [_asset], "   ") is False,
+      "只有空白文字 → 沒有東西可以當 caption")
+check(autoreply.assets_inline_caption("whatsapp", "dm", [_asset], "字" * 2000) is False,
+      "文字超過 caption 上限（1024）→ 改走「文字一條 + 圖一條」不硬塞")
+
+# 實測 _send_assets：caption 只貼第一張、captioned 只在真的送出去時為 True
+_shots = []          # [(caption, ...)] 每次 send_image 的 caption
+
+async def _fake_upload(path, mime, fname):
+    return "MEDIA_ID"
+
+async def _fake_send_image(to, mid, caption=""):
+    _shots.append(caption)
+    return {"status": 200, "body": "{}"}
+
+def _fake_send_image_wechat_sync(openid, local_path):
+    _shots.append("（微信圖片不帶文字）")
+    return {"status": 200, "body": "{}"}
+
+_orig_up, _orig_img = whatsapp_send.upload_media, whatsapp_send.send_image
+_orig_wx = wechat_send.send_image
+# 兩個渠道都要換成假的：自檢**不准真的打外部 API**
+whatsapp_send.upload_media, whatsapp_send.send_image = _fake_upload, _fake_send_image
+wechat_send.send_image = _fake_send_image_wechat_sync
+try:
+    _shots.clear()
+    st = asyncio.run(autoreply._send_assets("whatsapp", "dm", [_asset],
+                                            to="85200000000", caption=_text))
+    check(st["sent"] == 1 and st.get("captioned") is True,
+          "WhatsApp 一張圖 → 送出 1、captioned=True",
+          f"sent={st['sent']} captioned={st.get('captioned')}")
+    check(_shots == [_text], "文字確實當成 caption 送出去了（只送一次）", repr(_shots[:2]))
+
+    two = [dict(_asset), dict(_asset)]
+    _shots.clear()
+    st2 = asyncio.run(autoreply._send_assets("whatsapp", "dm", two,
+                                             to="85200000000", caption=_text))
+    check(st2["sent"] == 2 and st2.get("captioned") is True,
+          "兩張圖 → 兩張都送出、captioned=True")
+    check(_shots[0] == _text and _shots[1] == "",
+          "★ caption 只貼第一張（否則客戶會看到同一段話重複出現）", repr(_shots))
+
+    _shots.clear()
+    st3 = asyncio.run(autoreply._send_assets("whatsapp", "dm", [_asset], to="85200000000"))
+    check(st3.get("captioned") is False and _shots == [""],
+          "沒給 caption → captioned=False（呼叫端才知道要自己補發文字）")
+
+    _shots.clear()
+    st4 = asyncio.run(autoreply._send_assets("wechat", "dm", [_asset], to="openid"))
+    check(st4["sent"] == 1 and st4.get("captioned") is False,
+          "★ 微信 → 圖送出但 captioned=False（圖片不帶文字），呼叫端才知道要補發文字",
+          f"sent={st4['sent']}")
+
+    _shots.clear()
+    st5 = asyncio.run(autoreply._send_assets("whatsapp", "comment", [_asset],
+                                             to="c1", caption=_text))
+    check(st5["sent"] == 0 and st5.get("skipped") == 1, "公開留言不發圖（略過）")
+
+    st6 = asyncio.run(autoreply._send_assets("whatsapp", "dm",
+                                             [{"rel_path": "kb_assets/沒有這個檔.png"}],
+                                             to="85200000000", caption=_text))
+    check(st6["failed"] == 1 and st6.get("captioned") is False,
+          "圖檔不存在 → 記 failed、captioned=False（呼叫端會補發文字）")
+finally:
+    whatsapp_send.upload_media, whatsapp_send.send_image = _orig_up, _orig_img
+    wechat_send.send_image = _orig_wx
+
+# ---------- [8] 端到端：handle_inbound 一次命中只送一條 ----------
+#
+# 這是使用者 實際踩到的場景。把「引擎」與「送出」都換成假的（**不真的發任何訊息**），
+# 只看 handle_inbound 到底叫了幾次送出 —— 舊版固定是「文字 1 次 + 圖片 1 次」。
+print("\n[8] 端到端：handle_inbound 命中帶圖時只送一條（不再重複）")
+
+from app.llm import reply_engine
+
+_ANSWER_TEXT = "伺服器端轉發成功的日誌如下圖所示。\n![圖 1 截圖](/media/placeholder.png)"
+_calls = []
+
+
+def _install_fakes(with_wechat=False):
+    """把 handle_inbound 的外部依賴全部換成假的；回傳 (還原函式, 記錄清單)。"""
+    from app.autoreply import autoreply_db
+
+    saved = {}
+    for name in ("is_enabled", "_guard", "_send", "_send_assets", "_mark", "_log"):
+        saved[("autoreply", name)] = getattr(autoreply, name)
+    saved[("reply_engine", "answer")] = reply_engine.answer
+    saved[("autoreply_db", "claim_message")] = autoreply_db.claim_message
+    saved[("autoreply_db", "mark_forward_log_handled")] = autoreply_db.mark_forward_log_handled
+    saved[("db", "insert_forward_log")] = autoreply.db.insert_forward_log
+
+    async def _fake_answer(question, **kw):
+        return reply_engine.Answer(reply_engine.TIER_RAG, text=_ANSWER_TEXT,
+                                   assets=[dict(_asset)], detail="測試")
+
+    async def _fake_send(ch, sc, text, *, to="", comment_id=""):
+        _calls.append(("text", text))
+        return {"ok": True, "status": 200, "body": "{}"}
+
+    async def _fake_send_assets(ch, sc, assets, *, to="", caption=""):
+        _calls.append(("image", caption))
+        return {"sent": len(assets), "failed": 0, "skipped": 0,
+                "captioned": bool(caption.strip()) and ch == "whatsapp"}
+
+    async def _fake_insert(_payload):
+        return None
+
+    autoreply.is_enabled = lambda ch, sc: True
+    autoreply._guard = lambda k, ignore=False: ""
+    autoreply._send = _fake_send
+    autoreply._send_assets = _fake_send_assets
+    autoreply._mark = lambda *a, **kw: None
+    autoreply._log = lambda payload, claim_key=None: None
+    reply_engine.answer = _fake_answer
+    autoreply_db.claim_message = lambda key, payload: True
+    autoreply_db.mark_forward_log_handled = lambda ch, cid: None
+    autoreply.db.insert_forward_log = _fake_insert
+
+    def _restore():
+        autoreply.is_enabled = saved[("autoreply", "is_enabled")]
+        autoreply._guard = saved[("autoreply", "_guard")]
+        autoreply._send = saved[("autoreply", "_send")]
+        autoreply._send_assets = saved[("autoreply", "_send_assets")]
+        autoreply._mark = saved[("autoreply", "_mark")]
+        autoreply._log = saved[("autoreply", "_log")]
+        reply_engine.answer = saved[("reply_engine", "answer")]
+        autoreply_db.claim_message = saved[("autoreply_db", "claim_message")]
+        autoreply_db.mark_forward_log_handled = saved[("autoreply_db", "mark_forward_log_handled")]
+        autoreply.db.insert_forward_log = saved[("db", "insert_forward_log")]
+
+    return _restore
+
+
+def _run_inbound(channel):
+    return asyncio.run(autoreply.handle_inbound(
+        channel=channel, scope="dm", text="服务器端转发成功日志长啥样？",
+        to="85200000000", conversation_key="__kb_asset_check__",
+        ignore_cooldown=True))
+
+
+_restore = _install_fakes()
+try:
+    _calls.clear()
+    res = _run_inbound("whatsapp")
+    kinds = [c[0] for c in _calls]
+    check(res.get("state") == "hit", "handle_inbound 走命中分支", str(res)[:80])
+    check(kinds == ["image"],
+          "★ WhatsApp：只送出 1 條（圖片 + caption），不再多送一條純文字", repr(kinds))
+    check(_calls and _calls[0][1].startswith("伺服器端轉發成功的日誌"),
+          "那條的文字就是回覆內容（當成 caption）", repr(_calls[0][1])[:40] if _calls else "")
+
+    _calls.clear()
+    _run_inbound("wechat")
+    kinds = [c[0] for c in _calls]
+    check(kinds == ["text", "image"],
+          "微信：文字一條 + 圖片一條（圖片沒有 caption，平台限制）", repr(kinds))
+    check(_calls[1][1] == "",
+          "★ 微信那張圖不帶文字 → 客戶不會看到重複的一段話")
+finally:
+    _restore()
+
 # 收尾要把圖片庫也一起清掉（它不屬於 kb_document 的 cascade）
 _ick = (imgcol or {}).get("id")
 

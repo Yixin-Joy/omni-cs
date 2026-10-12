@@ -1223,6 +1223,30 @@ detail       = 知識庫：命中 6 塊，但模型判定資料不足以回答
 所以 `autoreply` 送出前用 `strip_md_images()` 剝掉標記，圖改由 `_send_assets()` 以**真正的圖片訊息**送出。
 紀錄裡仍存完整 markdown（工作台渲染出圖）。
 
+**(d) ★ 圖文只發一條（2026-10-12 修）**
+
+症狀：客戶端收到「一條不帶圖的純文字」+「一條一模一樣、但帶圖的」。
+根因：舊版固定「**先**發文字一條 → **再**發圖一張，而 caption 又是同一段文字」。
+
+修法 —— 能帶 caption 的渠道就把文字塞進圖片一起發：
+
+| 渠道 | 做法 | 客戶收到 |
+|---|---|---|
+| WhatsApp（`send_image(..., caption=)`）| 文字當 caption 隨圖送出 | **1 條**（圖 + 文字）|
+| 微信（`send_image` 沒有 caption 欄位）| 文字一條、圖一條（**圖不帶文字**）| 2 條（先說明、後圖）|
+| IG / FB | 這個服務不發圖（attachment 需要公開可抓的 URL）| 1 條（純文字）|
+| 貼文留言（公開場合）| 一律不發圖 | 1 條（純文字）|
+
+實作要點：
+- 唯一判斷入口 `autoreply.assets_inline_caption(channel, scope, assets, text)`
+  （也檢查文字長度 ≤ `CAPTION_MAX`(900)，避免被 WhatsApp 的 1024 上限截斷）。
+- `_send_assets()` 回傳 `captioned`：**文字是否已經隨圖送出去了**。為 True 時呼叫端
+  **不得**再發一條純文字（`handle_inbound` 就是靠這個旗標決定要不要 `_push_text()`）。
+- ⚠️ **caption 只貼第一張成功送出的圖**（`cap_left` 用完就清空）—— 多張圖時每張都貼同一段，
+  客戶端會看到同一段話重複出現。
+- 圖送失敗 / 渠道不支援 → `captioned=False` → 呼叫端補發文字，**文字不會消失**。
+- `reply_detail` 會帶上「（附圖 N/M）」，工作台的訊息標記與紀錄頁看得出來這條附了圖。
+
 ### 21.3 順手修掉的一個顯示 bug
 
 `TIER_MISS` 的 `score` 原本寫成

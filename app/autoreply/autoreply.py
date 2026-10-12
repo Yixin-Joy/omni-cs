@@ -68,6 +68,10 @@ async def _send(channel: str, scope: str, text: str, *, to: str = "",
     return {"ok": status == 200, "status": status, "body": result.get("body") or ""}
 
 
+# WhatsApp 圖片訊息的 caption 上限是 1024 字元；留點餘裕，超過就改走「文字一條 + 圖一條」。
+CAPTION_MAX = 900
+
+
 async def _send_assets(channel: str, scope: str, assets: list, *, to: str = "",
                        caption: str = "") -> dict:
     """圖片隨文字一起送出（知識庫「圖文結合輸出」的輸出端）。
@@ -76,15 +80,25 @@ async def _send_assets(channel: str, scope: str, assets: list, *, to: str = "",
     每個渠道用的函式本來就有（WhatsApp `upload_media`+`send_image`／微信 `send_image`／
     IG、FB 的 attachment 需要公開 URL，這裡先不支援）。
 
-    回傳 `{sent, failed, skipped}`；**圖送失敗不算回覆失敗** ——
-    文字已經送到了，圖只是加分項，不該讓整則回覆被標成失敗。
+    回傳 `{sent, failed, skipped, captioned}`：
+
+    * ★ `captioned=True` = **文字已經隨圖片一起送出去了**（WhatsApp 的 caption），
+      呼叫端**不可以再單獨發一條純文字** —— 否則客戶會收到「一條純文字 + 一條一模一樣帶圖的」
+      （實測就是這個症狀）。微信的 `send_image` 不帶 caption → 這種情況回 False，
+      由呼叫端補發文字。
+    * ⚠️ **caption 只貼第一張成功送出的圖**：多張圖時若每張都貼同一段說明，
+      客戶端會看到同一段話重複出現。
+    * 圖送失敗不算回覆失敗 —— 文字另外發，圖只是加分項。
     """
-    out = {"sent": 0, "failed": 0, "skipped": 0}
+    # body/status 供呼叫端寫進 forward_log.target_response（「這條到底送了什麼」的證據）
+    out = {"sent": 0, "failed": 0, "skipped": 0, "captioned": False,
+           "status": None, "body": ""}
     if scope != "dm" or not assets:
         out["skipped"] = len(assets or [])
         return out
 
     from app.core import config
+    cap_left = (caption or "")[:CAPTION_MAX]
     for a in assets:
         rel = a.get("rel_path") or ""
         path = os.path.join(config.MEDIA_DIR, rel)
@@ -99,17 +113,24 @@ async def _send_assets(channel: str, scope: str, assets: list, *, to: str = "",
                 if not mid:
                     out["failed"] += 1
                     continue
-                r = await whatsapp_send.send_image(to, mid, caption=caption[:900])
+                r = await whatsapp_send.send_image(to, mid, caption=cap_left)
                 ok = (r or {}).get("status") == 200
+                if ok and cap_left.strip():
+                    out["captioned"] = True    # 文字已經跟著這張圖出去了
+                    cap_left = ""              # 後面的圖不再重複同一段說明
             elif channel == "wechat":
                 from app.channels import wechat_send
                 r = await asyncio.to_thread(wechat_send.send_image, to, path)
                 ok = (r or {}).get("status") == 200
+                # ⚠️ 微信圖片不帶文字 → captioned 保持 False，由呼叫端補發文字
             else:
                 # IG / FB 的 attachment 要「公開可抓的 URL」，本服務沒有公開圖床 → 略過
                 out["skipped"] += 1
                 continue
             out["sent" if ok else "failed"] += 1
+            if out["status"] is None:
+                out["status"] = (r or {}).get("status")
+                out["body"] = (r or {}).get("body") or ""
         except Exception as e:
             log.warning("自動回復附圖送出失敗（%s）：%s", a.get("id"), e)
             out["failed"] += 1
@@ -129,6 +150,21 @@ def _strip_images(text: str) -> str:
     except Exception:
         import re as _re
         return _re.sub(r"!\[[^\]\n]*\]\([^)\s]*\)", "", text or "").strip()
+
+
+def assets_inline_caption(channel: str, scope: str, assets: list, text: str) -> bool:
+    """這次回覆能不能「文字塞進圖片 caption」變成一條（＝客戶不會收到重複的兩條）。
+
+    ★ 使用者 回報：舊版固定「先發一條純文字 → 再發一張 caption 又是同一段文字的圖」，
+    客戶端就看到「一條不帶圖的 + 一條一模一樣帶圖的」。能帶 caption 的渠道就一條搞定。
+
+    · WhatsApp：`send_image(to, media_id, caption)` 支援（caption 上限 1024 字元）→ True。
+    · 微信：客服消息的圖片**沒有 caption 欄位** → 只能文字一條、圖一條（平台限制）。
+    · IG／FB：這個服務根本不發圖（attachment 需要公開可抓的 URL）→ False。
+    · 貼文留言（公開場合）不發圖 → False。
+    """
+    return bool(assets and scope == "dm" and channel == "whatsapp"
+                and (text or "").strip() and len(text) <= CAPTION_MAX)
 
 
 def _assets_caption(assets: list) -> str:
@@ -439,26 +475,52 @@ async def handle_inbound(
     # ⚠️ 客戶端（WhatsApp／微信）不會渲染 markdown，`![題注](/media/x.png)` 直接送出去
     #    會變成一行看不懂的網址字串。所以文字要**剝掉圖片標記**，圖改由附圖通道真的發。
     #    紀錄裡仍存完整 markdown（工作台會渲染出圖）。
+    assets = [a for a in (getattr(answer, "assets", None) or []) if a and a.get("rel_path")]
     send_text = _strip_images(answer.text)
-    if not send_text.strip() and getattr(answer, "assets", None):
-        send_text = _assets_caption(answer.assets)   # 純圖片回覆：文字用題注當說明
-    try:
-        result = await _send(channel, scope, send_text, to=to, comment_id=comment_id)
-    except Exception as e:
-        log.warning("自動回復送出失敗 %s/%s: %s", channel, scope, e)
-        result = {"ok": False, "status": None, "body": str(e)}
+    if not send_text.strip() and assets:
+        send_text = _assets_caption(assets)   # 純圖片回覆：文字用題注當說明
 
-    # 7b) 文字送成功、且這次命中的知識塊有圖 → 連圖一起送（私訊才送）
+    # ★ 送出策略（使用者 2026-10-12 回報：客戶收到「一條不帶圖的 + 一條一模一樣帶圖的」）
+    #   舊版固定「文字一條 → 圖一張（caption 又是同一段文字）」→ 內容重複了兩次。
+    #   現在：**能用 caption 帶文字的渠道就把文字塞進圖片一起發，只發一條**；
+    #   不能帶 caption 的（微信 `send_image` 沒有 caption）才文字一條、圖一條 —— 但圖不帶文字，
+    #   客戶端不會看到重複的一段話，而且**順序維持「先說明、後圖片」**讀起來才順。
     asset_note = ""
-    if result.get("ok") and getattr(answer, "assets", None):
+
+    async def _push_assets(cap: str) -> dict:
+        """發這次命中的圖（私訊才發）。`cap` 給非空 = 文字塞進第一張圖的 caption。"""
+        nonlocal asset_note
         try:
-            st = await _send_assets(channel, scope, answer.assets, to=to,
-                                    caption=send_text[:900])
-            if st["sent"] or st["failed"]:
-                asset_note = f"（附圖 {st['sent']}/{st['sent'] + st['failed']}）"
-                log.info("自動回復附圖：送出 %d、失敗 %d", st["sent"], st["failed"])
+            st = await _send_assets(channel, scope, assets, to=to, caption=cap)
         except Exception as e:
             log.warning("自動回復附圖流程失敗（不影響文字回覆）：%s", e)
+            return {"sent": 0, "failed": 0, "skipped": 0, "captioned": False}
+        if st["sent"] or st["failed"]:
+            asset_note = f"（附圖 {st['sent']}/{st['sent'] + st['failed']}）"
+            log.info("自動回復附圖：送出 %d、失敗 %d%s", st["sent"], st["failed"],
+                     "，文字已隨圖送出" if st.get("captioned") else "")
+        return st
+
+    async def _push_text() -> dict:
+        try:
+            return await _send(channel, scope, send_text, to=to, comment_id=comment_id)
+        except Exception as e:
+            log.warning("自動回復送出失敗 %s/%s: %s", channel, scope, e)
+            return {"ok": False, "status": None, "body": str(e)}
+
+    # WhatsApp 的圖片能帶 caption → 文字隨圖一條送出（其他渠道沒有這個能力）
+    if assets_inline_caption(channel, scope, assets, send_text):
+        st = await _push_assets(send_text)
+        if st.get("captioned"):
+            # 文字已經跟圖一起送出去了 → 這就是完整的一條回覆，不再發第二條
+            result = {"ok": True, "status": st.get("status"), "body": st.get("body") or ""}
+        else:
+            result = await _push_text()
+            await _push_assets("")     # caption 沒成 → 圖也不再帶文字，免得又重複一段
+    else:
+        result = await _push_text()
+        if result.get("ok") and assets and scope == "dm":
+            await _push_assets("")     # 微信等：圖不帶 caption（文字已經單獨發過）
 
     label = answer.label  # 「自動回復-FAQ命中」/「自動回復-表格命中」
 
@@ -486,8 +548,9 @@ async def handle_inbound(
         except Exception:
             pass
 
-    # 標記要能看出「是不是帶對話改寫 query 後才命中」
-    reply_detail = label + ("（改寫後命中）" if answer.rewrote else "")
+    # 標記要能看出「是不是帶對話改寫 query 後才命中」，以及「有沒有連圖一起發」
+    reply_detail = (label + ("（改寫後命中）" if answer.rewrote else "") +
+                    (f"（附圖 {asset_note.strip('（）')}）" if asset_note else ""))
     _mark(channel, scope, STATE_HIT, tier=answer.tier, detail=reply_detail,
           message_id=message_id, comment_id=comment_id, conversation_key=conversation_key)
 
