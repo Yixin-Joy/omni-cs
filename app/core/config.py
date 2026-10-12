@@ -123,6 +123,10 @@ DEEPSEEK_AUX_TIMEOUT = float(_get("DEEPSEEK_AUX_TIMEOUT", "5") or 5)
 # 同時送出的模型呼叫上限（本地排隊，避免撞上閘道的 max_parallel_requests 而被 429）
 DEEPSEEK_MAX_CONCURRENCY = int(_get("DEEPSEEK_MAX_CONCURRENCY", "2") or 2)
 
+# 視覺呼叫（看圖生描述）的逾時（秒）。比一般呼叫給得多 ——
+# reasoning 模型 + 圖片 base64 本來就慢（實測一張 16KB 圖約 5~15 秒）。
+DEEPSEEK_VISION_TIMEOUT = float(_get("DEEPSEEK_VISION_TIMEOUT", "90") or 90)
+
 # FAQ 規則匹配門檻（0~1，越高越嚴格）
 FAQ_MATCH_THRESHOLD = float(_get("FAQ_MATCH_THRESHOLD", "0.45") or 0.45)
 

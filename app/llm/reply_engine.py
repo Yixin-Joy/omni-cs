@@ -260,7 +260,8 @@ class Answer:
     __slots__ = ("tier", "text", "faq_id", "score", "rewrote", "reason", "detail",
                  "matched_question", "table_context_chars", "rewritten_query",
                  "history_used", "matched_rows", "rag_threshold", "rag_candidates",
-                 "rag_queries", "elapsed_ms", "llm_calls", "llm_seconds", "llm_errors")
+                 "rag_queries", "assets", "elapsed_ms", "llm_calls", "llm_seconds",
+                 "llm_errors")
 
     def __init__(self, tier: str, text: str = "", *, faq_id: int | None = None,
                  score: float | None = None, rewrote: bool = False, reason: str = "",
@@ -268,6 +269,7 @@ class Answer:
                  rewritten_query: str = "", history_used: int = 0,
                  matched_rows: list | None = None, rag_threshold: float | None = None,
                  rag_candidates: int = 0, rag_queries: list | None = None,
+                 assets: list | None = None,
                  elapsed_ms: int = 0, llm_calls: int = 0, llm_seconds: float = 0.0,
                  llm_errors: int = 0):
         self.tier = tier
@@ -287,6 +289,9 @@ class Answer:
         self.rag_candidates = rag_candidates
         # 這次實際拿去檢索的查詢句（多查詢改寫時第 0 條是原問句，其餘是改寫句）
         self.rag_queries = rag_queries or []
+        # ★ 命中帶出來的圖片（知識庫的圖文結合輸出）——
+        #   工作台顯示縮圖、自動回復連圖發送都讀這個。
+        self.assets = assets or []
         # 這次決策的用量（寫進紀錄頁，才看得出「為什麼要一分鐘」）
         self.elapsed_ms = int(elapsed_ms or 0)
         self.llm_calls = int(llm_calls or 0)
@@ -321,6 +326,7 @@ class Answer:
                 "rag_threshold": self.rag_threshold,
                 "rag_candidates": self.rag_candidates,
                 "rag_queries": self.rag_queries,
+                "assets": self.assets,
                 "elapsed_ms": self.elapsed_ms,
                 "llm_calls": self.llm_calls,
                 "llm_seconds": round(self.llm_seconds, 3),
@@ -411,7 +417,8 @@ async def _rag_try(queries: list[str], flavor: str, post_context: str, score: fl
     rows = [h.as_dict() for h in res.candidates[:30]]
     extra = dict(matched_rows=rows, rag_threshold=res.threshold,
                  rag_candidates=len(res.candidates), top1=res.top1,
-                 rag_queries=list(res.queries or []))
+                 rag_queries=list(res.queries or []),
+                 assets=list(res.assets or []))
 
     if res.reason == "empty_index":
         return None, "知識庫：還沒有已上線的文件", extra
@@ -443,7 +450,8 @@ async def _rag_try(queries: list[str], flavor: str, post_context: str, score: fl
                   rewritten_query=rewritten, history_used=history_used if rewrote else 0,
                   detail=detail, matched_rows=rows, rag_threshold=res.threshold,
                   rag_candidates=len(res.candidates),
-                  rag_queries=list(res.queries or [])), "", extra
+                  rag_queries=list(res.queries or []),
+                  assets=list(res.assets or [])), "", extra
 
 
 # ---------- 主流程 ----------
@@ -611,7 +619,8 @@ async def _answer_inner(text: str, *, channel: str, scope: str,
                   matched_rows=rag_extra.get("matched_rows"),
                   rag_threshold=rag_extra.get("rag_threshold"),
                   rag_candidates=int(rag_extra.get("rag_candidates") or 0),
-                  rag_queries=rag_extra.get("rag_queries") or (list(queries) if len(queries) > 1 else None))
+                  rag_queries=rag_extra.get("rag_queries") or (list(queries) if len(queries) > 1 else None),
+                  assets=rag_extra.get("assets"))
 
 
 def _tidy(text: str) -> str:

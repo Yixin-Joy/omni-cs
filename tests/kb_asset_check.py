@@ -1,0 +1,306 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""知識庫「圖文」自檢：PDF 行級解析 + 圖片抽取/題注/綁定 + 圖片端點 + 命中帶圖。
+
+涵蓋 2026-10-12 新增的三件事：
+  ① PDF 改走**行級解析**（pdfplumber）：頁碼/頁眉頁腳會被丟掉、
+     **跨頁只是物理隔斷**（不產生段落分隔）。
+  ② 圖片抽取（`ParsedAsset`）＋題注優先＋裝飾圖過濾。
+  ③ 圖**必須綁到知識塊**，命中時一起帶出來（圖文結合輸出）。
+
+⚠️ 合成 PDF 用 **英文語料**：內建的 Type1 Helvetica 沒有中文字型，
+   餵中文會被抽成 `(cid:xxx)` 亂碼（中文的真實案例請看 `kb_check.py` 的 docx）。
+
+可重複執行（自建臨時知識庫，跑完刪乾淨）。用法：
+    python tests/kb_asset_check.py
+"""
+import os
+import sys
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 專案根
+sys.path.insert(0, HERE)
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
+from fastapi.testclient import TestClient
+
+import main
+from app.rag import kb_db
+from app.rag import kb_ingest
+from app.rag import kb_parse
+from app.rag import kb_search
+
+TMP = os.path.join(HERE, "_p1_samples")
+os.makedirs(TMP, exist_ok=True)
+CHECK_COLLECTION = "圖文自檢庫"
+FAIL = []
+
+
+def check(cond, label, extra=""):
+    print(f"  [{'PASS' if cond else 'FAIL'}] {label}" + (f"   {extra}" if extra else ""))
+    if not cond:
+        FAIL.append(label)
+    return cond
+
+
+# ---------- 造檔 ----------
+
+def make_pdf_pages(path, pages, w=595, h=842):
+    """pages = [[(y, text), ...], ...]；y 是**從頁面底部算**的基線座標。
+
+    ⇒ 要讓某行落在「頁底」（跨頁續接的判斷依據），y 要小（例如 95）；
+      要落在「頁首」，y 要大（例如 780）。
+    """
+    def esc(s):
+        return s.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+    n = len(pages)
+    objs, kids = {}, []
+    for i, lines in enumerate(pages):
+        pno, cno = 4 + 2 * i, 5 + 2 * i
+        kids.append(f"{pno} 0 R")
+        content = "BT /F1 12 Tf\n"
+        for (y, text) in lines:
+            content += f"1 0 0 1 50 {y} Tm ({esc(text)}) Tj\n"
+        content += "ET"
+        objs[pno] = (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] "
+                     f"/Resources << /Font << /F1 3 0 R >> >> /Contents {cno} 0 R >>")
+        objs[cno] = f"<< /Length {len(content)} >>\nstream\n{content}\nendstream"
+    objs[1] = "<< /Type /Catalog /Pages 2 0 R >>"
+    objs[2] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {n} >>"
+    objs[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    out = b"%PDF-1.4\n"
+    offs = {}
+    for i in sorted(objs):
+        offs[i] = len(out)
+        out += f"{i} 0 obj\n{objs[i]}\nendobj\n".encode()
+    total = max(objs) + 1
+    x = len(out)
+    out += f"xref\n0 {total}\n0000000000 65535 f \n".encode()
+    for i in range(1, total):
+        out += (f"{offs[i]:010d} 00000 n \n" if i in offs else "0000000000 65535 f \n").encode()
+    out += f"trailer\n<< /Size {total} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n".encode()
+    with open(path, "wb") as f:
+        f.write(out)
+
+
+def make_docx_with_image(path, big=(800, 500), small=(40, 30), caption="figure 1-1 setup page"):
+    from PIL import Image
+    import docx
+    from docx.shared import Inches
+
+    p1 = os.path.join(TMP, "_img_big.png")
+    p2 = os.path.join(TMP, "_img_small.png")
+    Image.new("RGB", big, (220, 235, 250)).save(p1)
+    Image.new("RGB", small, (255, 255, 255)).save(p2)
+
+    d = docx.Document()
+    d.add_heading("操作說明", level=1)
+    d.add_paragraph("第一步：開啟設定頁面。")
+    d.add_picture(p1, width=Inches(4))
+    d.add_paragraph(caption)                 # ← 題注
+    d.add_paragraph("第二步：輸入連線資訊。")
+    d.add_picture(p2)                        # ← 太小 → 應被過濾
+    d.add_paragraph("第三步：儲存。")
+    d.save(path)
+    return path
+
+
+# ======================================================================
+# [1] PDF 行級解析
+# ======================================================================
+
+print("=" * 74)
+print(" 知識庫圖文自檢（PDF 行級解析 + 圖片抽取/綁定）")
+print("=" * 74)
+
+print("\n[1] PDF 行級解析：頁碼／頁眉頁腳過濾 + 跨頁接續")
+pdf_path = os.path.join(TMP, "linelevel.pdf")
+make_pdf_pages(pdf_path, [
+    # p1：標頭 + 一句話，**最後一行在頁底**（y 小）
+    [(780, "Product manual introduction."),
+     (760, "The A100 headset costs 1280 and ships in"),
+     (95, "two business days from our warehouse")],
+    # p2：**第一行在頁首**（y 大）→ 應該跟 p1 最後一行接起來
+    [(780, "and is covered by a 12 month warranty."),
+     (760, "Contact support for details."),
+     (95, "- 2 -")],                                    # ← 頁碼（頁腳帶 + 頁碼樣式）
+    [(780, "Spare parts can be ordered separately."),
+     (95, "- 3 -")],
+])
+parsed = kb_parse.parse(pdf_path, "pdf")
+
+check(parsed.meta.get("pages") == 3, "讀到 3 頁", str(parsed.meta.get("pages")))
+check(parsed.meta.get("dropped_header_footer") == 2,
+      "兩個頁碼都被辨識並丟掉",
+      f"dropped={parsed.meta.get('dropped_header_footer')}")
+check(not any(("- 2 -" in b.text) or ("- 3 -" in b.text) or b.text.strip().isdigit()
+              for b in parsed.blocks),
+      "頁碼沒有混進任何知識塊",
+      str([b.text for b in parsed.blocks if b.text.strip().isdigit()]))
+check(parsed.meta.get("cross_page_joins") == 1,
+      "跨頁續接被辨識（p1 尾 → p2 首 只有 1 處）",
+      f"joins={parsed.meta.get('cross_page_joins')}")
+joined = [b.text for b in parsed.blocks if "warehouse and is covered" in b.text]
+check(bool(joined), "跨頁那句被接成同一段（不是兩個段落）",
+      str(joined)[:90])
+check(joined and joined[0].endswith("warranty."),
+      "接起來之後整句完整到句尾")
+check(all(b.page_no is not None for b in parsed.blocks),
+      "每個塊都有 page_no（圖片才綁得上）",
+      str([b.page_no for b in parsed.blocks]))
+check(any(b.text.endswith(".") for b in parsed.blocks),
+      "真正以句點結束的句子仍然自成一段（沒被過度合併）")
+# 頁碼被丟掉，但**內文一字不少**
+_all = "".join(b.text for b in parsed.blocks)
+for needle in ("Product manual introduction.", "The A100 headset costs 1280",
+               "Contact support for details.", "Spare parts can be ordered separately."):
+    if needle not in _all:
+        check(False, f"內文沒有遺漏：{needle[:30]}")
+
+print("\n[2] 圖片抽取 + 題注優先 + 裝飾圖過濾")
+docx_path = make_docx_with_image(os.path.join(TMP, "with_image.docx"))
+pd = kb_parse.parse(docx_path, "docx")
+check(len(pd.assets) == 2, f"抽出 2 張圖", f"實際 {len(pd.assets)}")
+big = next((a for a in pd.assets if a.width >= 100), None)
+small = next((a for a in pd.assets if a.width < 100), None)
+check(big is not None and big.caption == "figure 1-1 setup page",
+      "題注被當成預設描述（不必再花 AI）",
+      repr(big.caption if big else None))
+check(big is not None and not big.filtered_reason, "正常的圖沒有被過濾掉")
+check(small is not None and bool(small.filtered_reason),
+      "太小的圖被標成裝飾（仍保留記錄）", repr(small.filtered_reason if small else None))
+check(all(a.anchor_block is not None for a in pd.assets),
+      "每張圖都有綁定錨點（anchor_block）",
+      str([a.anchor_block for a in pd.assets]))
+
+# ======================================================================
+# [3] 入庫：落地 + 去重 + 綁定分塊
+# ======================================================================
+
+print("\n[3] 入庫：圖片落地 + 綁定知識塊")
+cid = None
+for c in kb_db.list_collections():
+    if c["name"] == CHECK_COLLECTION:
+        cid = c["id"]
+if not cid:
+    cid = kb_db.create_collection(CHECK_COLLECTION, "圖文自檢用，可刪")["id"]
+else:
+    kb_db.update_collection(cid, {"enabled": True})     # 自檢庫一定要啟用
+
+with open(docx_path, "rb") as f:
+    up = kb_ingest.save_upload("with_image.docx", f.read(), "")
+did = up["doc"]["id"]
+kb_ingest.parse_and_chunk(did)
+
+assets = kb_db.list_assets(doc_id=did)
+check(len(assets) == 2, f"入庫後 kb_asset 有 2 筆", f"實際 {len(assets)}")
+check(all(a["rel_path"] for a in assets), "每筆都有落地路徑")
+on_disk = [a for a in assets
+           if os.path.exists(os.path.join(HERE, "media", a["rel_path"]))
+           or os.path.exists(os.path.join(os.getcwd(), "media", a["rel_path"]))]
+check(len(on_disk) == len(assets), "圖檔真的寫到磁碟（media/ 底下）",
+      f"{len(on_disk)}/{len(assets)}")
+check(all(a["doc_id"] == did for a in assets), "圖掛在這份文件底下")
+check(any(a["caption_source"] == "doc" for a in assets),
+      "題注來源標成 doc")
+check(any(not a["enabled"] and a["filtered_reason"] for a in assets),
+      "被過濾的圖 enabled=false（不會被帶出去）")
+check(all((a["chunk_count"] or 0) > 0 for a in assets if a["enabled"]),
+      "**啟用中的圖都綁到了知識塊**（圖文結合輸出的前提）",
+      str([(a["id"], a["chunk_count"]) for a in assets]))
+
+# 重複入庫不該產生重複的圖（sha256 去重）
+kb_ingest.parse_and_chunk(did)
+check(len(kb_db.list_assets(doc_id=did)) == 2,
+      "重新分塊不會產生重複圖片（sha256 去重）",
+      f"{len(kb_db.list_assets(doc_id=did))} 筆")
+
+# ======================================================================
+# [4] 圖片端點
+# ======================================================================
+
+print("\n[4] 圖片端點（列表 / 人工描述 / AI 不覆蓋人工 / 停用不帶出）")
+client = TestClient(main.app)
+
+
+def body(res):
+    import json
+    raw = getattr(res, "content", None) or getattr(res, "body", b"")
+    return json.loads(raw.decode("utf-8"))
+
+
+r = client.get(f"/console/kb/assets?doc_id={did}&include_filtered=1")
+d = body(r)
+check(r.status_code == 200 and len(d.get("assets", [])) == 2,
+      "GET /assets 回 2 張", f"status={r.status_code}")
+check(d.get("stats", {}).get("with_caption", 0) >= 1, "統計：有描述的張數 > 0",
+      str(d.get("stats")))
+r2 = client.get(f"/console/kb/assets?doc_id={did}&include_filtered=0")
+check(len(body(r2).get("assets", [])) == 1, "include_filtered=0 只回內容圖")
+
+aid = next(a["id"] for a in assets if a["caption_source"] == "doc")
+rf = client.get(f"/console/kb/asset/file/{aid}")
+check(rf.status_code == 200 and len(rf.content) > 100,
+      "GET /asset/file/{id} 回得到圖檔位元組", f"{len(rf.content)} bytes")
+check(client.get("/console/kb/asset/file/999999").status_code == 404,
+      "不存在的圖回 404")
+
+r = client.post("/console/kb/asset/caption", json={"id": aid, "caption": "人工寫的描述"})
+check(r.status_code == 200 and body(r)["asset"]["caption_source"] == "manual",
+      "人工描述寫入，來源標 manual")
+
+# ⚠️ 這條**不會真的呼叫模型**：端點在 manual 時直接跳過 → 可以放心跑
+r = client.post("/console/kb/asset/caption/ai", json={"id": aid})
+rr = (body(r).get("results") or [{}])[0]
+check(rr.get("skipped") and not rr.get("ok"),
+      "AI 描述**不會覆蓋**人工寫的描述（要覆蓋得帶 force=1）",
+      str(rr.get("error"))[:50])
+check(kb_db.get_asset(aid)["caption"] == "人工寫的描述",
+      "人工描述沒有被動到")
+
+r = client.post("/console/kb/asset/caption", json={"id": aid, "caption": ""})
+check(body(r)["asset"]["caption_status"] == "pending", "清空描述 → 回到待填")
+
+# 停用後不該被檢索帶出
+small_id = next(a["id"] for a in assets if not a["enabled"])
+check(small_id not in [x["id"] for x in
+                       (kb_db.assets_for_chunks([c["id"] for c in kb_db.list_chunks(did)]).get(
+                           kb_db.list_chunks(did)[0]["id"]) or [])],
+      "被停用的圖不會出現在 assets_for_chunks")
+
+# ======================================================================
+# [5] 命中帶圖
+# ======================================================================
+
+print("\n[5] 檢索命中 → 連圖一起帶出來")
+res_embed = kb_ingest.embed_document(did, "pending")
+kb_ingest.activate_document(did)
+kb_search.invalidate()
+check(res_embed.get("done", 0) > 0, "向量化完成", str(res_embed))
+
+sr = kb_search.search("設定頁面怎麼開啟")
+check(sr.passed, "檢索命中", f"top1={sr.top1:.3f}")
+check(bool(sr.assets), "SearchResult 帶出了圖片", f"{len(sr.assets)} 張")
+check(all("url" in a for a in sr.assets), "每張圖都有取圖 url")
+hit_with_assets = [h for h in sr.hits if h.assets]
+check(bool(hit_with_assets), "至少有一個入選塊帶著圖（Hit.assets）")
+js = sr.hits[0].as_dict() if sr.hits else {}
+check("assets" in js, "Hit.as_dict() 含 assets（寫進 matched_rows，紀錄頁才看得到）")
+
+# ---------- 收尾 ----------
+print()
+kb_ingest.delete_document(did)
+left = kb_db.asset_stats(doc_id=did).get("total") or 0
+check(left == 0, "刪文件時圖片一起清掉", f"殘留 {left}")
+
+print("\n" + "=" * 74)
+if FAIL:
+    print(f" 結果：{len(FAIL)} 項失敗")
+    for f in FAIL:
+        print("   ✗", f)
+else:
+    print(" 結果：全部通過 ✅")
+print("=" * 74)
+sys.exit(1 if FAIL else 0)

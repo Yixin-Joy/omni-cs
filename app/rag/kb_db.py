@@ -108,11 +108,51 @@ CREATE TABLE IF NOT EXISTS kb_param (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ★ 圖片資產（2026-10-12 新增）—— 知識庫的「圖」可以是兩條來源：
+--     ① 從文件抽出來的（doc_id 有值、page_no 有值）→ **一定會綁到知識塊**
+--     ② 使用者在知識庫頁單獨上傳的（doc_id IS NULL）→ 只掛在知識庫底下
+--   caption 就是它的「描述」，預設由人工填；有題注的文件會先把題注填進來。
+--   caption_source 記來源：doc(題注) / manual(人工) / ai(按鈕生成)
+--     ⚠️ manual 的不會被 AI 覆蓋（跟 kb_chunk.edited 同一個保護思路）。
+CREATE TABLE IF NOT EXISTS kb_asset (
+    id               BIGSERIAL PRIMARY KEY,
+    collection_id    BIGINT REFERENCES kb_collection(id) ON DELETE SET NULL,
+    doc_id           BIGINT REFERENCES kb_document(id) ON DELETE CASCADE,
+    page_no          INTEGER,                 -- PDF 頁碼（單獨上傳的圖沒有）
+    rel_path         TEXT NOT NULL,           -- 相對 media/ 的路徑
+    filename         TEXT,
+    mime             TEXT,
+    size_bytes       INTEGER,
+    width            INTEGER,
+    height           INTEGER,
+    sha256           TEXT,                    -- 去重（同一張圖在文件裡出現多次只存一份）
+    caption          TEXT,                    -- 描述（題注 / 人工 / AI）
+    caption_source   VARCHAR(10),             -- doc|manual|ai
+    caption_status   VARCHAR(10) NOT NULL DEFAULT 'pending',  -- pending|done|failed
+    bbox             JSONB,                   -- PDF 座標（溯源用）
+    embedding        REAL[],                  -- caption 的向量（讓圖本身也能被檢索）
+    embedding_status VARCHAR(8) NOT NULL DEFAULT 'pending',
+    enabled          BOOLEAN NOT NULL DEFAULT true,
+    filtered_reason  TEXT,                    -- 非空 = 啟發式判為裝飾圖（仍保留，可人工啟用）
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 圖片 ↔ 知識塊的綁定（多對多：一頁可能有多塊、一塊可能有多圖）
+CREATE TABLE IF NOT EXISTS kb_asset_chunk (
+    asset_id BIGINT NOT NULL REFERENCES kb_asset(id) ON DELETE CASCADE,
+    chunk_id BIGINT NOT NULL REFERENCES kb_chunk(id) ON DELETE CASCADE,
+    PRIMARY KEY (asset_id, chunk_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_kb_chunk_doc       ON kb_chunk(doc_id, ordinal);
 CREATE INDEX IF NOT EXISTS idx_kb_chunk_embed     ON kb_chunk(embedding_status, enabled);
 CREATE INDEX IF NOT EXISTS idx_kb_document_coll   ON kb_document(collection_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_kb_document_status ON kb_document(status);
 CREATE INDEX IF NOT EXISTS idx_kb_job_status      ON kb_job(status, id);
+CREATE INDEX IF NOT EXISTS idx_kb_asset_doc       ON kb_asset(doc_id, id);
+CREATE INDEX IF NOT EXISTS idx_kb_asset_coll      ON kb_asset(collection_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kb_asset_sha       ON kb_asset(sha256);
+CREATE INDEX IF NOT EXISTS idx_kb_asset_chunk_c   ON kb_asset_chunk(chunk_id);
 """
 
 # 舊庫升級：kb_param 原本是 `collection_id BIGINT NOT NULL` + PK(collection_id, key)，
@@ -685,6 +725,264 @@ def load_ready_chunks(collection_id: int | None = None) -> list[dict]:
         WHERE {' AND '.join(where)}
           AND (cc.id IS NULL OR cc.enabled)
         ORDER BY c.doc_id, c.ordinal
+    """
+    return query(sql, tuple(params))
+
+
+# ======================================================================
+# 圖片資產（kb_asset / kb_asset_chunk）
+#
+# 兩條來源：
+#   ① 從文件抽出來的（doc_id 有值）→ **一定會綁到知識塊**（見 bind_assets_for_doc）
+#   ② 使用者在知識庫頁單獨上傳的（doc_id IS NULL）→ 只掛在知識庫底下
+# caption 的來源記在 caption_source：doc(題注) / manual(人工) / ai(按鈕生成)。
+# ⚠️ manual 的不會被 AI 覆蓋 —— 跟 kb_chunk.edited 同一個保護思路。
+# ======================================================================
+
+_ASSET_COLS = """id, collection_id, doc_id, page_no, rel_path, filename, mime,
+                 size_bytes, width, height, sha256, caption, caption_source,
+                 caption_status, bbox, embedding_status, enabled, filtered_reason,
+                 created_at"""
+
+
+def create_asset(*, rel_path: str, collection_id: int | None = None,
+                 doc_id: int | None = None, page_no: int | None = None,
+                 filename: str = "", mime: str = "", size_bytes: int = 0,
+                 width: int = 0, height: int = 0, sha256: str = "",
+                 caption: str = "", caption_source: str = "", bbox: dict | None = None,
+                 enabled: bool = True, filtered_reason: str = "") -> dict:
+    """新增一張圖片。caption 有值就直接標成 done（題注的情況）。
+
+    `caption_source` 沒給但有 caption → 當成 'doc'（唯一會在建立時就帶著描述的
+    就是文件裡的題注；人工／AI 都是事後才寫）。
+    """
+    has_cap = bool((caption or "").strip())
+    src = (caption_source or ("doc" if has_cap else "")) or None
+    row = execute_returning(f"""
+        INSERT INTO kb_asset(collection_id, doc_id, page_no, rel_path, filename, mime,
+                             size_bytes, width, height, sha256, caption, caption_source,
+                             caption_status, bbox, enabled, filtered_reason)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
+        RETURNING id
+    """, (collection_id, doc_id, page_no, rel_path, filename, mime, size_bytes,
+          width, height, sha256, (caption or "").strip() or None,
+          src, "done" if has_cap else "pending",
+          json.dumps(bbox, ensure_ascii=False) if bbox else None,
+          enabled, filtered_reason or None))
+    return get_asset(row[0])
+
+
+def get_asset(aid: int) -> dict | None:
+    rows = query(f"SELECT {_ASSET_COLS} FROM kb_asset WHERE id=%s", (aid,))
+    return rows[0] if rows else None
+
+
+def list_assets(*, collection_id: int | None = None, doc_id: int | None = None,
+                enabled_only: bool = False, include_filtered: bool = True,
+                ungrouped: bool = False, limit: int = 500) -> list[dict]:
+    """列圖片。`include_filtered=False` = 只看「像內容圖」的那些。"""
+    where, params = [], []
+    if doc_id is not None:
+        where.append("a.doc_id=%s")
+        params.append(doc_id)
+    if ungrouped:
+        where.append("a.collection_id IS NULL")
+    elif collection_id is not None:
+        where.append("a.collection_id=%s")
+        params.append(collection_id)
+    if enabled_only:
+        where.append("a.enabled")
+    if not include_filtered:
+        where.append("(a.filtered_reason IS NULL OR a.filtered_reason='')")
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    sql = f"""
+        SELECT a.id, a.collection_id, a.doc_id, a.page_no, a.rel_path, a.filename,
+               a.mime, a.size_bytes, a.width, a.height, a.sha256, a.caption,
+               a.caption_source, a.caption_status, a.bbox, a.embedding_status,
+               a.enabled, a.filtered_reason, a.created_at,
+               d.filename AS doc_filename, d.title AS doc_title,
+               COALESCE((SELECT count(*) FROM kb_asset_chunk ac WHERE ac.asset_id = a.id), 0)
+                   AS chunk_count
+        FROM kb_asset a
+        LEFT JOIN kb_document d ON d.id = a.doc_id
+        {clause}
+        ORDER BY a.doc_id NULLS LAST, a.page_no NULLS LAST, a.id
+        LIMIT %s
+    """
+    return query(sql, tuple(params + [max(1, int(limit))]))
+
+
+def update_asset(aid: int, **fields) -> bool:
+    allowed = ("caption", "caption_source", "caption_status", "enabled",
+               "filtered_reason", "collection_id", "embedding",
+               "embedding_status", "page_no")
+    sets, params = [], []
+    for k, v in fields.items():
+        if k not in allowed:
+            continue
+        sets.append(f"{k}=%s")
+        params.append(v)
+    if not sets:
+        return False
+    params.append(aid)
+    return execute(f"UPDATE kb_asset SET {', '.join(sets)} WHERE id=%s", tuple(params)) > 0
+
+
+def set_asset_caption(aid: int, caption: str, source: str = "manual") -> dict | None:
+    """寫描述。source 記來源；空描述 = 清掉（回到待填）。"""
+    cap = (caption or "").strip()
+    execute("""
+        UPDATE kb_asset SET caption=%s, caption_source=%s, caption_status=%s,
+                            embedding=NULL, embedding_status='pending'
+        WHERE id=%s
+    """, (cap or None, (source or "manual") if cap else None,
+          "done" if cap else "pending", aid))
+    return get_asset(aid)
+
+
+def delete_asset(aid: int) -> bool:
+    return execute("DELETE FROM kb_asset WHERE id=%s", (aid,)) > 0
+
+
+def delete_assets_for_doc(doc_id: int) -> int:
+    """刪文件時連帶清圖片（FK 也會 cascade，這裡是為了能回報數量）。"""
+    return execute("DELETE FROM kb_asset WHERE doc_id=%s", (doc_id,))
+
+
+def find_asset_by_sha(sha256: str, *, doc_id: int | None = None,
+                      collection_id: int | None = None) -> dict | None:
+    """同一張圖是否已經存過（去重）。"""
+    if not sha256:
+        return None
+    where = ["sha256=%s"]
+    params: list = [sha256]
+    if doc_id is not None:
+        where.append("doc_id=%s")
+        params.append(doc_id)
+    if collection_id is not None:
+        where.append("collection_id=%s")
+        params.append(collection_id)
+    rows = query(f"SELECT {_ASSET_COLS} FROM kb_asset WHERE {' AND '.join(where)} "
+                 f"ORDER BY id LIMIT 1", tuple(params))
+    return rows[0] if rows else None
+
+
+def bind_asset_chunks(asset_id: int, chunk_ids: list[int]) -> int:
+    """把圖綁到知識塊（多對多，重複綁不會報錯）。"""
+    ids = sorted({int(c) for c in (chunk_ids or [])})
+    if not ids:
+        return 0
+    executemany("INSERT INTO kb_asset_chunk(asset_id, chunk_id) VALUES (%s, %s) "
+                "ON CONFLICT DO NOTHING", [(asset_id, c) for c in ids])
+    return len(ids)
+
+
+def clear_asset_bindings(asset_id: int) -> int:
+    return execute("DELETE FROM kb_asset_chunk WHERE asset_id=%s", (asset_id,))
+
+
+def clear_doc_bindings(doc_id: int) -> int:
+    """重跑分塊前先清掉這份文件所有圖的綁定（chunk_id 會整批換掉）。"""
+    return execute("""
+        DELETE FROM kb_asset_chunk WHERE asset_id IN
+            (SELECT id FROM kb_asset WHERE doc_id=%s)
+    """, (doc_id,))
+
+
+def assets_for_chunks(chunk_ids: list[int]) -> dict[int, list[dict]]:
+    """`chunk_id → [圖片]`（檢索命中時把圖帶出來用）。
+
+    只回**啟用**的圖；被啟發式判為裝飾的預設不帶出來（`enabled` 由入庫時決定）。
+    """
+    ids = sorted({int(c) for c in (chunk_ids or [])})
+    if not ids:
+        return {}
+    rows = query("""
+        SELECT ac.chunk_id, a.id, a.rel_path, a.filename, a.mime, a.caption,
+               a.caption_source, a.page_no, a.width, a.height, a.doc_id,
+               a.filtered_reason, a.enabled
+        FROM kb_asset_chunk ac
+        JOIN kb_asset a ON a.id = ac.asset_id
+        WHERE ac.chunk_id = ANY(%s) AND a.enabled
+        ORDER BY ac.chunk_id, a.id
+    """, (ids,))
+    out: dict[int, list[dict]] = {}
+    for r in rows:
+        out.setdefault(int(r["chunk_id"]), []).append(r)
+    return out
+
+
+def asset_stats(*, collection_id: int | None = None, doc_id: int | None = None) -> dict:
+    where, params = [], []
+    if doc_id is not None:
+        where.append("doc_id=%s")
+        params.append(doc_id)
+    if collection_id is not None:
+        where.append("collection_id=%s")
+        params.append(collection_id)
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    rows = query(f"""
+        SELECT count(*)                                                   AS total,
+               count(*) FILTER (WHERE enabled)                            AS enabled,
+               count(*) FILTER (WHERE caption IS NOT NULL)                AS with_caption,
+               count(*) FILTER (WHERE caption_source='doc')               AS from_doc,
+               count(*) FILTER (WHERE caption_source='manual')            AS manual,
+               count(*) FILTER (WHERE caption_source='ai')                AS ai,
+               count(*) FILTER (WHERE filtered_reason IS NOT NULL
+                                  AND filtered_reason <> '')              AS filtered,
+               count(*) FILTER (WHERE doc_id IS NOT NULL)                 AS from_docs,
+               count(*) FILTER (WHERE doc_id IS NULL)                     AS uploaded
+        FROM kb_asset {clause}
+    """, tuple(params))
+    return rows[0] if rows else {}
+
+
+def pending_asset_captions(limit: int = 50, doc_id: int | None = None) -> list[dict]:
+    """還沒描述、且沒被過濾掉的圖（AI 批次補描述用）。
+
+    ⚠️ **不會**挑 caption_source='manual' 的 —— 人工寫過的不重生成。
+    """
+    where = ["enabled", "caption IS NULL",
+             "(filtered_reason IS NULL OR filtered_reason='')"]
+    params: list = []
+    if doc_id is not None:
+        where.append("doc_id=%s")
+        params.append(doc_id)
+    rows = query(f"SELECT {_ASSET_COLS} FROM kb_asset WHERE {' AND '.join(where)} "
+                 f"ORDER BY doc_id, page_no NULLS LAST, id LIMIT %s",
+                 tuple(params + [max(1, int(limit))]))
+    return rows
+
+
+def save_asset_embeddings(items: list[tuple[int, list[float]]], model: str, dim: int) -> int:
+    n = 0
+    for aid, vec in items or []:
+        n += execute("""
+            UPDATE kb_asset SET embedding=%s, embedding_status='done' WHERE id=%s
+        """, (list(vec), int(aid)))
+    return n
+
+
+def load_ready_assets(collection_id: int | None = None) -> list[dict]:
+    """可檢索的圖（有描述、有向量、已啟用）。
+
+    讓「這張圖表在講什麼」這種問題查得到 —— caption 就是它的可檢索文字。
+    """
+    where = ["a.enabled", "a.embedding_status='done'", "a.caption IS NOT NULL"]
+    params: list = []
+    if collection_id is not None:
+        where.append("a.collection_id=%s")
+        params.append(collection_id)
+    sql = f"""
+        SELECT a.id, a.doc_id, a.collection_id, a.page_no, a.rel_path, a.filename,
+               a.mime, a.caption, a.caption_source, a.width, a.height, a.embedding,
+               d.title AS doc_title, d.filename AS doc_filename, d.doc_type
+        FROM kb_asset a
+        LEFT JOIN kb_document d ON d.id = a.doc_id
+        LEFT JOIN kb_collection cc ON cc.id = a.collection_id
+        WHERE {' AND '.join(where)}
+          AND (cc.id IS NULL OR cc.enabled)
+        ORDER BY a.id
     """
     return query(sql, tuple(params))
 

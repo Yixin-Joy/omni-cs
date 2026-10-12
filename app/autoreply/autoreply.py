@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 from app.core import config
@@ -65,6 +66,54 @@ async def _send(channel: str, scope: str, text: str, *, to: str = "",
 
     status = result.get("status")
     return {"ok": status == 200, "status": status, "body": result.get("body") or ""}
+
+
+async def _send_assets(channel: str, scope: str, assets: list, *, to: str = "",
+                       caption: str = "") -> dict:
+    """圖片隨文字一起送出（知識庫「圖文結合輸出」的輸出端）。
+
+    只有**私訊**才發圖 —— 貼文留言是公開場合，塞圖會很吵，也不好收回。
+    每個渠道用的函式本來就有（WhatsApp `upload_media`+`send_image`／微信 `send_image`／
+    IG、FB 的 attachment 需要公開 URL，這裡先不支援）。
+
+    回傳 `{sent, failed, skipped}`；**圖送失敗不算回覆失敗** ——
+    文字已經送到了，圖只是加分項，不該讓整則回覆被標成失敗。
+    """
+    out = {"sent": 0, "failed": 0, "skipped": 0}
+    if scope != "dm" or not assets:
+        out["skipped"] = len(assets or [])
+        return out
+
+    from app.core import config
+    for a in assets:
+        rel = a.get("rel_path") or ""
+        path = os.path.join(config.MEDIA_DIR, rel)
+        if not rel or not os.path.exists(path):
+            out["failed"] += 1
+            continue
+        mime = a.get("mime") or "image/png"
+        try:
+            if channel == "whatsapp":
+                from app.channels import whatsapp_send
+                mid = await whatsapp_send.upload_media(path, mime, a.get("filename") or "")
+                if not mid:
+                    out["failed"] += 1
+                    continue
+                r = await whatsapp_send.send_image(to, mid, caption=caption[:900])
+                ok = (r or {}).get("status") == 200
+            elif channel == "wechat":
+                from app.channels import wechat_send
+                r = await asyncio.to_thread(wechat_send.send_image, to, path)
+                ok = (r or {}).get("status") == 200
+            else:
+                # IG / FB 的 attachment 要「公開可抓的 URL」，本服務沒有公開圖床 → 略過
+                out["skipped"] += 1
+                continue
+            out["sent" if ok else "failed"] += 1
+        except Exception as e:
+            log.warning("自動回復附圖送出失敗（%s）：%s", a.get("id"), e)
+            out["failed"] += 1
+    return out
 
 
 # ---------- 標記 ----------
@@ -368,6 +417,18 @@ async def handle_inbound(
         log.warning("自動回復送出失敗 %s/%s: %s", channel, scope, e)
         result = {"ok": False, "status": None, "body": str(e)}
 
+    # 7b) 文字送成功、且這次命中的知識塊有圖 → 連圖一起送（私訊才送）
+    asset_note = ""
+    if result.get("ok") and getattr(answer, "assets", None):
+        try:
+            st = await _send_assets(channel, scope, answer.assets, to=to,
+                                    caption=answer.text[:900])
+            if st["sent"] or st["failed"]:
+                asset_note = f"（附圖 {st['sent']}/{st['sent'] + st['failed']}）"
+                log.info("自動回復附圖：送出 %d、失敗 %d", st["sent"], st["failed"])
+        except Exception as e:
+            log.warning("自動回復附圖流程失敗（不影響文字回覆）：%s", e)
+
     label = answer.label  # 「自動回復-FAQ命中」/「自動回復-表格命中」
 
     if not result["ok"]:
@@ -455,10 +516,11 @@ async def handle_inbound(
           "rewritten_query": answer.rewritten_query, "history_used": answer.history_used,
           "matched_rows": answer.matched_rows,
           "send_status": "sent", **_usage(answer)}, claim_key=claim_key)
-    log.info("自動回復已送出（%s/%s，%s%s）：%s", channel, scope, label,
-             "，改寫後命中" if answer.rewrote else "", answer.text[:60])
+    log.info("自動回復已送出（%s/%s，%s%s%s）：%s", channel, scope, label,
+             "，改寫後命中" if answer.rewrote else "", asset_note, answer.text[:60])
     return {"state": STATE_HIT, "tier": answer.tier, "label": label, "answer": answer.text,
-            "rewrote": answer.rewrote, "rewritten_query": answer.rewritten_query}
+            "rewrote": answer.rewrote, "rewritten_query": answer.rewritten_query,
+            "assets": answer.assets}
 
 
 def _own_message_id(result: dict) -> str:

@@ -182,10 +182,14 @@ class DeepSeekClient:
         self.timeout = float(timeout or config.DEEPSEEK_TIMEOUT or 30)
 
     async def complete(self, messages: list, temperature: float = 0.0, *,
-                       timeout: float | None = None, retries: int | None = None) -> str:
+                       timeout: float | None = None, retries: int | None = None,
+                       max_tokens: int | None = None) -> str:
         """送出一輪對話，回傳模型輸出文字。
 
         `timeout` / `retries` 可**單次覆寫**（改寫類呼叫走短超時、不重試 —— 見模組說明）。
+        `max_tokens` 不給就不送（維持原本行為：不截斷，但成本不可控）。
+        ⚠️ 本專案用的是 **reasoning 模型**，太小的 `max_tokens` 會被思考過程吃光、
+        `content` 回**空字串**（實測 20/30 就會空）——要限制就給 ≥200。
 
         網路類錯誤（連線中斷 / 逾時）預設自動重試一次：這類錯誤多半是暫時的。
         ⚠️ 但重試會讓最壞耗時變成兩倍（30 秒超時 → 60 秒），所以呼叫端若覺得
@@ -196,7 +200,8 @@ class DeepSeekClient:
         t0 = time.perf_counter()
         for attempt in range(max_tries):
             try:
-                out = await self._complete_once(messages, temperature, timeout=timeout)
+                out = await self._complete_once(messages, temperature, timeout=timeout,
+                                                max_tokens=max_tokens)
                 _notify(True, time.perf_counter() - t0)
                 return out
             except DeepSeekError as e:
@@ -211,7 +216,8 @@ class DeepSeekClient:
         raise last_error  # pragma: no cover
 
     async def _complete_once(self, messages: list, temperature: float = 0.0,
-                             timeout: float | None = None) -> str:
+                             timeout: float | None = None,
+                             max_tokens: int | None = None) -> str:
         if not self.api_key:
             raise DeepSeekError("尚未配置 DeepSeek API Key（請在 .env 填 DEEPSEEK_API_KEY）")
 
@@ -226,6 +232,8 @@ class DeepSeekClient:
             "temperature": temperature,
             "stream": False,
         }
+        if max_tokens:
+            payload["max_tokens"] = int(max_tokens)
 
         # 本地先排隊，別讓併發量超過閘道限流（否則每個呼叫都撞 429）
         try:
@@ -369,6 +377,42 @@ class DeepSeekClient:
             {"role": "user", "content": question},
         ]
         return (await self.complete(messages, temperature=0.2)).strip()
+
+    async def describe_image(self, image_bytes: bytes, mime: str = "image/png",
+                             hint: str = "", max_tokens: int = 1500) -> str:
+        """看圖寫描述（知識庫「AI 描述」按鈕用）。
+
+        ⚠️ 這是**視覺**呼叫：圖以 base64 data URI 放進 `image_url`。
+        實測本專案的模型（deepseek-flash / deepseek-v4-pro）**有視覺能力**、
+        能讀出圖中文字 —— 所以提示詞要它「把圖中文字照抄出來」，
+        等於順手把圖內文字也變成可檢索內容（不必另裝 OCR 引擎）。
+
+        ⚠️ 這些是 **reasoning 模型**，`max_tokens` 太小會被思考過程吃光、回空字串
+        （實測 20/30 就會空）。這裡預設給足。回空就當失敗，讓使用者改用人工描述。
+        """
+        import base64
+
+        from app.rag import rag_config
+
+        if not image_bytes:
+            raise DeepSeekError("圖片是空的")
+        b64 = base64.b64encode(image_bytes).decode()
+        prompt = _db_prompt("image_caption_prompt", rag_config.DEFAULT_IMAGE_PROMPT)
+        if hint:
+            prompt = f"{prompt}\n\n補充線索（可能來自檔名或題注，僅供參考）：{hint}"
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ],
+        }]
+        out = await self.complete(messages, temperature=0.2, max_tokens=max_tokens,
+                                  timeout=float(config.DEEPSEEK_VISION_TIMEOUT or 90))
+        text = (out or "").strip()
+        if not text:
+            raise DeepSeekError("模型沒有給出描述（可能是 max_tokens 太小被思考過程吃光）")
+        return text
 
 
 def clean_rewrite(text: str) -> str:

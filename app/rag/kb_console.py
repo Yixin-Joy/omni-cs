@@ -26,14 +26,25 @@
   POST /console/kb/search                   同上（POST 版，參數多時好用）
                                             · 帶 rewrite=1 → 先改寫查詢再多查詢檢索
                                             · history 可給上下文（純文字或 [{direction,text}]）
+  GET  /console/kb/assets                   圖片列表（含來源／綁定數／描述狀態）+ 統計
+  POST /console/kb/asset/upload             單獨上傳圖片（不屬於任何文件）
+  POST /console/kb/asset/caption            人工寫／改描述（手寫的不會被 AI 覆蓋）
+  POST /console/kb/asset/caption/ai         按鈕觸發 AI 描述（逐張呼叫視覺模型）
+  POST /console/kb/asset/update             啟用 / 停用單張圖（救回被誤判的裝飾圖）
+  POST /console/kb/asset/delete             刪除圖片
+  POST /console/kb/asset/rebind             重新綁定某份文件的圖到知識塊
+  GET  /console/kb/asset/file/{id}          取圖檔（走這條，不經公開的 /files）
 """
 import asyncio
 import json
 import logging
+import os
 
 from fastapi import APIRouter, File, Form, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
+from app.core import config
+from app.llm import deepseek_client
 from app.rag import kb_db
 from app.rag import kb_embed
 from app.rag import kb_ingest
@@ -603,3 +614,190 @@ async def doc_types():
     """支援的格式清單（UI 上傳區提示用）。"""
     return _ok({"types": list(kb_parse.DOC_TYPES),
                 "max_upload_mb": kb_ingest.MAX_UPLOAD_MB})
+
+
+# ======================================================================
+# 圖片資產（知識庫的「圖」）
+#
+# 兩條來源：從文件抽出來的（一定會綁到知識塊）／使用者在這一頁單獨上傳的。
+# 描述**預設由人工寫**；「AI 描述」是按鈕觸發（不自動跑，避免上傳大量圖時暴走）。
+# ======================================================================
+
+def _asset_path(row: dict) -> str:
+    return os.path.join(config.MEDIA_DIR, row.get("rel_path") or "")
+
+
+def _asset_view(row: dict) -> dict:
+    """給前端的圖片視圖（含取圖 URL）。"""
+    d = dict(row)
+    d["url"] = f"/console/kb/asset/file/{row['id']}"
+    d["from_doc"] = bool(row.get("doc_id"))
+    return d
+
+
+@router.get("/assets")
+async def list_assets(collection_id: str = "", doc_id: str = "",
+                      include_filtered: str = "1", ungrouped: str = ""):
+    """列圖片（可依知識庫／文件過濾）+ 統計。
+
+    `include_filtered=0` → 只看「像內容圖」的（預設含被啟發式判為裝飾的，
+    方便使用者複查有沒有誤殺 —— 誤判可以手動啟用）。
+    """
+    cid = _int_or_none(collection_id)
+    did = _int_or_none(doc_id)
+    inc = str(include_filtered).strip().lower() not in ("0", "false", "no", "")
+    ungr = str(ungrouped).strip().lower() in ("1", "true", "yes", "on")
+
+    def _run():
+        rows = kb_db.list_assets(collection_id=cid, doc_id=did,
+                                 include_filtered=inc, ungrouped=ungr)
+        return {"assets": [_asset_view(r) for r in rows],
+                "stats": kb_db.asset_stats(collection_id=cid, doc_id=did),
+                "include_filtered": inc}
+    return _ok(await asyncio.to_thread(_run))
+
+
+@router.post("/asset/upload")
+async def upload_assets(files: list[UploadFile] = File(...),
+                        collection_id: str = Form("")):
+    """單獨上傳圖片（不屬於任何文件，只掛在知識庫底下）。"""
+    cid = _int_or_none(collection_id)
+    out = []
+    for f in files:
+        raw = await f.read()
+        if not raw:
+            out.append({"ok": False, "error": "檔案是空的"})
+            continue
+        try:
+            row = await asyncio.to_thread(kb_ingest.save_uploaded_asset,
+                                          f.filename or "image.png", raw,
+                                          f.content_type or "", cid)
+            out.append({"ok": True, "asset": _asset_view(row)})
+        except Exception as e:
+            log.warning("圖片上傳失敗 %s: %s", f.filename, e)
+            out.append({"ok": False, "filename": f.filename, "error": str(e)})
+    return _ok({"results": out})
+
+
+@router.post("/asset/caption")
+async def set_asset_caption(body: dict):
+    """人工寫／改描述（source 固定 manual —— 之後 AI 按鈕不會覆蓋它）。"""
+    aid = _int_or_none(body.get("id"))
+    if not aid:
+        return _err("缺少圖片 id")
+    row = await asyncio.to_thread(kb_db.set_asset_caption, aid,
+                                  str(body.get("caption") or ""), "manual")
+    if not row:
+        return _err(f"圖片不存在：#{aid}", 404)
+    return _ok({"ok": True, "asset": _asset_view(row)})
+
+
+@router.post("/asset/caption/ai")
+async def ai_asset_caption(body: dict):
+    """按鈕觸發：用視覺模型看圖寫描述。
+
+    ⚠️ **不會覆蓋人工寫的**（`caption_source='manual'`）—— 除非帶 `force=1`。
+    批次時逐張跑（併發會撞閘道限流），並回報每一張的結果。
+    """
+    ids = body.get("ids") or ([body.get("id")] if body.get("id") else [])
+    ids = [_int_or_none(x) for x in ids]
+    ids = [i for i in ids if i]
+    if not ids:
+        return _err("缺少圖片 id")
+    if len(ids) > 50:
+        return _err("一次最多 50 張（每張都要呼叫模型，量大請分批）")
+    force = str(body.get("force") or "").strip().lower() in ("1", "true", "yes", "on")
+
+    results = []
+    for aid in ids:
+        row = await asyncio.to_thread(kb_db.get_asset, aid)
+        if not row:
+            results.append({"id": aid, "ok": False, "error": "圖片不存在"})
+            continue
+        if row.get("caption_source") == "manual" and not force:
+            results.append({"id": aid, "ok": False, "skipped": True,
+                            "error": "已有手工描述（要覆蓋請帶 force=1）"})
+            continue
+        path = _asset_path(row)
+        try:
+            data = await asyncio.to_thread(lambda: open(path, "rb").read())
+        except Exception as e:
+            results.append({"id": aid, "ok": False, "error": f"讀不到圖檔（{e}）"})
+            continue
+        hint = " ｜ ".join(x for x in (row.get("caption"), row.get("filename")) if x)
+        try:
+            text = await deepseek_client.DeepSeekClient().describe_image(
+                data, row.get("mime") or "image/png", hint=hint)
+        except Exception as e:
+            await asyncio.to_thread(kb_db.update_asset, aid,
+                                   caption_status="failed")
+            results.append({"id": aid, "ok": False, "error": f"AI 描述失敗：{e}"})
+            continue
+        updated = await asyncio.to_thread(kb_db.set_asset_caption, aid, text, "ai")
+        results.append({"id": aid, "ok": True, "caption": text,
+                        "asset": _asset_view(updated or row)})
+    ok_n = len([r for r in results if r.get("ok")])
+    return _ok({"ok": ok_n > 0, "done": ok_n, "total": len(ids), "results": results})
+
+
+@router.post("/asset/update")
+async def update_asset(body: dict):
+    """啟用 / 停用（被誤判成裝飾圖時，這裡可以把它救回來）。"""
+    aid = _int_or_none(body.get("id"))
+    if not aid:
+        return _err("缺少圖片 id")
+    fields = {}
+    if "enabled" in body:
+        fields["enabled"] = bool(body.get("enabled"))
+    if "collection_id" in body:
+        fields["collection_id"] = _int_or_none(body.get("collection_id"))
+    if not fields:
+        return _err("沒有要更新的欄位")
+    ok = await asyncio.to_thread(kb_db.update_asset, aid, **fields)
+    row = await asyncio.to_thread(kb_db.get_asset, aid)
+    if not row:
+        return _err(f"圖片不存在：#{aid}", 404)
+    return _ok({"ok": ok, "asset": _asset_view(row)})
+
+
+@router.post("/asset/delete")
+async def delete_asset(body: dict):
+    aid = _int_or_none(body.get("id"))
+    if not aid:
+        return _err("缺少圖片 id")
+    row = await asyncio.to_thread(kb_db.get_asset, aid)
+    ok = await asyncio.to_thread(kb_db.delete_asset, aid)
+    # 只有「單獨上傳」的圖才順手刪檔（文件抽出來的圖在文件的資料夾裡，刪文件時一起清）
+    if ok and row and not row.get("doc_id"):
+        try:
+            os.remove(_asset_path(row))
+        except Exception as e:
+            log.debug("刪圖片檔失敗（忽略）：%s", e)
+    return _ok({"ok": ok})
+
+
+@router.get("/asset/file/{asset_id}")
+async def asset_file(asset_id: int):
+    """取圖片檔。
+
+    刻意**走這條**而不是公開的 `/files/...`：一是可以統一換成有鑑權的讀法，
+    二是這裡會擋掉「檔案不存在」的情況，前端拿到的永遠是圖片或 404。
+    """
+    row = await asyncio.to_thread(kb_db.get_asset, asset_id)
+    if not row:
+        return _err(f"圖片不存在：#{asset_id}", 404)
+    path = _asset_path(row)
+    if not os.path.exists(path):
+        return _err("圖檔遺失（可能已被刪除）", 404)
+    return FileResponse(path, media_type=row.get("mime") or "application/octet-stream",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.post("/asset/rebind")
+async def rebind_assets(body: dict):
+    """重新綁定某份文件的圖（重跑分塊後、或綁定看起來不對時用）。"""
+    did = _int_or_none(body.get("doc_id"))
+    if not did:
+        return _err("缺少 doc_id")
+    n = await asyncio.to_thread(kb_ingest.rebind_doc_assets, did)
+    return _ok({"ok": True, "bindings": n})

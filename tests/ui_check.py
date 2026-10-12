@@ -495,6 +495,87 @@ if (FX.document) {
   has(wr, '向量化中…', '顯示背景任務狀態');
   has(wr, 'disabled', '未向量完時入庫鈕是停用的');
   arState.kbDoc = FX.document;
+
+  console.log('\n[3f] 圖片庫（第 5 頁）：文件抽出的圖 + 單獨上傳 + 人工／AI 描述');
+  arState.kbView = 'assets';
+  arState.kbAssetCid = 0;
+  arState.kbAssetAll = false;
+  arState.kbAssets = null;
+  let wa0 = ok(kbTabHtml(), 'kbTabHtml()（圖片庫尚未載入）', 80);
+  has(wa0, '載入中', '還沒載到資料時顯示載入中');
+  hasNot(wa0, '[object Object]', '載入中不會吐 [object Object]');
+
+  arState.kbAssets = { assets: [], stats: { total: 0 }, error: null };
+  arState.kbAssetAll = false;
+  let waF = ok(kbTabHtml(), 'kbTabHtml()（圖片庫空／不含被過濾）', 80);
+  has(waF, '沒有「像內容圖」的圖片', '空狀態說明「被過濾的不列出來」');
+  arState.kbAssetAll = true;
+  let waE = ok(kbTabHtml(), 'kbTabHtml()（圖片庫完全空）', 80);
+  has(waE, '還沒有任何圖片', '整個庫都沒有圖時有說明');
+  arState.kbAssetAll = false;
+
+  // 三種圖各一：題注帶入／單獨上傳待填／太小被過濾
+  const fxAssets = [
+    { id: 11, url: '/console/kb/asset/file/11', caption: '圖 1-1 設定頁面',
+      caption_source: 'doc', enabled: true, from_doc: true, doc_title: '操作手冊',
+      page_no: 3, chunk_count: 2, width: 800, height: 500,
+      filtered_reason: null, filename: 'a.png' },
+    { id: 12, url: '/console/kb/asset/file/12', caption: '', caption_source: null,
+      enabled: true, from_doc: false, chunk_count: 0, width: 400, height: 300,
+      filtered_reason: null, filename: 'b.png' },
+    { id: 13, url: '/console/kb/asset/file/13', caption: '', caption_source: null,
+      enabled: false, from_doc: true, doc_title: '操作手冊', page_no: 1, chunk_count: 0,
+      width: 40, height: 30, filtered_reason: '太小（40×30px）', filename: 'c.png' },
+  ];
+  arState.kbAssets = { assets: fxAssets,
+                       stats: { total: 3, enabled: 2, with_caption: 1, from_doc: 2,
+                                manual: 1, ai: 0, filtered: 1 } };
+  let wa = ok(kbTabHtml(), 'kbTabHtml()（圖片庫有資料）', 300);
+  has(wa, '圖片庫', '有圖片庫標題');
+  has(wa, '上傳圖片', '有單獨上傳圖片的入口');
+  has(wa, 'kbAssetInput', '有檔案選擇 input');
+  has(wa, 'kbAiCaptionPending', '有「AI 描述（未填的）」批次按鈕');
+  has(wa, '圖 1-1 設定頁面', '顯示題注帶入的描述');
+  has(wa, '題注', '標出描述來源是題注');
+  has(wa, '待填描述', '沒有描述時標「待填描述」');
+  has(wa, '來自文件', '標出來源是文件');
+  has(wa, '第 3 頁', '顯示來自第幾頁');
+  has(wa, '綁定 2 塊', '顯示綁到幾個知識塊（圖文結合輸出的關鍵）');
+  has(wa, '單獨上傳', '標出來源是單獨上傳');
+  has(wa, '太小（40×30px）', '顯示被啟發式過濾的原因');
+  has(wa, 'kbSaveCaption', '有儲存描述按鈕');
+  has(wa, 'kbAiCaption', '有單張 AI 描述按鈕');
+  has(wa, 'kbToggleAsset', '有啟用／停用');
+  has(wa, 'kbDeleteAsset', '有刪除');
+  has(wa, 'asset/file/11', '縮圖走取圖端點');
+  hasNot(wa, '[object Object]', '沒有 [object Object]');
+  hasNot(wa, 'undefined', '沒有 undefined 漏出來');
+  ck(wa.split('<img').length - 1 === 3, '三張圖都畫出縮圖',
+     (wa.split('<img').length - 1) + '/3');
+
+  console.log('\n[3g] 分塊頁：這份文件的圖片條 + 命中明細帶圖');
+  arState.kbView = 'doc';
+  arState.kbDocAssets = fxAssets;
+  let wd = ok(kbDocPageHtml(), 'kbDocPageHtml()（含文件圖片條）', 300);
+  has(wd, '這份文件的圖片', '分塊頁顯示這份文件的圖');
+  has(wd, '到圖片庫編輯', '有跳到圖片庫的按鈕');
+  has(wd, '未填描述', '沒有描述的圖標「未填描述」');
+  arState.kbDocAssets = null;
+
+  const hitWithAssets = { chunk_id: 5, doc: 'd.md', final: 0.6, vec: 0.6, lex: 0.2,
+                          picked: true, text: 'x',
+                          assets: [{ id: 21, url: '/console/kb/asset/file/21',
+                                     caption: '圖 2-1 流程' }] };
+  const hh = ok(kbHitHtml(hitWithAssets, true, false), 'kbHitHtml(帶圖)', 120);
+  has(hh, '命中附圖 1 張', '命中明細標出附圖張數');
+  has(hh, 'asset/file/21', '命中明細顯示縮圖');
+  has(hh, '圖 2-1 流程', '顯示圖片描述');
+  // 舊資料（沒有 assets 欄位）不能炸，也不該冒出「附圖」
+  const oldHit = ok(kbHitHtml({ chunk_id: 6, doc: 'd.md', final: 0.5, vec: 0.5,
+                                lex: 0.1, picked: true, text: 'y' }, true, false),
+                    'kbHitHtml(舊資料無 assets)', 60);
+  ck(oldHit.indexOf('命中附圖') < 0, '沒有 assets 就不顯示附圖區');
+  arState.kbView = 'doc';
 } else {
   ck(false, '找不到有知識塊的文件，分塊頁沒被驗到');
 }

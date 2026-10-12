@@ -47,6 +47,11 @@ class Chunk:
     sheet: str | None = None
     row_from: int | None = None
     row_to: int | None = None
+    # ★ 這塊涵蓋了輸入 blocks 的哪個區間（`chunk_blocks(blocks)` 的索引）。
+    #   用途：圖片要綁到分塊 —— 解析階段記下「圖屬於第幾個 Block」（ParsedAsset.anchor_block），
+    #   這裡再用區間把圖對應到真正落地的知識塊。
+    block_from: int | None = None
+    block_to: int | None = None
 
     def as_dict(self) -> dict:
         return {"text": self.text, "body": self.body, "prefix": self.prefix,
@@ -277,18 +282,26 @@ def chunk_blocks(blocks: list[Block], *, doc_type: str = "", title: str = "",
         packed = _pack(n_blocks, strategy, target, lo, hi, overlap)
 
     chunks: list[Chunk] = []
+    # `_pack` 只回 (文, 首塊, 尾塊)，這裡用物件 identity 反查索引，
+    # 就知道每塊涵蓋了輸入 blocks 的哪個區間（圖片綁定要靠它）。
+    idx_of = {id(b): i for i, b in enumerate(n_blocks)}
     for text, first, last in packed:
         prefix = _make_prefix(title, first.heading_path) if use_prefix else ""
         body = text
         full = f"{prefix}\n{body}" if prefix else body
         row_from = first.row_from
         row_to = last.row_to if last.row_to is not None else last.row_from
+        i0 = idx_of.get(id(first))
+        i1 = idx_of.get(id(last))
+        if i0 is not None and i1 is not None:
+            i0, i1 = min(i0, i1), max(i0, i1)
         chunks.append(Chunk(
             text=full, body=body, prefix=prefix, char_count=len(full),
             page_no=first.page_no,
             heading_path=first.heading_path or "",
             sheet=first.sheet,
             row_from=row_from, row_to=row_to,
+            block_from=i0, block_to=i1,
         ))
     return chunks
 
