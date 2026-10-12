@@ -3332,6 +3332,13 @@ function kbBoundImageLib(docCid) {
   return cols.find(x => x.kind === 'image' && x.image_of === Number(docCid)) || null;
 }
 
+// 這個 id 是不是「圖片庫」（kind='image'）。圖片庫**沒有文件頁** ——
+// 任何想把使用者帶去「某個知識庫的文件清單」的路徑，都要先問這一個。
+function kbIsImageLib(cid) {
+  const c = kbCollectionById(Number(cid) || 0);
+  return !!(c && c.kind === 'image');
+}
+
 /* --- 圖片庫（第 5 頁）：文件抽出的圖 + 單獨上傳的圖 --- */
 
 function kbOpenAssets(cid) {
@@ -3421,13 +3428,35 @@ function kbAssetCardHtml(a) {
 function kbAssetsPageHtml() {
   const d = arState.kbAssets;
   const cid = arState.kbAssetCid || 0;
-  const crumbs = [{ label: '知識庫', onclick: 'kbGoList()' }];
-  if (cid) {
-    crumbs.push({ label: kbAssetScopeName(), onclick: 'kbOpenCollection(' + cid + ')' });
-  }
-  crumbs.push({ label: '圖片庫' });
+  const col = cid ? kbCollectionById(cid) : null;
+  const scope = kbAssetScopeName();
 
-  const head = '<div class="kb-pg-head"><h3>圖片庫 · ' + esc(kbAssetScopeName()) + '</h3>' +
+  /* 麵包屑（使用者 2026-10-12：「建立圖片庫（效果展示）後左上角顯示
+     知識庫 › 效果展示 › 圖片庫，點『效果展示』還進到一個空的文檔庫 —— 不需要」）：
+     · 獨立圖片庫      → 知識庫 › <庫名>                 （它自己就是一個庫，不該再多一層）
+     · 文檔庫附帶圖片庫 → 知識庫 › <文檔庫名> › 圖片庫     （這一層才有意義：回得去文件清單）
+     · 全部圖片        → 知識庫 › 圖片庫
+     ⚠️ 圖片庫**沒有文件頁** → 那條麵包屑絕不能 onclick kbOpenCollection（會進到空文檔頁）。 */
+  const crumbs = [{ label: '知識庫', onclick: 'kbGoList()' }];
+  if (cid && col && col.kind === 'image' && col.image_of) {
+    const docCol = kbCollectionById(col.image_of);
+    crumbs.push({ label: docCol ? docCol.name : ('#' + col.image_of),
+                  onclick: 'kbOpenCollection(' + col.image_of + ')' });
+    crumbs.push({ label: '圖片庫' });
+  } else if (cid && col && col.kind === 'image') {
+    crumbs.push({ label: scope });                       // 獨立圖片庫：只到它自己
+  } else if (cid) {
+    crumbs.push({ label: scope, onclick: 'kbOpenCollection(' + cid + ')' });
+    crumbs.push({ label: '圖片庫' });
+  } else {
+    crumbs.push({ label: '圖片庫' });
+  }
+
+  // 標題：獨立圖片庫直接用庫名（不然「圖片庫 · 效果展示」跟麵包屑打架）
+  const standalone = !!(cid && col && col.kind === 'image' && !col.image_of);
+  const title = standalone ? scope : ('圖片庫 · ' + scope);
+
+  const head = '<div class="kb-pg-head"><h3>' + esc(title) + '</h3>' +
     '<div class="spacer" style="flex:1"></div>' +
     '<label class="btn primary sm">＋ 上傳圖片' +
       '<input type="file" id="kbAssetInput" accept="image/*" multiple style="display:none"' +
@@ -3608,6 +3637,16 @@ function kbDocsPageHtml() {
     return kbCrumbs([{ label: '知識庫', onclick: 'kbGoList()' }, { label: '找不到' }]) +
       '<div class="card"><div class="empty-note">這個知識庫已經不在了。</div>' +
       '<div class="row"><button class="btn primary" onclick="kbGoList()">回知識庫清單</button></div></div>';
+  }
+  // ★ 圖片庫沒有「文件清單」這一頁 —— 狀態殘留（例如前一次停在別的庫）時也不要畫出
+  //   一個看起來像「空的文檔知識庫」的頁面；直接給一條跳去圖片頁的路。
+  if (c && c.kind === 'image') {
+    return kbCrumbs([{ label: '知識庫', onclick: 'kbGoList()' }, { label: name }]) +
+      '<div class="card"><h3>' + esc(name) + '</h3>' +
+      '<div class="hint">這是一個<b>圖片知識庫</b>（放圖片、用描述檢索），它沒有文件清單。</div>' +
+      '<div class="row"><button class="btn primary" onclick="kbOpenAssets(' + c.id + ')">' +
+      '看這個圖片庫（' + (c.asset_count || 0) + ' 張）</button>' +
+      '<button class="btn" onclick="kbGoList()">回知識庫清單</button></div></div>';
   }
 
   const docs = (arState.kbDocs || []).filter(function (d) {
@@ -3971,8 +4010,12 @@ function kbGoList() {
 
 // ② 進某個知識庫（看它底下的文件）
 async function kbOpenCollection(id) {
+  const cid = Number(id) || 0;
+  // ★ 圖片庫沒有文件頁 —— 誤走進來（舊的麵包屑、舊連結、殘留狀態）就直接開它的圖片頁，
+  //   不要讓使用者看到一個「名為 XX 的空文檔知識庫」。
+  if (kbIsImageLib(cid)) return kbOpenAssets(cid);
   arState.kbUngrouped = false;
-  arState.kbCollection = Number(id) || 0;
+  arState.kbCollection = cid;
   arState.kbView = 'docs';
   kbForgetDoc();
   kbRender();
@@ -4511,11 +4554,14 @@ async function kbRenderParams() {
   const scopeName = c ? ('「' + c.name + '」') : '未分組文件';
   if (title) title.textContent = '檢索參數（全域） · 分塊參數' + (c ? ' · ' + c.name : '');
 
-  // 下拉只決定「分塊參數」改哪一個知識庫 —— 檢索參數永遠是全域，不受它影響
+  // 下拉只決定「分塊參數」改哪一個知識庫 —— 檢索參數永遠是全域，不受它影響。
+  // ⚠️ 圖片庫（kind='image'）沒有文件也沒有知識塊 → 不列進「分塊參數」的清單
+  //    （附帶的圖片庫也不要，它只是文檔庫的圖片架）。
   const sel = document.getElementById('kbParamTarget');
   if (sel) {
     sel.innerHTML = '<option value="0">未分組文件（分塊預設）</option>' +
-      cols.map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
+      cols.filter(x => x.kind !== 'image')
+        .map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
     sel.value = String(cid);
   }
 
