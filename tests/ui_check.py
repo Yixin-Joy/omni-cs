@@ -661,6 +661,66 @@ has(kbChunkListHtml([{ id: 1, ordinal: 1, char_count: 30, text: IMG_TEXT, enable
                        embedding_status: 'done' }]),
     '<img class="md-img"', '知識塊清單的內嵌圖片預覽會渲染');
 
+console.log('\n[3g3] 新增知識庫：向下展開「文檔 / 圖片」兩顆鈕（不用 prompt / confirm 問是/否）');
+arState.kb = FX.overview;
+arState.kbView = 'list';
+arState.kbNewOpen = false;
+
+// 收合時：不該出現面板
+const kbNoPanel = kbTabHtml();
+hasNot(kbNoPanel, 'kb-new-panel', '沒展開時不畫面板');
+hasNot(kbNoPanel, 'kbNewName', '沒展開時沒有名稱輸入框');
+has(kbNoPanel, 'kbCreateToggle()', '「＋ 新增知識庫」是展開鈕（不是直接建立）');
+has(kbNoPanel, '＋ 新增知識庫', '收合時按鈕寫「＋ 新增知識庫」');
+
+// 展開時：兩顆類型鈕
+arState.kbNewOpen = true;
+const kbPanel = ok(kbTabHtml(), 'kbTabHtml()（展開新增面板）');
+has(kbPanel, 'kb-new-panel', '展開後出現面板');
+has(kbPanel, 'kbNewName', '面板裡有名稱輸入框');
+has(kbPanel, '文檔知識庫', '有「文檔知識庫」按鈕');
+has(kbPanel, '圖片知識庫', '有「圖片知識庫」按鈕');
+has(kbPanel, "kbCreateCollection('doc')", '文檔鈕帶 kind=doc');
+has(kbPanel, "kbCreateCollection('image')", '圖片鈕帶 kind=image');
+has(kbPanel, '✕ 取消新增', '展開時按鈕變「取消新增」');
+hasNot(kbPanel, 'type="checkbox"', '沒有用勾選框（就是兩顆按鈕）');
+
+// ★ 核心驗收：整個新增流程不再彈「是/否」問句
+const __create = kbCreateCollection.toString();
+ck(__create.indexOf('confirm(') < 0, 'kbCreateCollection 不再用 confirm 問「是/否」');
+ck(__create.indexOf('prompt(') < 0, 'kbCreateCollection 不再用 prompt 問名稱');
+ck(__create.indexOf("'doc'") >= 0 && __create.indexOf("'image'") >= 0,
+   'kbCreateCollection 用傳進來的 kind 決定類型', 'doc / image');
+ck(kbNewPanelHtml.toString().indexOf('confirm(') < 0 &&
+   kbNewPanelHtml.toString().indexOf('prompt(') < 0, '面板本身也沒有彈窗');
+
+// 說明文案是單一來源（面板初版 = 名稱清空後回退的那份）
+ck(kbNewPanelHtml().indexOf(kbNewHintHtml()) >= 0, '面板初版與清空後用同一份說明（單一來源）');
+
+// 展開 / 收合切換
+arState.kbNewOpen = false;
+kbCreateToggle();
+ck(arState.kbNewOpen === true, 'kbCreateToggle() 展開');
+kbCreateToggle();
+ck(arState.kbNewOpen === false, 'kbCreateToggle() 再按一次收合');
+
+// 輸入名稱後，提示會說出「要建的名字」
+document.getElementById('kbNewName').value = '介面截圖庫';
+kbNewHint();
+ck(document.getElementById('kbNewHint').innerHTML.indexOf('介面截圖庫') >= 0,
+   '名稱有值 → 提示說出要建的名字', document.getElementById('kbNewHint').innerHTML.slice(0, 40));
+document.getElementById('kbNewName').value = '';
+kbNewHint();
+ck(document.getElementById('kbNewHint').innerHTML.indexOf('圖片知識庫') >= 0,
+   '名稱清空 → 回到預設說明');
+
+// 回清單要收起面板（不留半開的殘影）
+arState.kbNewOpen = true;
+kbGoList();
+ck(arState.kbNewOpen === false, 'kbGoList() 會收起新增面板');
+arState.kb = FX.overview;
+arState.kbCollection = CID;
+
 console.log('\n[3h] 導覽：三頁互跳');
 arState.kb = FX.overview;
 arState.tab = 'kb';
