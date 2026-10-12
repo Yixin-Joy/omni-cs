@@ -862,6 +862,23 @@ ck(tip.indexOf('<b>') < 0, '★ infotip() 會把 HTML 轉義（不會破版／�
 ck(tip.indexOf('&quot;') > 0 && tip.indexOf('&#39;') > 0, '引號被轉義');
 ck(/^<i class="infotip"/.test(tip), 'infotip() 是 <i> 圓標');
 
+// ①b 提示不再「靠邊就被裁掉」：顯示當下用 JS 算座標 → .tip-fixed（fixed 定位）
+//     （.sp-body 是 overflow:auto、.settings-panel 是 overflow:hidden，absolute 一定被裁）
+ck(typeof placeTip === 'function', 'placeTip() 已定義（提示改成顯示當下算座標）');
+const __pt = placeTip.toString();
+ck(__pt.indexOf('getBoundingClientRect') >= 0, '★ placeTip() 用圓標的實際位置算座標');
+ck(__pt.indexOf('Math.max') >= 0 && __pt.indexOf('Math.min') >= 0,
+   '★ placeTip() 把座標夾在視窗內（靠邊也不會超出畫面）');
+ck(__pt.indexOf('clientWidth') >= 0 && __pt.indexOf('clientHeight') >= 0,
+   'placeTip() 看的是視窗尺寸，不是面板尺寸');
+ck(__pt.indexOf('tip-fixed') >= 0, 'placeTip() 會加上 tip-fixed（換成 fixed 定位）');
+ck(__pt.indexOf('r.bottom') >= 0 && __pt.indexOf('r.top') >= 0,
+   '下方放不下時會翻到圓標上方');
+ck(__pt.indexOf('::after') >= 0, 'placeTip() 是先量提示（::after）尺寸再定位');
+ck(__pt.indexOf('catch') >= 0, '量不到時有 try/catch 退回純 CSS 版（不影響功能）');
+ck(typeof _tipOnEvent === 'function', '_tipOnEvent() 已定義');
+ck(_tipOnEvent.toString().indexOf('infotip') >= 0, '_tipOnEvent() 會從事件目標找出圓標');
+
 // ② 各渠道那一區的右上角是滑動開關（不是把整塊按鈕塞在 header）
 const arFull = autoreplyTabHtml();
 has(arFull, 'sw-toggle', '有滑動開關樣式');
@@ -1302,6 +1319,39 @@ def check_kb_new_modal_markup() -> None:
     return ok_
 
 
+def check_infotip_tooltip() -> None:
+    """「i」圓標提示的定位（CSS 在 <style>、委派在 <script>，JS 抽取只看 <script>）。
+
+    病灶：設定面板 `.sp-body` 是 overflow:auto、`.settings-panel` 是 overflow:hidden，
+    absolute 定位的提示只要圓標靠右緣／底部就會被面板裁掉 → 看不全。
+    修法：`.tip-fixed` 改成 fixed 定位（不受祖先 overflow 裁切），座標由 placeTip() 算。
+    """
+    path = os.path.join(HERE, "ui", "console_ui.html")
+    txt = io.open(path, encoding="utf-8").read()
+    ok_ = True
+
+    def need(cond, label, extra=""):
+        nonlocal ok_
+        check(cond, label, extra)
+        if not cond:
+            ok_ = False
+
+    need(".infotip.tip-fixed::after {" in txt, "CSS 有 .infotip.tip-fixed::after")
+    css = txt.split(".infotip.tip-fixed::after {", 1)[1].split("}", 1)[0]
+    need("position: fixed" in css, "★ 提示改用 fixed 定位（不受面板 overflow 裁切）", css.strip()[:60])
+    need("--tip-x" in css and "--tip-y" in css, "座標由 CSS 變數 --tip-x / --tip-y 提供")
+    need("transform: none" in css, "fixed 版不再用 translateX 置中（改成算好的座標）")
+    need("calc(100vw" in css, "提示寬度也會隨視窗縮（窄畫面不溢出）")
+    need(".infotip.tip-right" not in txt, "舊的 tip-right 手動靠邊寫法已移除（改成自動夾）")
+
+    need("function placeTip(" in txt, "有 placeTip()")
+    need("document.addEventListener('mouseover', _tipOnEvent" in txt,
+         "hover 用 document 事件委派（面板每 30 秒重繪也不會失效）")
+    need("document.addEventListener('focusin', _tipOnEvent" in txt,
+         "鍵盤 focus 也能顯示提示")
+    return ok_
+
+
 def main() -> int:
     if not os.path.exists(NODE):
         print(f"  ⚠ 找不到 node：{NODE}")
@@ -1314,6 +1364,7 @@ def main() -> int:
     # 靜態 HTML 本體（<script> 以外的部分）也要驗 —— JS 抽取涵蓋不到彈窗的節點
     print("\n[0] 靜態頁面節點")
     check_kb_new_modal_markup()
+    check_infotip_tooltip()
 
     fx = collect_fixtures()
     ids = seed_log_fixture(fx)

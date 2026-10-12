@@ -476,8 +476,17 @@
     transition: opacity .12s ease-out;
   }
   .infotip:hover::after, .infotip:focus::after { opacity: 1; visibility: visible; }
-  /* 靠右邊的元素：提示往左展開，免得超出面板 */
-  .infotip.tip-right::after { left: auto; right: 0; transform: none; }
+  /* ★ 顯示時由 JS（placeTip）算好座標改用 fixed 定位：
+     `.sp-body` 是 overflow:auto、`.settings-panel` 是 overflow:hidden，
+     絕對定位的提示只要圓標靠右緣（或靠底部）就會被面板裁掉、看不全。
+     fixed 不受祖先 overflow 裁切，座標再夾在視窗內就永遠看得完整。
+     前端腳本沒跑起來時退回上面的 absolute 版本，功能不會全失。
+     ⚠️ 這段註解不要出現 script 開標籤的字樣：ui_check 是用「第一個開標籤」
+     切出 JS 的，會在 CSS 裡誤切。 */
+  .infotip.tip-fixed::after {
+    position: fixed; left: var(--tip-x, 0px); top: var(--tip-y, 0px);
+    transform: none; max-width: min(290px, calc(100vw - 24px));
+  }
 
   /* 滑動開關（全部開／關） */
   .sw-toggle {
@@ -2791,10 +2800,49 @@ function autoreplyTabHtml() {
 
 // 「i」圓標：解釋性文字收進提示，滑鼠移上去才顯示（頁面不要一堆字）。
 // 純 CSS tooltip（.infotip::after 讀 data-tip）—— esc() 已把引號轉義，不會破版。
-// 靠面板右緣的元素可以加 tip-right 讓提示往左展開。
+// 顯示座標由 placeTip() 在 hover/focus 當下算好（見 .infotip.tip-fixed）。
 function infotip(text) {
   return '<i class="infotip" tabindex="0" data-tip="' + esc(text) + '">i</i>';
 }
+
+// 把提示夾進視窗內，避免「靠邊的圓標」提示被面板裁掉、看不全。
+//   x：預設與圓標水平置中；左右各自夾住（夾不到就貼邊，至少整塊看得見）
+//   y：預設在圓標下方；下方塞不下就翻到上方（再夾一次）
+// 只在顯示的那一刻算一次（提示內容是靜態的，不需要跟著重算）。
+function placeTip(el) {
+  if (!el || !el.getAttribute || !el.getAttribute('data-tip')) return;
+  if (typeof getComputedStyle !== 'function') return;
+  try {
+    // 先量：此時還是 absolute + width:max-content，量到的就是提示的實際尺寸
+    const cs = getComputedStyle(el, '::after');
+    const w = parseFloat(cs.width) || 0, h = parseFloat(cs.height) || 0;
+    const r = el.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth || window.innerWidth || 0;
+    const vh = document.documentElement.clientHeight || window.innerHeight || 0;
+    if (!vw || !vh) return;
+    const M = 10;                                   // 與視窗邊界至少留 10px
+    let x = r.left + r.width / 2 - w / 2;           // 與圓標水平置中
+    x = Math.max(M, Math.min(x, vw - w - M));       // 左右都夾住
+    let y = r.bottom + 7;                           // 預設：提示在圓標下方
+    if (y + h > vh - M) y = r.top - 7 - h;          // 下方放不下 → 翻到上方
+    y = Math.max(M, Math.min(y, vh - h - M));
+    if (el.style && el.style.setProperty) {
+      el.style.setProperty('--tip-x', Math.round(x) + 'px');
+      el.style.setProperty('--tip-y', Math.round(y) + 'px');
+    }
+    if (el.classList) el.classList.add('tip-fixed');
+  } catch (e) { /* 量不到就退回純 CSS 的 absolute 版本，不影響功能 */ }
+}
+
+// 事件委派（掛在 document 上）：設定面板每 30 秒會重繪 #spBody，
+// 掛在圓標本身的監聽會跟著消失，掛 document 才能一直有效。
+function _tipOnEvent(e) {
+  let n = e.target;
+  while (n && n.classList && !n.classList.contains('infotip')) n = n.parentNode;
+  if (n && n.classList) placeTip(n);
+}
+document.addEventListener('mouseover', _tipOnEvent, true);
+document.addEventListener('focusin', _tipOnEvent, true);
 
 // 右上角的滑動開關「全部開／關」：把**每一個渠道＋場景**都設成同一個值。
 //
