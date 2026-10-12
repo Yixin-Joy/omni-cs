@@ -181,6 +181,10 @@
   .file-info a { color: var(--accent-dark); font-size: 12px; text-decoration: none; }
   .file-info a:hover { text-decoration: underline; }
   .img-thumb { max-width: 260px; max-height: 260px; border-radius: 10px; display: block; cursor: pointer; }
+  /* chunk / 命中文字裡內嵌的 markdown 圖片（![題注](/media/xxx.png) 渲染出來的） */
+  .md-img { max-width: 100%; max-height: 220px; border-radius: 8px; display: block;
+            margin: 6px 0; border: 1px solid var(--border); background: #fafbfc;
+            cursor: zoom-in; }
   .img-broken { color: var(--text-soft); font-size: 12px; }
 
   .composer { background: var(--panel); border-top: 1px solid var(--border); padding: 12px 16px 14px; flex-shrink: 0; }
@@ -685,6 +689,37 @@ let _spTab = '';    // 設定面板目前分頁（快取要連分頁一起比）
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// 把文字裡的 markdown 圖片標記 ![題注](url) 轉成 <img> —— 這是「圖文合併輸出」的前端那一半。
+// ⚠️ 只認圖片語法，其餘文字照舊轉義；URL 只允許相對路徑或 http(s)，
+//    避免 `javascript:` 之類的注入（描述是使用者可編輯的內容）。
+function mdImages(text) {
+  const s = String(text == null ? '' : text);
+  if (s.indexOf('![') < 0) return esc(s);
+  const re = /!\[([^\]\n]*)\]\(([^)\s]+)\)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(s)) !== null) {
+    out += esc(s.slice(last, m.index));
+    const alt = m[1], url = m[2];
+    if (/^(https?:\/\/|\/)/i.test(url)) {
+      out += '<img class="md-img" src="' + esc(url) + '" alt="' + esc(alt) + '"' +
+        ' loading="lazy" title="' + esc(alt || '圖片') + '"' +
+        " onerror=\"this.outerHTML='&lt;div class=img-broken&gt;圖片無法載入&lt;/div&gt;'\"" +
+        " onclick=\"window.open(this.src,'_blank')\">";
+    } else {
+      out += esc(m[0]);
+    }
+    last = m.index + m[0].length;
+  }
+  out += esc(s.slice(last));
+  return out;
+}
+
+// 這段文字裡有幾張 markdown 圖（用來決定要不要顯示預覽）
+function mdImageCount(text) {
+  const m = String(text == null ? '' : text).match(/!\[[^\]\n]*\]\([^)\s]+\)/g);
+  return m ? m.length : 0;
 }
 
 async function api(path, opts) {
@@ -3228,25 +3263,36 @@ function kbListPageHtml() {
       '<div class="kb-pg-head"><h3>知識庫</h3>' +
         '<div class="spacer" style="flex:1"></div>' +
         '<button class="btn primary" onclick="kbCreateCollection()">＋ 新增知識庫</button>' +
-        '<button class="btn sm" onclick="kbOpenAssets(0)">圖片庫</button>' +
+        '<button class="btn sm" onclick="kbOpenAssets(0)">全部圖片</button>' +
         '<button class="btn sm" onclick="openKbParams(0)">參數配置（檢索全域 · 分塊預設）</button>' +
         '<button class="btn sm" onclick="kbReload()">重新讀取</button>' +
       '</div>' +
-      '<div class="hint">點一個知識庫進去，就會看到它底下的文件，以及「新增文檔」。' +
-      '檢索參數（門檻 / 召回數）<b>所有知識庫共用一組</b>；分塊參數可以每個庫各自設。' +
-      '停用的整庫不參與檢索。</div>' +
+      '<div class="hint">知識庫分兩種：<b>文檔知識庫</b>（放文件，會自動附帶一個「<名稱>_圖片庫」）' +
+      '與<b>圖片知識庫</b>（放圖片，用描述檢索；也能建完全獨立的）。' +
+      '點一個進去就會看到它的內容。檢索參數（門檻 / 召回數）<b>所有知識庫共用一組</b>；' +
+      '分塊參數可以每個庫各自設。停用的整庫不參與檢索（文檔庫停用時，它的圖片庫一起停）。</div>' +
       colCards + ungroupedCard +
     '</div>';
 }
 
 function kbColCardHtml(c) {
+  const isImg = (c.kind === 'image');
+  const open = isImg ? ('kbOpenAssets(' + c.id + ')') : ('kbOpenCollection(' + c.id + ')');
+  const sub = isImg
+    ? ('圖片 ' + (c.asset_count || 0) + ' 張' +
+       (c.image_of ? ' · 隸屬文檔庫' : ' · 獨立圖片庫') +
+       (c.description ? ' · ' + esc(c.description) : ''))
+    : ('文件 ' + (c.doc_count || 0) + '（已上線 ' + (c.ready_count || 0) +
+       '）· 知識塊 ' + (c.chunk_count || 0) +
+       ' · 圖片 ' + (c.asset_count || 0) +
+       (c.description ? ' · ' + esc(c.description) : ''));
   return '<div class="kb-col clickable' + (c.enabled ? '' : ' off') + '"' +
-    ' onclick="kbOpenCollection(' + c.id + ')">' +
+    ' onclick="' + open + '">' +
     '<span style="flex:1;min-width:180px">' +
-      '<span class="kc-name">' + esc(c.name) + '</span>' +
-      '<span class="kc-sub">文件 ' + (c.doc_count || 0) + '（已上線 ' + (c.ready_count || 0) +
-        '）· 知識塊 ' + (c.chunk_count || 0) +
-        (c.description ? ' · ' + esc(c.description) : '') + '</span>' +
+      '<span class="kc-name">' +
+        (isImg ? '<span class="pill on" style="margin-right:6px">圖片庫</span>' : '') +
+        esc(c.name) + '</span>' +
+      '<span class="kc-sub">' + sub + '</span>' +
     '</span>' +
     '<span class="pill ' + (c.enabled ? 'on' : 'off') + '">' + (c.enabled ? '啟用' : '停用') + '</span>' +
     '<span class="kc-go">›</span>' +
@@ -3354,6 +3400,7 @@ function kbAssetsPageHtml() {
       '<input type="file" id="kbAssetInput" accept="image/*" multiple style="display:none"' +
       ' onchange="kbUploadAssets(this)"></label>' +
     '<button class="btn sm" onclick="kbAiCaptionPending()">AI 描述（未填的）</button>' +
+    '<button class="btn sm" onclick="kbEmbedAssets()">補向量化（舊圖）</button>' +
     '<button class="btn sm" onclick="kbToggleAssetFilter()">' +
       (arState.kbAssetAll ? '只顯示內容圖' : '顯示被過濾的') + '</button>' +
     '<button class="btn sm" onclick="kbLoadAssets()">重新讀取</button>' +
@@ -3382,10 +3429,13 @@ function kbAssetsPageHtml() {
   return kbCrumbs(crumbs) +
     '<div class="card">' + head +
       '<div class="hint">' +
-        '來自文件的圖<b>一定會綁到知識塊</b>：那個塊被檢索命中時，圖就會跟著一起輸出' +
-        '（工作台顯示、自動回復私訊時連圖發送）。單獨上傳的圖只靠自己的<b>描述</b>被檢索到。' +
+        '圖片庫的檢索靠<b>描述</b>：寫好描述（或按 AI 描述）會<b>立刻向量化</b>，' +
+        '之後用自然語言問就能查到這張圖 —— 命中時前端直接把圖渲染出來（圖文合併輸出）。' +
+        '<br>來自文件的圖<b>一定會綁到知識塊</b>，圖的 markdown 標記' +
+        '（<code>![題注](/media/xxx.png)</code>）也已經內嵌在那一塊的文字裡，' +
+        '所以那一塊被命中時圖就會跟著一起輸出。' +
         '<br>描述<b>預設由人工填</b>；文件裡本來就有題注（「圖 1-2 …」）的會自動帶入。' +
-        '要讓模型看圖寫描述，按該張的「AI 描述」——<b>不會覆蓋你手寫的</b>。' +
+        '「AI 描述」按鈕<b>不會覆蓋你手寫的</b>（要覆蓋要另外指定）。' +
       '</div>' +
       stats +
       (arState.kbAssetNote || '') +
@@ -3441,7 +3491,19 @@ async function kbSaveCaption(id) {
     kbRender();
     return;
   }
-  arState.kbAssetNote = '<div class="test-result">✅ 描述已儲存（人工）</div>';
+  arState.kbAssetNote = '<div class="test-result">✅ 描述已儲存（人工），已向量化 —— 現在就查得到這張圖</div>';
+  await kbLoadAssets();
+}
+
+async function kbEmbedAssets() {
+  arState.kbAssetNote = '<div class="test-result">向量化中…</div>';
+  kbRender();
+  const cid = arState.kbAssetCid || 0;
+  const res = await apiJson('/console/kb/asset/embed', cid ? { collection_id: cid } : {});
+  arState.kbAssetNote = res.data.error
+    ? '<div class="test-result">❌ ' + esc(res.data.error) + '</div>'
+    : '<div class="test-result">✅ 補向量化：成功 ' + (res.data.done || 0) +
+      ' 張（共 ' + (res.data.total || 0) + ' 張待處理）</div>';
   await kbLoadAssets();
 }
 
@@ -3706,6 +3768,11 @@ function kbChunkListHtml(chunks) {
           (c.enabled ? '' : '<span class="tag-state err">已停用</span>') +
         '</div>' +
         '<textarea rows="3" id="kbC_' + c.id + '">' + esc(c.text) + '</textarea>' +
+        (mdImageCount(c.text)
+          ? '<div class="hint" style="margin:4px 0 0">內嵌圖片預覽（' + mdImageCount(c.text) +
+            ' 張，命中這塊時會一起輸出）：</div>' +
+            '<div class="chunk-images">' + mdImages(c.text) + '</div>'
+          : '') +
         '<div class="ck-acts">' +
           '<button class="btn sm primary" onclick="kbChunkSave(' + c.id + ')">儲存這塊</button>' +
           '<button class="btn sm" onclick="kbChunkSplit(' + c.id + ')">從游標處拆分</button>' +
@@ -4007,13 +4074,20 @@ function kbIndexStats(cid) {
 /* ----- 知識庫：集合 CRUD ----- */
 
 async function kbCreateCollection() {
-  const name = prompt('新知識庫名稱（例如：產品保固條款）');
+  const name = prompt('新知識庫名稱（例如：產品保固條款／介面截圖庫）');
   if (!name || !name.trim()) return;
-  const res = await apiJson('/console/kb/collections/create', { name: name.trim() });
+  const isImg = confirm('「' + name.trim() + '」要建成哪一種知識庫？\n\n' +
+    '【確定】圖片知識庫 —— 放圖片，用「描述」檢索\n' +
+    '　（截圖、示意圖這類：檢索靠描述文字，命中後直接把圖帶出來）\n\n' +
+    '【取消】文檔知識庫 —— 放文件（PDF / Word / Excel / Markdown…）\n' +
+    '　（會自動附帶一個「' + name.trim() + '_圖片庫」，文件裡抽出來的圖都放那裡，啟停用連動）');
+  const res = await apiJson('/console/kb/collections/create',
+                            { name: name.trim(), kind: isImg ? 'image' : 'doc' });
   if (res.data.error) { alert('新增失敗：' + res.data.error); return; }
   const nid = res.data.collection && res.data.collection.id;
   await loadKbOverview(true);
-  if (nid) await kbOpenCollection(nid);   // 直接進去，接著就能上傳文件
+  if (nid && isImg) await kbOpenAssets(nid);        // 圖片庫：直接進去就能上傳圖
+  else if (nid) await kbOpenCollection(nid);        // 文檔庫：進去上傳文件
 }
 
 async function kbRenameCollection(id) {
@@ -4819,8 +4893,11 @@ function kbHitHtml(r, isPicked, showQueries) {
   return '<div class="kb-hit' + (isPicked ? ' picked' : '') + '">' +
     '<div class="kh-head">' + (isPicked ? '<span class="pill on">入選</span>'
                                         : '<span class="pill off">未入選</span>') +
+      (r.kind === 'image' ? '<span class="pill on">圖片命中</span>' : '') +
       '<span class="kb-src">' + (src || '未知來源') + '</span>' +
-      (r.chunk_id != null ? '<span class="kb-score">塊 #' + esc(String(r.chunk_id)) + '</span>' : '') +
+      (r.chunk_id != null && r.kind !== 'image'
+        ? '<span class="kb-score">塊 #' + esc(String(r.chunk_id)) + '</span>'
+        : (r.asset_id != null ? '<span class="kb-score">圖 #' + esc(String(r.asset_id)) + '</span>' : '')) +
     '</div>' +
     '<div class="kb-score">總分 <b>' + n(r.final) + '</b>' +
       ' · 向量 ' + n(r.vec) + ' · 字面 ' + n(r.lex) +
@@ -4829,7 +4906,7 @@ function kbHitHtml(r, isPicked, showQueries) {
     (showQueries && Array.isArray(r.queries) && r.queries.length
       ? '<div class="kb-score">命中查詢：' +
         r.queries.map(esc).join(' ｜ ') + '</div>' : '') +
-    (r.text ? '<div style="margin-top:3px">' + esc(r.text) + '</div>' : '') +
+    (r.text ? '<div style="margin-top:3px">' + mdImages(r.text) + '</div>' : '') +
     attHtml +
   '</div>';
 }

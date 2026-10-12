@@ -115,6 +115,28 @@ class ParsedAsset:
     def sha256(self) -> str:
         return hashlib.sha256(self.data or b"").hexdigest()
 
+    @property
+    def public_name(self) -> str:
+        """公開目錄裡的檔名（sha 前 16 碼 + 副檔名）—— 天然去重、無中文檔名問題。"""
+        return f"{self.sha256[:16]}.{(self.ext or 'png').lstrip('.')}"
+
+    @property
+    def url(self) -> str:
+        """對外網址（`/media/xxx.png`）。"""
+        from app.rag import rag_config
+        return rag_config.media_url(self.public_name)
+
+    @property
+    def markdown(self) -> str:
+        """插進 chunk 文字的 markdown 圖片標記。
+
+        ★ 命名用**題注**（「圖 3-2 請求流程」）；沒有題注就 `![](url)` —— 不亂標名字。
+        alt 裡的 `]`、換行要先清掉，否則會把標記本身弄壞。
+        """
+        alt = re.sub(r"[\r\n]+", " ", (self.caption or "").strip())
+        alt = alt.replace("]", "】").replace("[", "【")
+        return f"![{alt}]({self.url})"
+
 
 @dataclass
 class ParsedDoc:

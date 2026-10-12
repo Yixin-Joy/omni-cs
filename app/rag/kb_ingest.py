@@ -156,7 +156,8 @@ def preview_chunks(doc_id: int, params: dict | None = None, limit: int = 30) -> 
         use = {k: rag_config.coerce(k, v) for k, v in use.items()}
     parsed = parse_cached(doc)
     chunks = kb_chunk.chunk_blocks(parsed.blocks, doc_type=doc.get("doc_type") or "",
-                                   title=doc.get("title") or "", params=use)
+                                   title=doc.get("title") or "", params=use,
+                                   assets=parsed.assets)
     sizes = [c.char_count for c in chunks] or [0]
     return {
         "doc_id": doc_id,
@@ -186,15 +187,37 @@ def _media_rel(path: str) -> str:
     return rel.replace(os.sep, "/")
 
 
-def _assets_dir(doc: dict) -> str:
-    """圖片落地目錄：跟來源檔同一個 uuid 資料夾底下的 `assets/`。
+def _asset_dir() -> str:
+    """圖片的**公開**落地目錄（`media/kb_assets/`，掛在 `/media` 之下）。
 
-    這樣「刪文件」時把整個資料夾砍掉就一併清了圖（見 delete_document）。
+    為什麼是平的、而且另開一個目錄：
+      · 檔名 = sha 前 16 碼 → 天然去重、沒有中文檔名問題；
+      · markdown 要能直接引用（`![題注](/media/xxx.png)`），所以必須是公開靜態路徑；
+      · 但 `media/` 底下還有客戶來訊檔案與上傳的來源文件，不能一起公開。
     """
-    src = doc.get("source_path") or ""
-    base = (os.path.dirname(src) if src
-            else os.path.join(rag_config.RAG_KB_DIR, f"doc_{doc.get('id')}"))
-    return os.path.join(base, "assets")
+    return rag_config.RAG_MEDIA_DIR
+
+
+def _asset_abs(name: str) -> str:
+    return os.path.join(_asset_dir(), name)
+
+
+def _asset_rel_path(name: str) -> str:
+    """`kb_asset.rel_path` 的值：**相對 MEDIA_DIR**（與舊資料同一個語意）。"""
+    return f"kb_assets/{name}"
+
+
+def _image_collection_id(doc: dict) -> int | None:
+    """這份文件的圖要落到哪個**圖片知識庫**。
+
+    文檔知識庫 → 它的「<名>_圖片庫」（沒有就自動建）；
+    未分組文件 → None（圖也是未分組）。
+    """
+    cid = doc.get("collection_id")
+    if not cid:
+        return None
+    got = kb_db.ensure_image_collection(int(cid))
+    return int(got["id"]) if got else None
 
 
 def save_doc_assets(doc: dict, parsed) -> list[tuple]:
@@ -203,15 +226,18 @@ def save_doc_assets(doc: dict, parsed) -> list[tuple]:
     回傳 `[(ParsedAsset, asset_row), …]`，**順序與 `parsed.assets` 一致** ——
     綁定分塊時要靠這個對應關係（ParsedAsset 上的 anchor_block 不會存進 DB）。
 
+    落地位置：`media/kb_assets/<sha16>.<ext>`（公開，對外 `/media/<sha16>.<ext>`）。
+    所屬知識庫：**文檔庫的圖一律落進它的「<名>_圖片庫」**（使用者 定案的綁定）。
+
     ⚠️ 沒有任何 AI 呼叫：題注有就填進去，沒有就留空等人填／等按鈕生成。
     """
     out: list[tuple] = []
     assets = list(getattr(parsed, "assets", None) or [])
     if not assets:
         return out
-    cid = doc.get("collection_id")
     did = doc.get("id")
-    folder = _assets_dir(doc)
+    cid = _image_collection_id(doc)
+    folder = _asset_dir()
     made_dir = False
 
     for pa in assets:
@@ -223,7 +249,7 @@ def save_doc_assets(doc: dict, parsed) -> list[tuple]:
         if not made_dir:
             os.makedirs(folder, exist_ok=True)
             made_dir = True
-        name = f"{sha[:16]}.{pa.ext}"          # 用 sha 命名：天然去重、無中文檔名問題
+        name = pa.public_name          # sha 前 16 碼 + 副檔名
         abs_path = os.path.join(folder, name)
         try:
             if not os.path.exists(abs_path):
@@ -233,7 +259,7 @@ def save_doc_assets(doc: dict, parsed) -> list[tuple]:
             log.warning("圖片落地失敗（跳過）%s: %s", name, e)
             continue
         row = kb_db.create_asset(
-            rel_path=_media_rel(abs_path), collection_id=cid, doc_id=did,
+            rel_path=_asset_rel_path(name), collection_id=cid, doc_id=did,
             page_no=pa.page_no, filename=pa.name or name, mime=pa.mime,
             size_bytes=len(pa.data), width=pa.width, height=pa.height, sha256=sha,
             caption=pa.caption, caption_source=("doc" if pa.caption else ""),
@@ -241,9 +267,9 @@ def save_doc_assets(doc: dict, parsed) -> list[tuple]:
             filtered_reason=pa.filtered_reason)
         out.append((pa, row))
     if out:
-        log.info("文件 #%s 圖片：抽出 %d、落地 %d、有題注 %d",
+        log.info("文件 #%s 圖片：抽出 %d、落地 %d、有題注 %d（→ 圖片庫 #%s）",
                  did, len(assets), len(out),
-                 len([p for p, _ in out if p.caption]))
+                 len([p for p, _ in out if p.caption]), cid)
     return out
 
 
@@ -299,7 +325,7 @@ def save_uploaded_asset(filename: str, content: bytes, mime: str = "",
     if dup and not dup.get("doc_id"):
         return dup                                  # 同一張圖上傳兩次 → 直接沿用
 
-    folder = os.path.join(rag_config.RAG_KB_DIR, "uploads")
+    folder = _asset_dir()
     os.makedirs(folder, exist_ok=True)
     name = f"{sha[:16]}.{ext}"
     abs_path = os.path.join(folder, name)
@@ -311,12 +337,46 @@ def save_uploaded_asset(filename: str, content: bytes, mime: str = "",
                              width=w, height=h)
     a.filtered_reason = kb_parse._decor_reason(a, 0.0, 0.0)
     row = kb_db.create_asset(
-        rel_path=_media_rel(abs_path), collection_id=collection_id, doc_id=None,
+        rel_path=_asset_rel_path(name), collection_id=collection_id, doc_id=None,
         filename=filename or name, mime=mime or a.mime, size_bytes=len(content),
         width=w, height=h, sha256=sha, enabled=not a.filtered_reason,
         filtered_reason=a.filtered_reason)
-    log.info("單獨上傳圖片：%s（%dx%d，asset#%s）", filename, w, h, row["id"])
+    log.info("單獨上傳圖片：%s（%dx%d，asset#%s，url %s）",
+             filename, w, h, row["id"], a.url)
     return row
+
+
+def embed_assets_for(*, doc_id: int | None = None, collection_id: int | None = None,
+                     limit: int = 200) -> dict:
+    """把「有描述但還沒向量化」的圖片送進 embedding —— **圖片庫能被檢索的前提**。
+
+    以前完全沒有這一步（`save_asset_embeddings` 是死代碼），所以圖片庫的圖永遠
+    `embedding_status='pending'`、永遠搜不到；這是「上傳了卻命中不了」的根因。
+
+    只做本地 embedding，不呼叫任何 AI。沒有描述就沒東西可嵌入（跳過，等填描述）。
+    """
+    targets = kb_db.pending_asset_embeddings(limit=limit, doc_id=doc_id,
+                                             collection_id=collection_id)
+    if not targets:
+        return {"total": 0, "done": 0, "failed": 0}
+    provider = kb_embed.get_provider()
+    done, failed = 0, 0
+    batch = kb_embed.DEFAULT_BATCH
+    for i in range(0, len(targets), batch):
+        group = targets[i:i + batch]
+        texts = [kb_chunk.asset_embed_text(a) for a in group]
+        try:
+            vecs = provider.encode(texts, batch_size=batch)
+        except Exception as e:
+            log.warning("圖片描述向量化失敗（跳過）：%s", e)
+            failed += len(group)
+            continue
+        items = [(int(a["id"]), v) for a, v in zip(group, vecs) if v]
+        kb_db.save_asset_embeddings(items, provider.model_name, provider.dim)
+        done += len(items)
+    if done or failed:
+        log.info("圖片描述向量化：成功 %d / 失敗 %d", done, failed)
+    return {"total": len(targets), "done": done, "failed": failed}
 
 
 def rebind_doc_assets(doc_id: int) -> int:
@@ -337,7 +397,8 @@ def rebind_doc_assets(doc_id: int) -> int:
         parsed = parse_cached(doc)
         use = doc.get("parse_params") or kb_db.load_params(doc.get("collection_id"))
         chunks = kb_chunk.chunk_blocks(parsed.blocks, doc_type=doc.get("doc_type") or "",
-                                       title=doc.get("title") or "", params=use)
+                                       title=doc.get("title") or "", params=use,
+                                       assets=parsed.assets)
         if len(chunks) == len(chunk_rows):
             created = [(pa, {"id": r["id"]}) for pa, r in
                        zip(parsed.assets, _assets_in_order(doc_id))]
@@ -391,7 +452,8 @@ def parse_and_chunk(doc_id: int, params: dict | None = None) -> dict:
                                        "parse_meta": parsed.meta})
 
         chunks = kb_chunk.chunk_blocks(parsed.blocks, doc_type=doc.get("doc_type") or "",
-                                       title=doc.get("title") or "", params=use)
+                                       title=doc.get("title") or "", params=use,
+                                       assets=parsed.assets)
         if not chunks:
             raise ParseError("no_text_layer", "解析出 0 個知識塊（可能整份都是圖片）")
 
@@ -444,7 +506,14 @@ def embed_document(doc_id: int, mode: str = "pending", on_progress=None) -> dict
         targets = [c for c in all_chunks if c["enabled"] and c["embedding_status"] != "done"]
 
     if not targets:
-        return {"total": 0, "done": 0, "failed": 0, "message": "沒有需要向量化的知識塊"}
+        # ⚠️ 知識塊都向量化過了也要**照樣處理圖片** —— 圖片是後來才補上描述、
+        #    或文件根本沒有新塊時，圖片的向量化不能跟著被跳過（踩過）。
+        out = {"total": 0, "done": 0, "failed": 0, "message": "沒有需要向量化的知識塊"}
+        try:
+            out["assets"] = embed_assets_for(doc_id=doc_id)
+        except Exception as e:
+            log.debug("連帶向量化圖片失敗（不影響文件）：%s", e)
+        return out
 
     job = kb_db.create_job(doc_id, "embed")
     keep_status = doc.get("status")
@@ -459,7 +528,9 @@ def embed_document(doc_id: int, mode: str = "pending", on_progress=None) -> dict
     try:
         for i in range(0, total, batch):
             group = targets[i:i + batch]
-            texts = [c["text"] for c in group]
+            # ★ 只把「文字」送進 embedding —— markdown 圖片標記（`![題注](/media/…））
+            #   留在 text 欄位給前端渲染／給 LLM 看，但不參與向量化（使用者 定案的規則）。
+            texts = [kb_chunk.strip_md_images(c["text"]) for c in group]
             try:
                 vecs = provider.encode(texts, batch_size=batch)
             except Exception as e:
@@ -491,6 +562,11 @@ def embed_document(doc_id: int, mode: str = "pending", on_progress=None) -> dict
 
     result = {"total": total, "done": done - len(failed_ids), "failed": len(failed_ids),
               "keep_status": keep_status, "stats": kb_db.chunk_stats(doc_id)}
+    # ★ 文件的圖（有描述的）順手向量化 —— 這樣「問圖表內容」才查得到。
+    try:
+        result["assets"] = embed_assets_for(doc_id=doc_id)
+    except Exception as e:
+        log.debug("連帶向量化圖片失敗（不影響文件）：%s", e)
     log.info("文件 #%s 向量化：%d/%d 成功、%d 失敗", doc_id, result["done"], total,
              result["failed"])
     return result

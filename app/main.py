@@ -93,6 +93,14 @@ app = FastAPI(title="wechat-webhook-forwarder", lifespan=lifespan)
 Path(config.MEDIA_DIR).mkdir(exist_ok=True)
 app.mount("/files", StaticFiles(directory=config.MEDIA_DIR), name="files")
 
+# ★ 知識庫圖片的公開目錄（2026-10-12）：只掛**圖片專用**目錄，
+#   這樣 markdown 裡的 `![題注](/media/xxx.png)` 能直接渲染，
+#   而 media/ 底下其他東西（客戶來訊檔案、上傳的來源文件）仍然不公開。
+from app.rag import rag_config as _rag_config  # noqa: E402
+Path(_rag_config.RAG_MEDIA_DIR).mkdir(parents=True, exist_ok=True)
+app.mount(_rag_config.RAG_MEDIA_URL_PREFIX.rstrip("/") or "/media",
+          StaticFiles(directory=_rag_config.RAG_MEDIA_DIR), name="kb-media")
+
 # 客服工作台 UI + 後台接口（掛在 /console 之下）
 app.include_router(console.router)
 

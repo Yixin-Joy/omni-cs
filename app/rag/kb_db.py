@@ -29,10 +29,17 @@ log = logging.getLogger("wechat-forwarder")
 # ---------- 資料表定義（create_db.py 也呼叫這裡，保持單一真相） ----------
 
 _DDL = """
+-- ★ 2026-10-12：知識庫分兩型（kind）
+--     'doc'   文檔知識庫：放文件（PDF/Word/…），切塊後可檢索
+--     'image' 圖片知識庫：放圖片（單獨上傳 + 從文檔抽出來的），用「描述」檢索
+--   文檔知識庫建立時會**自動建立**一個同名「<名>_圖片庫」（kind='image'，
+--   image_of 指向該文檔庫）—— 從文件抽出來的圖一律落在那裡，且**啟停用連動**。
 CREATE TABLE IF NOT EXISTS kb_collection (
     id          BIGSERIAL PRIMARY KEY,
     name        TEXT NOT NULL,
     description TEXT,
+    kind        VARCHAR(8) NOT NULL DEFAULT 'doc',   -- doc | image
+    image_of    BIGINT,                              -- kind='image' 時：所屬文檔知識庫 id
     enabled     BOOLEAN NOT NULL DEFAULT true,
     sort_order  INTEGER NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -175,7 +182,18 @@ BEGIN
     END IF;
 END $$;
 ALTER TABLE kb_param ALTER COLUMN collection_id DROP NOT NULL;
+-- ★ 2026-10-12：kb_collection 分兩型（doc | image）。舊資料一律視為文檔知識庫。
+ALTER TABLE kb_collection ADD COLUMN IF NOT EXISTS kind VARCHAR(8) NOT NULL DEFAULT 'doc';
+ALTER TABLE kb_collection ADD COLUMN IF NOT EXISTS image_of BIGINT;
+-- ⚠️ 索引要放在 ADD COLUMN **之後**（放在 _DDL 裡會在舊庫上先撞
+--    `column "kind" does not exist`）。
+CREATE INDEX IF NOT EXISTS idx_kb_collection_kind ON kb_collection(kind, id);
+CREATE INDEX IF NOT EXISTS idx_kb_collection_of   ON kb_collection(image_of);
 """
+
+# 知識庫型別
+KIND_DOC = "doc"          # 文檔知識庫：放文件
+KIND_IMAGE = "image"      # 圖片知識庫：放圖片（用描述檢索）
 
 # 文件狀態值
 STATUS_DRAFT = "draft"
@@ -291,13 +309,20 @@ async def init_schema_async() -> None:
 # ======================================================================
 
 def list_collections(enabled_only: bool = False) -> list[dict]:
-    """列出知識庫，附文件數 / 塊數統計（概覽頁用）。"""
+    """列出知識庫，附文件數 / 塊數 / 圖片數統計（概覽頁用）。
+
+    `kind` 決定它是文檔庫還是圖片庫；圖片庫（kind='image'）的分數看 `asset_count`。
+    """
     where = "WHERE c.enabled" if enabled_only else ""
     return query(f"""
         SELECT c.*,
                COALESCE(d.doc_count, 0)   AS doc_count,
                COALESCE(d.ready_count, 0) AS ready_count,
-               COALESCE(d.chunk_count, 0) AS chunk_count
+               COALESCE(d.chunk_count, 0) AS chunk_count,
+               -- 文檔庫的圖片數＝**它自己的圖片庫**裡的圖（圖都落在那裡）；
+               -- 圖片庫就是自己那批。
+               COALESCE(a.asset_count, 0) + COALESCE(ia.asset_count, 0) AS asset_count,
+               COALESCE(ia.asset_count, 0) AS image_lib_count
         FROM kb_collection c
         LEFT JOIN (
             SELECT collection_id,
@@ -306,6 +331,17 @@ def list_collections(enabled_only: bool = False) -> list[dict]:
                    COALESCE(sum(chunk_count), 0)                              AS chunk_count
             FROM kb_document GROUP BY collection_id
         ) d ON d.collection_id = c.id
+        LEFT JOIN (
+            SELECT collection_id, count(*) AS asset_count
+            FROM kb_asset GROUP BY collection_id
+        ) a ON a.collection_id = c.id
+        LEFT JOIN (
+            SELECT lib.image_of, count(*) AS asset_count
+            FROM kb_asset x
+            JOIN kb_collection lib ON lib.id = x.collection_id
+            WHERE lib.image_of IS NOT NULL
+            GROUP BY lib.image_of
+        ) ia ON ia.image_of = c.id
         {where}
         ORDER BY c.sort_order, c.id
     """)
@@ -316,12 +352,47 @@ def get_collection(cid: int) -> dict | None:
     return rows[0] if rows else None
 
 
-def create_collection(name: str, description: str = "") -> dict:
+def create_collection(name: str, description: str = "", *,
+                      kind: str = KIND_DOC, image_of: int | None = None) -> dict:
+    """新增知識庫。`kind='image'` = 圖片知識庫（放圖、用描述檢索）。
+
+    ⚠️ 文檔知識庫建立時**不會**在這裡自動建圖片庫 —— 由 `ensure_image_collection()`
+    負責（可重複呼叫），這樣「補救舊資料」也能用同一個入口。
+    """
+    k = KIND_IMAGE if str(kind or "").lower() == KIND_IMAGE else KIND_DOC
     row = execute_returning(
-        "INSERT INTO kb_collection(name, description) VALUES (%s, %s) RETURNING id",
-        (name.strip(), description.strip()),
+        "INSERT INTO kb_collection(name, description, kind, image_of) "
+        "VALUES (%s, %s, %s, %s) RETURNING id",
+        (name.strip(), description.strip(), k, image_of if k == KIND_IMAGE else None),
     )
     return get_collection(row[0]) or {}
+
+
+def get_image_collection(doc_cid: int) -> dict | None:
+    """文檔知識庫 → 它的圖片庫（kind='image' 且 image_of 指向它）。"""
+    if not doc_cid:
+        return None
+    rows = query("SELECT * FROM kb_collection WHERE kind=%s AND image_of=%s "
+                 "ORDER BY id LIMIT 1", (KIND_IMAGE, int(doc_cid)))
+    return rows[0] if rows else None
+
+
+def ensure_image_collection(doc_cid: int, *, create: bool = True) -> dict | None:
+    """取得（必要時建立）某個文檔知識庫的「<名稱>_圖片庫」。
+
+    回傳圖片庫那筆 collection；`doc_cid` 不存在或它是圖片庫本身 → 回 None。
+    """
+    if not doc_cid:
+        return None
+    doc = get_collection(int(doc_cid))
+    if not doc or (doc.get("kind") or KIND_DOC) != KIND_DOC:
+        return None
+    got = get_image_collection(int(doc_cid))
+    if got or not create:
+        return got
+    name = f"{doc.get('name') or ('庫' + str(doc_cid))}_圖片庫"
+    return create_collection(name, f"自動建立：{doc.get('name')} 抽出／上傳的圖片",
+                             kind=KIND_IMAGE, image_of=int(doc_cid))
 
 
 def update_collection(cid: int, fields: dict) -> bool:
@@ -338,8 +409,32 @@ def update_collection(cid: int, fields: dict) -> bool:
     return execute(f"UPDATE kb_collection SET {', '.join(sets)} WHERE id=%s", tuple(params)) > 0
 
 
+def set_collection_enabled(cid: int, enabled: bool) -> dict:
+    """啟用／停用知識庫。**文檔庫停用時，它的圖片庫一併連動**（設計上的綁定）。
+
+    回傳 {"ok", "cascaded": [受影響的圖片庫 id]}。
+    """
+    cid = int(cid)
+    enabled = bool(enabled)
+    update_collection(cid, {"enabled": enabled})
+    cascaded: list[int] = []
+    got = get_image_collection(cid)
+    if got:
+        update_collection(int(got["id"]), {"enabled": enabled})
+        cascaded.append(int(got["id"]))
+    return {"ok": True, "cascaded": cascaded}
+
+
 def delete_collection(cid: int) -> bool:
-    """刪知識庫。文件不會被連帶刪除（FK 是 SET NULL），只是變成「未分組」。"""
+    """刪知識庫。文件不會被連帶刪除（FK 是 SET NULL），只是變成「未分組」。
+
+    ⚠️ 刪**文檔庫**時會連帶刪掉它的圖片庫（圖片庫是它的一部分）；
+    圖片本身同樣不會被刪（`kb_asset.collection_id` 是 SET NULL）→ 變成未分組圖片。
+    """
+    cid = int(cid)
+    got = get_image_collection(cid)
+    if got:
+        execute("DELETE FROM kb_collection WHERE id=%s", (int(got["id"]),))
     return execute("DELETE FROM kb_collection WHERE id=%s", (cid,)) > 0
 
 
@@ -951,6 +1046,29 @@ def pending_asset_captions(limit: int = 50, doc_id: int | None = None) -> list[d
     rows = query(f"SELECT {_ASSET_COLS} FROM kb_asset WHERE {' AND '.join(where)} "
                  f"ORDER BY doc_id, page_no NULLS LAST, id LIMIT %s",
                  tuple(params + [max(1, int(limit))]))
+    return rows
+
+
+def pending_asset_embeddings(limit: int = 200, doc_id: int | None = None,
+                             collection_id: int | None = None) -> list[dict]:
+    """還沒向量化的圖片（**有描述**的那些）。
+
+    ★ 這是「圖片庫能被檢索」的前提 —— 以前完全沒有這一步，
+    所以圖片庫的圖永遠 `embedding_status='pending'`、永遠搜不到。
+    只挑有 caption 的：沒有描述就沒有可檢索文字。
+    """
+    where = ["enabled", "caption IS NOT NULL", "caption <> ''",
+             "embedding_status <> 'done'",
+             "(filtered_reason IS NULL OR filtered_reason='')"]
+    params: list = []
+    if doc_id is not None:
+        where.append("doc_id=%s")
+        params.append(doc_id)
+    if collection_id is not None:
+        where.append("collection_id=%s")
+        params.append(collection_id)
+    rows = query(f"SELECT {_ASSET_COLS} FROM kb_asset WHERE {' AND '.join(where)} "
+                 f"ORDER BY id LIMIT %s", tuple(params + [max(1, int(limit))]))
     return rows
 
 

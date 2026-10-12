@@ -45,6 +45,20 @@
 >    不覆蓋人工）。命中時圖會跟著一起輸出（工作台顯示、自動回復私訊連圖發送）。見 §19。
 > ③ 提示詞多一條 `image_caption_prompt`（group='prompt'）。
 > ④ 依賴新增 `pdfplumber`（MIT；不用 PyMuPDF 是為了避開 AGPL）。
+> v2.9（2026-10-12）：**圖片改成「內嵌 markdown」＋知識庫分兩型**（由使用者 定案）。
+> ① 文檔圖不再只靠 `kb_asset_chunk` 綁定 —— **`![題注](/media/xxx.png)` 直接內嵌進
+>    chunk 文字**（沒題注就 `![](url)` 不標名字），位置就是它最靠近的那個 Block。
+> ② 向量化**只吃文字**（`strip_md_images()` 先剝掉標記），連結留在 text 欄位；
+>    召回後整條 content（含標記）給 LLM／前端，**前端解析 `![]()` 直接渲染 <img>**。
+> ③ 圖片存到 **`media/kb_assets/`** 並掛在公開的 **`/media`**（只掛圖片目錄 ——
+>    客戶來訊檔案與上傳的來源文件仍然不公開）。
+> ④ **知識庫分兩型**：`kb_collection.kind` = `doc`（文檔庫）／`image`（圖片庫，用描述檢索）。
+>    文檔庫建立時自動附帶「`<名>_圖片庫`」（`image_of` 指向它），文件的圖都落那裡，
+>    **啟停用連動**（文檔庫停用 ⇒ 圖片庫一起停）。圖片庫也可以**完全獨立**建立
+>    （`image_of IS NULL`）。見 §19.10。
+> ⑤ 修掉一個大洞：**圖片庫以前完全搜不到** —— `kb_search` 從來沒查過 `kb_asset`，
+>    `load_ready_assets()` / `save_asset_embeddings()` 是死代碼，也沒有任何地方會把
+>    圖片描述向量化（`embedding_status` 永遠停在 `pending`）。現在圖片與知識塊同池排名。
 
 ---
 
@@ -1016,3 +1030,112 @@ AI 描述的提示詞（`image_caption_prompt`）要求**把圖中文字照抄�
 `cross_page_joins=1`、兩行接成同一段；頁碼 `- 2 -` 被丟掉；
 **逐頁去空白比對舊算法，差額恰好等於頁碼字數（零遺漏）**。
 真實案例：教育部 PDF 6 頁 / 2448 字 → 頁碼 5 個全濾除、跨頁那句完整接起。
+
+---
+
+## 20. 圖片：內嵌 markdown ＋ 知識庫分兩型（2026-10-12）
+
+### 20.1 為什麼要改（v2.8 的做法不夠）
+
+v2.8 把圖片當「獨立資產」，靠 `kb_asset_chunk` 綁到知識塊，命中時另外把圖清單塞進
+`SearchResult.assets`。問題：
+
+1. **圖片庫根本搜不到。** `kb_search` 從來沒查過 `kb_asset`：
+   `load_ready_assets()` / `save_asset_embeddings()` 是**死代碼**，而且沒有任何地方
+   會把圖片的描述向量化 → `embedding_status` 永遠停在 `pending`。
+   實測：上傳一張截圖、寫了描述「圖文合并輸出效果截圖」，問「图文结合输出效果如何」
+   **查不到**（top1 是別的東西）。
+2. **圖與文是兩條通道**（文字走 `hits`、圖走 `assets`），前端要特別處理，
+   而且 LLM 看到的 context 裡沒有「這裡有一張圖」的線索。
+
+### 20.2 新做法：把圖寫進 chunk 文字
+
+```
+解析 → ParsedAsset（帶 anchor_block）
+     ↓
+分塊時：![題注](/media/<sha16>.png) 接到「它最靠近的那個 Block」尾端
+     ↓
+chunk.text  ← 完整 markdown（存 DB、給 LLM、給前端）
+     ↓
+embedding  ← strip_md_images(chunk.text)  只吃文字
+```
+
+- **命名**：`![題注](url)`；**沒有題注就 `![](url)`** —— 不亂標名字。
+- **位置**：靠解析階段記下的 `anchor_block` + `Chunk.block_from/block_to`；
+  分塊後那張圖自然落在「涵蓋該 Block 的那一塊」。
+  被啟發式判為裝飾的圖（LOGO／分隔線／抬頭）**不注入**。
+- **只對文字向量化**：`kb_chunk.strip_md_images()` 在 embedding 與字面比對前剝掉標記。
+  理由：`xxx.png` 與 URL 是雜訊，會稀釋相似度、還會讓「同一張圖出現在不同塊」
+  製造假相似。
+- **前端**：`mdImages()` 只認圖片語法，其餘照舊轉義；URL 只允許相對路徑或 `http(s)`
+  （描述是使用者可編輯的內容，`javascript:` 必須擋掉）。
+
+### 20.3 公開目錄與 URL
+
+圖片存 **`media/kb_assets/<sha16>.<ext>`**，掛在 **`/media`**。
+
+⚠️ 為什麼不直接公開整個 `media/`：那裡還有**客戶來訊的檔案**與**上傳的來源文件**。
+只掛圖片專用目錄，其他東西維持不公開。
+
+`kb_asset.rel_path` 仍然是「相對 `MEDIA_DIR`」(`kb_assets/xxx.png`)，
+URL 由 `rag_config.media_url_of_rel()` 算：檔案在公開目錄才給 `/media/…`，
+舊資料（還在 `kb/<uuid>/assets/`）回空字串 → 呼叫端退回登入端點
+（**不要給一個註定 404 的公開網址**）。
+
+### 20.4 知識庫分兩型
+
+```
+kb_collection.kind      doc | image     （舊資料一律 doc）
+kb_collection.image_of  圖片庫指向它的文檔庫（獨立圖片庫 = NULL）
+```
+
+| | 文檔知識庫（doc） | 圖片知識庫（image） |
+|---|---|---|
+| 放什麼 | PDF / Word / Excel / Markdown… | 圖片 |
+| 檢索靠 | 知識塊的文字（含內嵌圖片的標記） | 圖片的**描述**（caption） |
+| 附帶 | 自動建立「`<名>_圖片庫`」 | 可獨立建立，也可掛在文檔庫底下 |
+| 啟停用 | — | 掛在文檔庫底下時**連動**（文檔庫停 ⇒ 圖片庫停） |
+
+- 文檔抽出的圖 → 落「該文檔庫的圖片庫」（`_image_collection_id()`）。
+- 刪文檔庫會**連帶刪它的圖片庫**（圖片本身變成未分組，不刪檔）。
+- 文件搬家（`document/move`）時，它的圖也跟著搬到新庫的圖片庫。
+
+### 20.5 圖片庫的檢索
+
+圖片與知識塊**同一個候選池**排名（同權重：`0.65×cosine + 0.35×字面`），
+差別只在：
+
+- 檢索文字 = `caption`（`kb_chunk.asset_embed_text()`）；
+- 回傳的 `Hit.text` = `![caption](url)`，`Hit.kind='image'`、`Hit.chunk_id` 用負數
+  （避免與真 chunk id 撞號，也讓 `max_per_doc` 把每張圖獨立成組）。
+
+**去重**：同一張圖若同時被「內嵌它的知識塊」與「圖片庫自己的條目」命中，
+只留知識塊那一份（圖已經在它的文字裡了）—— 靠 `kb_asset_chunk` 判重。
+
+### 20.6 描述 → 向量（以前完全缺失的一步）
+
+| 時機 | 做什麼 |
+|---|---|
+| 寫／改描述（`/asset/caption`） | 立刻 `_embed_one_asset()` → **馬上可檢索** |
+| AI 描述（`/asset/caption/ai`） | 同上（不覆蓋 `manual`） |
+| 文件向量化（`embed_document`） | 連帶 `embed_assets_for(doc_id=…)` |
+| 舊資料補課 | `POST /asset/embed`（UI 的「補向量化（舊圖）」按鈕） |
+
+⚠️ `embed_document` 在「知識塊都已經向量化過」時會**提早 return** ——
+那條路徑也必須處理圖片，否則「只有圖是新的」時永遠補不到（踩過）。
+
+### 20.7 驗證
+
+`tests/kb_asset_check.py` [6]（新增 12 條）＋ `tests/ui_check.py` [3g2]（新增 11 條）：
+
+- chunk 文字裡有 `![題注](/media/…)`、公開路徑、alt 用題注；
+- `strip_md_images()` 只留文字；
+- 圖檔真的在公開目錄、URL 是 `/media/…`；
+- 文檔庫有對應圖片庫（`kind=image` / `image_of=cid`）、文件的圖落在那裡；
+- **圖片庫條目進得了候選池**（已修的死洞）、命中的 `text` 就是 markdown；
+- 同一張圖 chunk 與圖片庫同時命中 → 只出一次；
+- 文檔庫停用 → 圖片庫連動停用、檢索不到；恢復後又查得到。
+- 前端：`mdImages()` 渲染 `<img>`、擋 `javascript:`、`null` 不炸；卡片分型與入口正確。
+
+真實案例（修好後）：`图文结合输出效果如何` → **top1 0.617 命中**「圖文合并輸出效果截圖」
+那張圖（修好前完全查不到）。

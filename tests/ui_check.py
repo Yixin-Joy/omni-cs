@@ -610,6 +610,32 @@ has(colCards, 'clickable', '整張卡可點');
 has(colCards, 'kbOpenCollection(', '點了會進內頁');
 hasNot(colCards, 'onclick="kbRenameCollection', '改名鈕不在卡片上（在內頁）');
 
+console.log('\n[3g2] 知識庫分兩型（文檔 / 圖片）+ markdown 圖片渲染');
+const imgCard = kbColCardHtml({ id: 9, name: '截圖庫', kind: 'image', image_of: null,
+                                enabled: true, asset_count: 3, doc_count: 0,
+                                ready_count: 0, chunk_count: 0 });
+has(imgCard, '圖片庫', '圖片知識庫卡片有「圖片庫」標籤');
+has(imgCard, 'kbOpenAssets(9)', '圖片庫卡片點進去是圖片頁');
+hasNot(imgCard, 'kbOpenCollection(9)', '圖片庫卡片不會進文件頁（那裡沒有文件）');
+has(imgCard, '圖片 3 張', '圖片庫卡片顯示圖片數');
+const docCard = kbColCardHtml({ id: 8, name: '手冊庫', kind: 'doc', enabled: true,
+                                doc_count: 2, ready_count: 1, chunk_count: 5,
+                                asset_count: 4 });
+has(docCard, 'kbOpenCollection(8)', '文檔知識庫卡片進文件頁');
+has(docCard, '圖片 4', '文檔庫卡片也顯示圖片數（自動圖片庫的圖）');
+
+const md = mdImages('前一段\n![圖 3-2 請求流程](/media/ab12cd34.png)\n後一段');
+has(md, '<img class="md-img"', 'mdImages() 把 ![題注](/media/…) 渲染成 <img>');
+has(md, 'src="/media/ab12cd34.png"', '渲染出來的圖片網址正確');
+has(md, 'alt="圖 3-2 請求流程"', 'alt 用了題注（沒題注才留空）');
+has(md, '前一段', '圖片以外的文字保留');
+ck(mdImages('沒有圖片') === '沒有圖片', 'mdImages() 沒有圖片標記時原樣回傳');
+ck(mdImages('![x](javascript:alert(1))').indexOf('<img') < 0,
+   'mdImages() 不渲染 javascript: 這類網址（注入防護）');
+ck(mdImages(null) === '' && mdImages(undefined) === '', 'mdImages(null/undefined) 不炸');
+ck(mdImageCount('![a](/media/a.png) xx ![b](/media/b.png)') === 2, 'mdImageCount 數得對');
+ck(mdImageCount('沒有圖') === 0, 'mdImageCount 沒有圖回 0');
+
 console.log('\n[3h] 導覽：三頁互跳');
 arState.kb = FX.overview;
 arState.tab = 'kb';
