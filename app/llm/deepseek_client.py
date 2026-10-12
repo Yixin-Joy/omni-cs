@@ -353,12 +353,17 @@ class DeepSeekClient:
         return (await self.complete(messages, temperature=0.2)).strip()
 
     async def answer_with_rag(self, question: str, rag_context: str,
-                              flavor: str = "dm", post_context: str = "") -> str:
+                              flavor: str = "dm", post_context: str = "",
+                              require_answer: bool = False) -> str:
         """把知識庫檢索到的段落當上下文回答；答不出來時回含 NO_ANSWER_SENTINEL 的字串。
 
         ★ 主體指示（`rag_answer_prompt`）是**可以在工作台編輯的參數**
         （知識庫 → 參數配置 → C. 提示詞），所以每次呼叫都從 DB 取現行值，
         不在 import 期定死；取不到才退回 `rag_config.RAG_PROMPT`。
+
+        `require_answer=True`（**檢索已過門檻時的第二次機會**）：額外明白禁止回哨兵。
+        用在「檢索明明命中、模型卻說資料不足」的情況 —— 那個判斷常常是因為
+        答案以**圖片**形式存在（模型看不到圖）或模型過度保守。詳見 rag_answer_gate。
 
         與 `answer_with_table` 同一套規矩：**多段指示一律合併成單一 system message**
         （部分 OpenAI 相容閘道的模板只接受最前面那一則 system，連續多則會回 HTTP 500）。
@@ -372,6 +377,15 @@ class DeepSeekClient:
             parts.append(post_context)
         main = _db_prompt("rag_answer_prompt", rag_config.RAG_PROMPT)
         parts.append(_fill(main, context=rag_context, sentinel=NO_ANSWER_SENTINEL))
+        if require_answer:
+            parts.append(
+                "⚠️ 這次**絕對不可以**輸出 " + NO_ANSWER_SENTINEL + "。\n"
+                "上面的資料是已經通過相關度門檻才被選中的，所以它跟問題一定有關。"
+                "請務必用資料裡確實有的內容回答；資料只講了一部分，就只答那一部分，"
+                "並自然說明資料涵蓋到什麼程度（例如「目前資料只提供到…」），"
+                "**但不要拒絕回答、也不要編造資料以外的內容**。\n"
+                "若資料裡有圖片標記 `![圖注](url)`，請在回答中原樣保留它。"
+            )
         messages = [
             {"role": "system", "content": "\n\n".join(parts)},
             {"role": "user", "content": question},

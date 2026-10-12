@@ -46,7 +46,9 @@ def check(cond, label, extra=""):
 # 環境類失敗（閘道限流 / 逾時）——**不是程式的問題**，不該讓自檢變紅，
 # 但也不能當成通過（否則會掩蓋真的邏輯錯誤）。單獨列一區讓你看得出來。
 _ENV_HINTS = ("429", "Rate limit", "ReadTimeout", "連線失敗", "HTTP 500", "HTTP 502",
-              "HTTP 503", "HTTP 504")
+              "HTTP 503", "HTTP 504",
+              # 改寫沒產出查詢幾乎都是閘道逾時／限流造成的（實測這台很常發生）
+              "改寫沒有產出可用查詢", "查詢改寫失敗")
 _skipped: list[str] = []
 
 
@@ -217,6 +219,100 @@ def run() -> int:
             check(len(nq.get("rag_queries") or []) == 1,
                   "改寫關 → 只有原問句（一個開關管到底）",
                   f"{nq.get('rag_queries')}")
+
+            print("\n[4d] 檢索命中 → 模型不得否決（圖片類答案）…")
+            # 這是實測抓到的 bug（紀錄 #260「服务器端转发成功日志长啥样？」）：
+            # top1=0.641 命中的**就是那張截圖**，但純文字模型看不到圖 → 一定回哨兵
+            # → 舊版當成未命中 → 命中得再準也不回覆。閘門由 rag_answer_gate 控制。
+            #
+            # 這一節**不呼叫真模型**（把 search_multi 與 answer_with_rag 都換成假的），
+            # 所以額度、網路都不影響判定。
+            import asyncio as _aio
+            import re as _re
+
+            from app.llm import deepseek_client as _ds
+
+            _saved_gate = kb_db.get_global_param_overrides().get("rag_answer_gate")
+            _orig_search = kb_search.search_multi
+            _orig_rag = _ds.DeepSeekClient.answer_with_rag
+            _calls = {"n": 0}
+
+            def _fake_result(gate):
+                h = kb_search.Hit(
+                    chunk_id=900001, doc_id=-1, collection_id=None,
+                    doc_title="自檢手冊", doc_filename="selfcheck.docx", doc_type="docx",
+                    ordinal=0, text="![圖 1 服務端日誌截圖](/media/selfcheck.png)",
+                    kind="image", asset_id=900002)
+                asset = {"id": 900002, "caption": "圖 1 服務端日誌截圖",
+                         "url": "/media/selfcheck.png", "rel_path": "kb_assets/selfcheck.png"}
+                return kb_search.SearchResult(
+                    query="日誌長什麼樣", queries=["日誌長什麼樣"], top1=0.641,
+                    passed=True, reason="ok", threshold=0.25,
+                    params={"rag_answer_gate": gate, "max_context_chars": 6000},
+                    hits=[h], candidates=[h], assets=[asset])
+
+            # ⚠️ 必須是**同步**函式：`_rag_try` 是用 `asyncio.to_thread(search_multi, qs)`
+            #    呼叫的，async 的話會回一個 coroutine（踩過）。
+            def _fake_search(queries, **kw):
+                gate = str(kb_db.get_global_param_overrides().get("rag_answer_gate")
+                           or "image")
+                return _fake_result(gate)
+
+            async def _fake_rag(self, question, rag_context, flavor="dm",
+                                post_context="", require_answer=False):
+                _calls["n"] += 1
+                if _calls.get("stubborn"):
+                    return _ds.NO_ANSWER_SENTINEL      # 連第二次機會也不領情
+                if require_answer:
+                    m = _re.search(r"!\[[^\]\n]*\]\([^)\s]+\)", rag_context or "")
+                    return ("服務器端轉發成功的日志如下圖所示。\n" + (m.group(0) if m else ""))
+                return _ds.NO_ANSWER_SENTINEL          # 第一次：模型說資料不足
+
+            kb_search.search_multi = _fake_search
+            _ds.DeepSeekClient.answer_with_rag = _fake_rag
+            try:
+                for gate, want_hit in (("image", True), ("on", True), ("off", False)):
+                    kb_db.set_params(None, {"rag_answer_gate": gate})
+                    kb_search.invalidate()
+                    a = _aio.run(reply_engine.answer("服務端日誌長什麼樣？",
+                                                     channel="whatsapp", scope="dm",
+                                                     layers=["rag"]))
+                    if want_hit:
+                        check(a.tier == "rag" and bool(a.assets),
+                              f"gate={gate}：命中帶圖時**不讓模型否決**（照樣回覆）",
+                              f"tier={a.tier} assets={[x.get('id') for x in (a.assets or [])]}")
+                        check("![" in (a.text or ""),
+                              f"gate={gate}：回覆保留了圖片標記（前端渲染／附圖通道）",
+                              repr((a.text or "")[:60]))
+                    else:
+                        check(a.tier == "miss",
+                              f"gate={gate}：完全聽模型（舊行為，維持不硬掰）",
+                              f"tier={a.tier} detail={str(a.detail)[:60]}")
+                check(_calls["n"] >= 2, "模型說資料不足時有給第二次機會（追問一次）",
+                      f"answer_with_rag 共 {_calls['n']} 次")
+
+                # 最硬的保險：模型**兩次**都拒絕，但命中的就是圖 → 用題注組回覆，不准不回
+                _calls["stubborn"] = True
+                kb_db.set_params(None, {"rag_answer_gate": "image"})
+                kb_search.invalidate()
+                a = _aio.run(reply_engine.answer("服務端日誌長什麼樣？",
+                                                 channel="whatsapp", scope="dm",
+                                                 layers=["rag"]))
+                check(a.tier == "rag" and "![" in (a.text or ""),
+                      "★ 模型兩次都拒絕時，改用圖片題注作答（絕不因為「模型說答不出」而不回）",
+                      f"tier={a.tier} text={repr((a.text or '')[:70])}")
+                check("圖 1 服務端日誌截圖" in (a.text or ""),
+                      "後備回覆用了題注當人話說明", repr((a.text or "")[:60]))
+                check(bool(a.assets), "後備回覆也帶上圖片（附圖通道會真的發出去）",
+                      [x.get("id") for x in (a.assets or [])])
+            finally:
+                kb_search.search_multi = _orig_search
+                _ds.DeepSeekClient.answer_with_rag = _orig_rag
+                kb_db.set_params(None, {"rag_answer_gate": _saved_gate})
+                kb_search.invalidate()
+            check(kb_db.get_global_param_overrides().get("rag_answer_gate") == _saved_gate,
+                  "自檢沒有改動正式的 rag_answer_gate 設定",
+                  f"{kb_db.get_global_param_overrides().get('rag_answer_gate')}")
 
             print("\n[5] 不相關問題 → 降級人工（不硬掰）…")
             d = body(c.post("/console/autoreply/test/engine",

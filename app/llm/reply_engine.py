@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 
 from app.core import config
@@ -439,19 +440,95 @@ async def _rag_try(queries: list[str], flavor: str, post_context: str, score: fl
         return None, f"知識庫：命中 {len(res.hits)} 塊但生成失敗（{e}）", extra
 
     if not looks_answered(out):
-        return None, f"知識庫：命中 {len(res.hits)} 塊，但模型判定資料不足以回答", extra
+        # ★ 檢索**已經過門檻**了，模型卻說「資料不足」—— 這時要不要聽它的？
+        #   為什麼需要這一段：答案常常「就是那張圖」。純文字模型看不到圖，
+        #   於是它一定回哨兵 → 舊版就當成未命中 → 命中得再準也不回覆。
+        #   實測 #260「服务器端转发成功日志长啥样？」top1=0.6406 命中那張截圖，
+        #   卻因為這一步被判 no_match、send_status=not_sent。
+        #   閘門由 `rag_answer_gate` 決定（預設 image：只有命中帶圖時才不准否決）。
+        gate = str((res.params or {}).get("rag_answer_gate") or "image").lower()
+        has_img = bool(res.assets)
+        forced = (gate == "on") or (gate == "image" and has_img)
+        if not forced:
+            return None, (f"知識庫：命中 {len(res.hits)} 塊，但模型判定資料不足以回答"
+                          f"（{gate} 模式下尊重模型判斷）"), extra
+
+        # 第二次機會：明白禁止回哨兵（資料是過門檻才被選中的，一定有關係）
+        out2 = ""
+        try:
+            out2 = await DeepSeekClient().answer_with_rag(
+                qs[0], context, flavor=flavor, post_context=post_context,
+                require_answer=True)
+        except DeepSeekError as e:
+            log.warning("知識庫追問失敗（改用後備）：%s", e)
+        if looks_answered(out2):
+            out = out2
+        elif has_img:
+            # 最後保險：答案就是圖 → 用題注組一句話，圖交給附圖通道真的發出去
+            out = _answer_from_assets(res.assets)
+            extra["forced_assets"] = True
+            log.info("知識庫改以圖片作答（模型兩次都說資料不足，但命中的是圖）")
+        else:
+            return None, (f"知識庫：命中 {len(res.hits)} 塊，模型兩次都判定資料不足以回答"), extra
+
+    reply_assets = _assets_in_text(out, res.assets) or (
+        list(res.assets) if extra.get("forced_assets") else [])
 
     top = res.hits[0]
     detail = (f"知識庫命中 {len(res.hits)} 塊（最高分 {res.top1:.3f}／門檻 "
               f"{res.threshold:.2f}），主要來源：{top.source}")
     if rewrote:
         detail = f"共用查詢命中（原問句「{qs[0]}」，連同改寫句「{rewritten}」）：{detail}"
+    if extra.get("forced_assets"):
+        detail += "；以圖片作答（模型判定資料不足，但命中的正是圖片）"
     return Answer(TIER_RAG, _tidy(out), score=res.top1, rewrote=rewrote,
                   rewritten_query=rewritten, history_used=history_used if rewrote else 0,
                   detail=detail, matched_rows=rows, rag_threshold=res.threshold,
                   rag_candidates=len(res.candidates),
                   rag_queries=list(res.queries or []),
-                  assets=list(res.assets or [])), "", extra
+                  assets=reply_assets), "", extra
+
+
+# markdown 圖片標記（用來從模型輸出裡認出它實際引用了哪幾張圖）
+_MD_IMG_IN_TEXT = re.compile(r"!\[[^\]\n]*\]\(([^)\s]+)\)")
+
+
+def _assets_in_text(text: str, assets: list) -> list:
+    """模型輸出裡**實際引用**的圖（依 assets 的順序回傳）。
+
+    只有真的寫進回覆的圖才發給客戶 —— 模型選擇用文字回答時不該硬塞圖。
+    """
+    urls = set(_MD_IMG_IN_TEXT.findall(text or ""))
+    if not urls:
+        return []
+    out = []
+    for a in assets or []:
+        u = (a or {}).get("url") or ""
+        if u and u in urls:
+            out.append(a)
+    return out
+
+
+def _answer_from_assets(assets: list) -> str:
+    """用圖片組出回覆文字（模型兩次都拒絕回答時的後備）。
+
+    題注（`圖 1 服務器端轉發成功日志截圖`）就是人話說明，直接拿它開頭；
+    圖片標記留在文字裡（前端渲染、附圖通道也會真的把圖發出去）。
+    """
+    caps, marks = [], []
+    for a in assets or []:
+        url = (a or {}).get("url") or ""
+        if not url:
+            continue
+        cap = re.sub(r"[\r\n]+", " ", ((a or {}).get("caption") or "").strip())
+        cap = cap.replace("]", "】").replace("[", "【")
+        if cap:
+            caps.append(cap)
+        marks.append(f"![{cap}]({url})")
+    if not marks:
+        return ""
+    head = f"請參考下圖（{'、'.join(caps[:3])}）：" if caps else "請參考下圖："
+    return head + "\n" + "\n".join(marks)
 
 
 # ---------- 主流程 ----------
@@ -613,7 +690,14 @@ async def _answer_inner(text: str, *, channel: str, scope: str,
 
     # ---- 第四層：降級人工 ----
     # ★ 未命中也要帶上候選明細（調門檻／top-k 全靠它）
-    return Answer(TIER_MISS, score=(score if score is not None else rag_extra.get("top1")),
+    # ⚠️ score 要取「這次真正最好的那個分數」：FAQ 沒命中時 `_match_faq` 回的是 0.0
+    #    （不是 None），若直接用它就會把知識庫的 top1 蓋掉 → 紀錄頁顯示 0.000
+    #    看起來像「什麼都沒撈到」，但其實檢索是有分的（實測 #260 應為 0.641）。
+    miss_score = score
+    _top1 = rag_extra.get("top1")
+    if _top1 is not None and (miss_score is None or float(_top1) > float(miss_score)):
+        miss_score = float(_top1)
+    return Answer(TIER_MISS, score=miss_score,
                   reason="no_match",
                   detail="；".join(notes) + static_detail,
                   matched_rows=rag_extra.get("matched_rows"),
