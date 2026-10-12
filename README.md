@@ -148,15 +148,15 @@ python -m venv .venv
 先在 PostgreSQL 建好一個庫，把連線字串填進 `.env` 的 `DATABASE_URL`，然後：
 
 ```bash
-.venv\Scripts\python create_db.py
+.venv\Scripts\python scripts\create_db.py
 ```
 
 會建立（若不存在）`forward_log`（轉發日誌）、`igfb_dm` / `igfb_comment` / `igfb_post`（IG/FB 收件匣），
 以及 AI 自動回復用的 `autoreply_faq` / `autoreply_business_table` / `autoreply_business_row` /
 `autoreply_setting` / `autoreply_log`。此腳本可重複執行，不會清掉既有資料。
 
-> 服務啟動時也會自動補齊這些表與新欄位（`main.py` 的 lifespan 會呼叫 `autoreply_db.init_schema()`），
-> 升級既有環境只要重啟服務即可，不一定要跑 `create_db.py`。
+> 服務啟動時也會自動補齊這些表與新欄位（`app/main.py` 的 lifespan 會呼叫 `autoreply_db.init_schema()`），
+> 升級既有環境只要重啟服務即可，不一定要跑 `scripts/create_db.py`。
 > **資料庫固定為 `platform_forwarder`**，不會動到其他庫。
 
 ### 4. 填寫設定
@@ -176,7 +176,7 @@ cp .env.example .env
 ### 5. 啟動
 
 ```bash
-.venv\Scripts\python -m uvicorn main:app --host 127.0.0.1 --port 8001
+.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
 服務同時掛了微信、WhatsApp、IG/FB 三組端點，**一條隧道就夠**；本專案的實際配置是兩條：
@@ -273,7 +273,7 @@ natapp -authtoken=xxx  # 微信用（設定檔在 natapp.ini）
 
 ### Instagram / Facebook
 
-見 **`META_SETUP.md`**——那份是完整的後台設定 checklist，涵蓋 webhook 驗證、訂閱欄位、帳號授權、權限開通。
+見 **`docs/META_SETUP.md`**——那份是完整的後台設定 checklist，涵蓋 webhook 驗證、訂閱欄位、帳號授權、權限開通。
 
 ---
 
@@ -393,11 +393,11 @@ DEEPSEEK_SYSTEM_PROMPT="你是一位專業、友善的客服助手。\n請用簡
 | 改了程式碼但行為沒變 | 服務未帶 `--reload`，**改完後端要重啟**；前端頁面按 `Ctrl+Shift+R` 強制刷新，避免瀏覽器快取舊頁面。 |
 | 網頁一直顯示舊介面 | 同上，瀏覽器快取。開發者工具 → Network → 勾「Disable cache」再刷新。 |
 | Meta webhook 驗證失敗 | Callback URL 要能被外網訪問；`Verify token` 要與 `.env` 完全一致。 |
-| 回覆留言 / 私訊回 **502** | 多半是 **Meta 權杖失效**。跑 `python token_tool.py check` 確認，詳見 `META_SETUP.md` 第六節。 |
+| 回覆留言 / 私訊回 **502** | 多半是 **Meta 權杖失效**。跑 `python scripts/token_tool.py check` 確認，詳見 `docs/META_SETUP.md` 第六節。 |
 | 按「同步最新資料」卻沒有新貼文 | 同上，權杖失效時同步會靜默失敗。 |
 | 微信後台「啟用」失敗 | URL / Token 與 `.env` 不符，或服務沒在跑、natapp 隧道沒開。 |
 | 媒體檔下載不到 | `.env` 的 `PUBLIC_BASE_URL` 沒填或填錯；微信個人號下載媒體權限需實測。 |
-| IG 留言回覆回 502 | 缺 `instagram_manage_comments` 權限（詳見 `META_SETUP.md`）。 |
+| IG 留言回覆回 502 | 缺 `instagram_manage_comments` 權限（詳見 `docs/META_SETUP.md`）。 |
 | 留言者姓名顯示「用戶」 | 平台隱私限制，非程式問題（見下方已知限制）。 |
 | 自動回復完全沒動作 | 三個地方都要開：① `.env` 有 `DEEPSEEK_API_KEY`（第二層才會有答案）② 設定面板的**全域總開關** ③ 該**渠道＋場景**的開關。另外微信不支援自動回復。 |
 | 自動回復都掉到人工 | 看設定面板的**紀錄**分頁，`reason` 會寫明原因：`no_match`（真的都没命中）、`no_api_key`、`llm_error`、`table_layer_disabled`、`throttled`（冷卻／上限）。詳情欄也會寫「改寫成什麼問句後仍未命中」。 |
@@ -432,39 +432,71 @@ DEEPSEEK_SYSTEM_PROMPT="你是一位專業、友善的客服助手。\n請用簡
 
 ```
 wechat-forwarder/
-├─ main.py              # 服務入口：webhook 接收與分派、靜態檔案、自動回復鉤子
-├─ config.py            # 集中讀取環境變數（含 DeepSeek 與自動回復設定）
-├─ create_db.py         # 建立資料表（可重複執行）
+├─ main.py                      # 相容入口：`uvicorn app.main:app` 仍可用（真正入口在 app/main.py）
 ├─ requirements.txt
-├─ .env.example         # 設定範本（複製為 .env 後填寫）
+├─ .env.example                 # 設定範本（複製為 .env 後填寫）
+├─ README.md                    # 本文件
 │
-├─ wechat.py            # 微信：簽名驗證、XML 解析、轉換
-├─ wechat_send.py       # 微信：客服消息發送
-├─ whatsapp.py          # WhatsApp：webhook 解析、轉換
-├─ whatsapp_send.py     # WhatsApp：訊息與媒體發送
-├─ forwarder.py         # 媒體下載（微信 media_id / WhatsApp Graph API → media/）
-├─ db.py                # 轉發日誌寫入（forward_log）
+├─ app/                         # 業務程式碼（分層）
+│  ├─ main.py                   # 服務入口：webhook 接收與分派、靜態檔案、自動回復鉤子
+│  ├─ core/                     # 基礎設施
+│  │  ├─ config.py              # 集中讀取環境變數（含 DeepSeek 與自動回復設定）
+│  │  └─ db.py                  # 轉發日誌寫入（forward_log）
+│  ├─ llm/                      # AI 層
+│  │  ├─ deepseek_client.py     # DeepSeek（OpenAI 相容）非同步客戶端
+│  │  ├─ faq_matcher.py         # FAQ 匹配算法（繁簡正規化 + 分詞 + bigram + 相似度加權）
+│  │  └─ reply_engine.py        # 四層決策引擎：FAQ → 業務表格 → 知識庫 → 未命中
+│  ├─ rag/                      # 知識庫（RAG）
+│  │  ├─ rag_config.py          # 檢索參數與提示詞（單一真相）
+│  │  ├─ kb_parse.py            # 文件解析 → 帶座標的 Block
+│  │  ├─ kb_chunk.py            # 分塊（含重疊）
+│  │  ├─ kb_embed.py            # embedding（fastembed / onnxruntime）
+│  │  ├─ kb_rank.py             # rerank
+│  │  ├─ kb_ingest.py           # 入庫狀態機（可中斷續跑）
+│  │  ├─ kb_search.py           # 混合檢索（向量 + 字面）
+│  │  ├─ kb_db.py               # 知識庫資料層
+│  │  └─ kb_console.py          # 知識庫 API（/console/kb）
+│  ├─ channels/                 # 外部平台適配
+│  │  ├─ wechat.py              # 微信：簽名驗證、XML 解析、轉換
+│  │  ├─ wechat_send.py         # 微信：客服消息發送
+│  │  ├─ whatsapp.py            # WhatsApp：webhook 解析、轉換
+│  │  ├─ whatsapp_send.py       # WhatsApp：訊息與媒體發送
+│  │  ├─ igfb.py                # Meta：Graph API 讀寫 + webhook 事件解析
+│  │  └─ igfb_db.py             # Meta：IG/FB 收件匣資料讀寫 + 歷史同步
+│  ├─ autoreply/                # 自動回復
+│  │  ├─ autoreply.py           # 編排：開關、防護、發送、標記未命中
+│  │  ├─ autoreply_db.py        # 資料層：建表 + FAQ/表格/開關/日誌 CRUD
+│  │  ├─ autoreply_console.py   # 設定介面 API（/console/autoreply）
+│  │  └─ backfill.py            # 批次補做「開啟前累積的未處理訊息」
+│  ├─ api/                      # Web / API 層
+│  │  ├─ console.py             # 工作台後台接口（微信 / WhatsApp）
+│  │  └─ igfb_console.py        # Meta 工作台後台接口
+│  └─ utils/                    # 工具
+│     ├─ forwarder.py           # 媒體下載（media_id / Graph API → media/）
+│     ├─ token_refresh.py       # IG 登入權杖自動續期（啟動時 + 每日）
+│     └─ xlsx_io.py             # Excel / CSV 解析與範本產生
 │
-├─ faq_matcher.py       # FAQ 匹配算法（繁簡正規化 + 分詞 + bigram + 相似度加權）
-├─ deepseek_client.py   # DeepSeek（OpenAI 相容）非同步客戶端
-├─ reply_engine.py      # 三層決策引擎：FAQ → 業務表格 → 未命中
-├─ autoreply.py         # 自動回復編排：開關、防護、發送、標記未命中
-├─ autoreply_db.py      # 自動回復資料層：建表 + FAQ/表格/開關/日誌 CRUD
-├─ autoreply_console.py # 自動回復設定介面 API（/console/autoreply）
-├─ xlsx_io.py           # Excel / CSV 解析與範本產生
+├─ ui/
+│  └─ console_ui.html           # 工作台前端（單檔、自帶樣式與邏輯）
 │
-├─ igfb.py              # Meta：Graph API 讀寫 + webhook 事件解析
-├─ igfb_db.py           # Meta：IG/FB 收件匣資料讀寫 + 歷史同步
-├─ igfb_console.py      # Meta：工作台後台接口
-├─ token_refresh.py     # IG 登入權杖自動續期（啟動時 + 每日）
-├─ token_tool.py        # 權杖工具：check / extend / derive / renew
+├─ scripts/                     # 人工執行的維運腳本
+│  ├─ create_db.py              # 建立資料表（可重複執行）
+│  ├─ token_tool.py             # 權杖工具：check / extend / derive / renew
+│  └─ edition_change.py         # Meta changelog 變更檢查（需另裝 selenium / bs4）
 │
-├─ console.py           # 工作台後台接口（微信 / WhatsApp）
-├─ console_ui.html      # 工作台前端（單檔、自帶樣式與邏輯）
+├─ tests/                       # 可重複執行的自檢腳本
+│  ├─ engine_check.py           # 四層引擎自檢
+│  ├─ kb_check.py               # 知識庫入庫管道自檢
+│  ├─ kb_search_check.py        # 檢索命中率與分數分佈
+│  ├─ kb_api_check.py           # 知識庫 HTTP 端點自檢
+│  ├─ kb_scope_check.py         # 跨知識庫範圍 / 門檻 / 索引成本
+│  ├─ model_check.py            # AI 模型連線與對話自檢
+│  ├─ rag_model_check.py        # 本地 embedding 模型自檢
+│  └─ ui_check.py               # 工作台前端渲染自檢
 │
-├─ README.md            # 本文件
-├─ META_SETUP.md        # Meta 後台設定 checklist
-└─ api-doc.md           # 給對接方的 WhatsApp 回覆接口說明
+└─ docs/
+   ├─ RAG_DESIGN.md             # RAG 第三層設計稿
+   └─ META_SETUP.md             # Meta 後台設定 checklist
 ```
 
 > 執行時會產生 `media/`（媒體落地目錄）。此目錄為執行期資料，交付時可清空。
