@@ -740,8 +740,61 @@ has(listHtml, '另有 1 個', '並說明少列了幾個附帶圖片庫');
 ck(kbBoundImageLib(1) && kbBoundImageLib(1).name === '手冊庫_圖片庫', 'kbBoundImageLib 找得到附帶的圖片庫');
 ck(kbBoundImageLib(3) === null, '獨立圖片庫不會被當成別人的附帶圖片庫');
 ck(kbBoundImageLib(2) === null, '圖片庫自己沒有附帶圖片庫');
+
+console.log('\n[3g5] 圖片庫的麵包屑：獨立圖片庫不該再多一層、也不能連到空的文檔頁');
+// 小jo：「建立圖片庫（效果展示）後左上角顯示 知識庫 › 效果展示 › 圖片庫，
+//        點『效果展示』還進到一個名為效果展示的空文檔知識庫 —— 不需要，應該是 知識庫 › 效果展示」
+arState.kb = { collections: colWithLib, totals: {}, model: {} };
+arState.kbAssets = { assets: [], stats: {}, include_filtered: true };
+
+// ① 獨立圖片庫（image_of 空）：知識庫 › 名稱（就結束，不可點）
+arState.kbAssetCid = 3;
+const crumbOwn = kbAssetsPageHtml();
+ck(crumbOwn.indexOf('圖片庫</span>') < 0 && crumbOwn.indexOf('圖片庫</a>') < 0,
+   '獨立圖片庫的麵包屑不再多一層「圖片庫」');
+has(crumbOwn, '截圖庫', '麵包屑有庫名');
+hasNot(crumbOwn, 'kbOpenCollection(3)', '★ 庫名不可點（點下去會進空文檔頁）');
+ck(crumbOwn.indexOf('c-cur">截圖庫') >= 0, '庫名是最後一層（c-cur）');
+has(crumbOwn, '<h3>截圖庫</h3>', '標題直接用庫名（不再是「圖片庫 · 截圖庫」）');
+
+// ② 文檔庫附帶的圖片庫：知識庫 › 文檔庫 › 圖片庫（這一層有意義，要能回去）
+arState.kbAssetCid = 2;
+const crumbBound = kbAssetsPageHtml();
+has(crumbBound, '手冊庫</a>', '附帶圖片庫的上一層是文檔庫、且可點');
+has(crumbBound, 'kbOpenCollection(1)', '點上一層回的是**文檔庫**（不是圖片庫自己）');
+has(crumbBound, '圖片庫</span>', '附帶圖片庫保留「圖片庫」這一層');
+
+// ③ 全部圖片：知識庫 › 圖片庫
+arState.kbAssetCid = 0;
+const crumbAll = kbAssetsPageHtml();
+has(crumbAll, '全部知識庫', '全部圖片顯示「全部知識庫」');
+has(crumbAll, '圖片庫</span>', '全部圖片有「圖片庫」這一層');
+
+// ④ kbOpenCollection 遇到圖片庫 id → 改開圖片頁（堵住「空的文檔知識庫」那條路）
+ck(kbIsImageLib(3) === true && kbIsImageLib(1) === false, 'kbIsImageLib 認得圖片庫');
+arState.kbView = 'list';
+kbOpenCollection(3);
+ck(arState.kbView === 'assets' && arState.kbAssetCid === 3,
+   '★ kbOpenCollection(圖片庫) 改開圖片頁，不會出現空文檔頁',
+   'view=' + arState.kbView + ' cid=' + arState.kbAssetCid);
+
+// ⑤ 就算狀態殘留讓它畫到文件頁，也要給一條跳去圖片頁的路（不裝成空的文檔庫）
+arState.kbView = 'docs';
+arState.kbCollection = 3;
+arState.kbUngrouped = false;
+const docsGuard = kbDocsPageHtml();
+has(docsGuard, '這是一個<b>圖片知識庫</b>', '文件頁遇到圖片庫會說明「它沒有文件清單」');
+has(docsGuard, 'kbOpenAssets(3)', '並給一顆「看這個圖片庫」的按鈕');
+hasNot(docsGuard, '＋ 新增文檔', '★ 不會出現「＋ 新增文檔」（那才是讓人以為是文檔庫的元兇）');
+
+// ⑥ 參數彈窗的「分塊參數目標」下拉不列圖片庫（它們沒有文件也沒有知識塊）
+ck(kbRenderParams.toString().indexOf("x.kind !== 'image'") >= 0,
+   '參數彈窗的目標下拉排除了圖片庫');
+
 arState.kb = FX.overview;
 arState.kbCollection = CID;
+arState.kbAssetCid = 0;
+arState.kbView = 'list';
 
 console.log('\n[3h] 導覽：三頁互跳');
 arState.kb = FX.overview;
