@@ -598,6 +598,20 @@
   }
   .kb-pg-head h3 { margin: 0; }
 
+  /* 「＋ 新增知識庫」展開的那塊：先填名稱，再挑一種類型（往下長，不彈窗） */
+  .kb-new-panel {
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 9px; background: #f8fafc; padding: 10px 12px;
+    margin: -3px 0 11px; animation: kbNewIn .14s ease-out;
+  }
+  @keyframes kbNewIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .kb-new-panel .kn-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .kb-new-panel input[type="text"] {
+    flex: 1; min-width: 220px; max-width: 380px;
+    padding: 7px 10px; border: 1px solid var(--border); border-radius: 9px;
+  }
+  .kb-new-panel .kn-hint { margin-top: 8px; }
+
   .kb-col.clickable { cursor: pointer; }
   .kb-col.clickable:hover { border-color: var(--accent); background: var(--accent-soft); }
   .kb-col.clickable:hover .kc-name { color: var(--accent-dark); }
@@ -796,6 +810,9 @@ const arState = {
   kbParamCid: 0,        // 參數彈窗是針對哪個知識庫
   kbUploadNote: '',     // 上傳結果的說明（跟著跳到文件頁一起帶過去）
   kbBusy: '',
+  // 「＋ 新增知識庫」按下去 → 就地往下展開兩顆類型鈕（文檔 / 圖片）。
+  // 不用 prompt 問名稱、也不用 confirm 問「是/否」—— 名稱在展開的面板裡填。
+  kbNewOpen: false,
   // ---- 圖片庫（知識庫的圖）----
   kbAssets: null,       // GET /console/kb/assets 的回應
   kbAssetCid: 0,        // 目前看哪個知識庫的圖（0 = 全部）
@@ -3265,11 +3282,13 @@ function kbListPageHtml() {
     '<div class="card">' +
       '<div class="kb-pg-head"><h3>知識庫</h3>' +
         '<div class="spacer" style="flex:1"></div>' +
-        '<button class="btn primary" onclick="kbCreateCollection()">＋ 新增知識庫</button>' +
+        '<button class="btn ' + (arState.kbNewOpen ? '' : 'primary') + '" onclick="kbCreateToggle()">' +
+          (arState.kbNewOpen ? '✕ 取消新增' : '＋ 新增知識庫') + '</button>' +
         '<button class="btn sm" onclick="kbOpenAssets(0)">全部圖片</button>' +
         '<button class="btn sm" onclick="openKbParams(0)">參數配置（檢索全域 · 分塊預設）</button>' +
         '<button class="btn sm" onclick="kbReload()">重新讀取</button>' +
       '</div>' +
+      (arState.kbNewOpen ? kbNewPanelHtml() : '') +
       '<div class="hint">知識庫分兩種：<b>文檔知識庫</b>（放文件，會自動附帶一個「<名稱>_圖片庫」）' +
       '與<b>圖片知識庫</b>（放圖片，用描述檢索；也能建完全獨立的）。' +
       '點一個進去就會看到它的內容。檢索參數（門檻 / 召回數）<b>所有知識庫共用一組</b>；' +
@@ -3918,6 +3937,7 @@ function kbForgetDoc() {
 // ① 回知識庫清單
 function kbGoList() {
   arState.kbView = 'list';
+  arState.kbNewOpen = false;   // 回清單時把「新增知識庫」面板收起來，不留半開的殘影
   kbForgetDoc();
   kbRender();
   kbMaybePoll();
@@ -4076,21 +4096,68 @@ function kbIndexStats(cid) {
 
 /* ----- 知識庫：集合 CRUD ----- */
 
-async function kbCreateCollection() {
-  const name = prompt('新知識庫名稱（例如：產品保固條款／介面截圖庫）');
-  if (!name || !name.trim()) return;
-  const isImg = confirm('「' + name.trim() + '」要建成哪一種知識庫？\n\n' +
-    '【確定】圖片知識庫 —— 放圖片，用「描述」檢索\n' +
-    '　（截圖、示意圖這類：檢索靠描述文字，命中後直接把圖帶出來）\n\n' +
-    '【取消】文檔知識庫 —— 放文件（PDF / Word / Excel / Markdown…）\n' +
-    '　（會自動附帶一個「' + name.trim() + '_圖片庫」，文件裡抽出來的圖都放那裡，啟停用連動）');
-  const res = await apiJson('/console/kb/collections/create',
-                            { name: name.trim(), kind: isImg ? 'image' : 'doc' });
+// 展開／收合「新增知識庫」面板（往下長，不彈窗問「是/否」）
+function kbCreateToggle() {
+  arState.kbNewOpen = !arState.kbNewOpen;
+  kbRender();
+  if (arState.kbNewOpen) {
+    const el = document.getElementById('kbNewName');
+    if (el) el.focus();
+  }
+}
+
+// 展開面板的預設說明（單一來源：面板初版與「名稱被清空」時共用同一份文案）
+function kbNewHintHtml() {
+  return '<b>文檔知識庫</b>：放文件（PDF / Word / Excel / Markdown…），' +
+    '會自動附帶一個「名稱_圖片庫」，文件裡抽出來的圖都放那裡（啟停用連動）。' +
+    '<br><b>圖片知識庫</b>：放圖片（截圖、示意圖），靠「描述」檢索，命中後直接把圖帶出來；' +
+    '也可以建完全獨立的圖片庫。' +
+    '<br>填好名稱後點上面任一顆就建立（Enter = 文檔知識庫）。';
+}
+
+// 展開面板：先填名稱，再挑「文檔知識庫」或「圖片知識庫」其中一顆
+function kbNewPanelHtml() {
+  return '<div class="kb-new-panel">' +
+    '<div class="kn-row">' +
+      '<input type="text" id="kbNewName" placeholder="知識庫名稱（例如：產品保固條款 / 介面截圖庫）"' +
+        ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();kbCreateCollection(\'doc\')}"' +
+        ' oninput="kbNewHint()">' +
+      '<button class="btn primary" onclick="kbCreateCollection(\'doc\')">文檔知識庫</button>' +
+      '<button class="btn" onclick="kbCreateCollection(\'image\')">圖片知識庫</button>' +
+    '</div>' +
+    '<div class="hint kn-hint" id="kbNewHint">' + kbNewHintHtml() + '</div>' +
+  '</div>';
+}
+
+// 名稱有值時，把那兩顆鈕分別會建出什麼名字即時說出來（名字打錯了當場看得出來）
+function kbNewHint() {
+  const el = document.getElementById('kbNewName');
+  const box = document.getElementById('kbNewHint');
+  if (!box) return;
+  const n = el ? el.value.trim() : '';
+  box.innerHTML = n
+    ? ('準備建立「<b>' + esc(n) + '</b>」 —— 文檔知識庫會自動附帶「' + esc(n) +
+       '_圖片庫」；圖片知識庫則是一個獨立的圖片庫。')
+    : kbNewHintHtml();
+}
+
+// kind: 'doc' | 'image'（由展開面板的兩顆鈕傳進來；名稱從面板的輸入框取）
+async function kbCreateCollection(kind) {
+  const type = (kind === 'image') ? 'image' : 'doc';
+  const input = document.getElementById('kbNewName');
+  const name = (input ? input.value : '').trim();
+  if (!name) {
+    alert('請先輸入知識庫名稱（例如：產品保固條款 / 介面截圖庫）');
+    if (input) input.focus();
+    return;
+  }
+  const res = await apiJson('/console/kb/collections/create', { name: name, kind: type });
   if (res.data.error) { alert('新增失敗：' + res.data.error); return; }
   const nid = res.data.collection && res.data.collection.id;
+  arState.kbNewOpen = false;                        // 建完就收起來
   await loadKbOverview(true);
-  if (nid && isImg) await kbOpenAssets(nid);        // 圖片庫：直接進去就能上傳圖
-  else if (nid) await kbOpenCollection(nid);        // 文檔庫：進去上傳文件
+  if (nid && type === 'image') await kbOpenAssets(nid);      // 圖片庫：直接進去就能上傳圖
+  else if (nid) await kbOpenCollection(nid);                 // 文檔庫：進去上傳文件
 }
 
 async function kbRenameCollection(id) {
