@@ -387,6 +387,7 @@ print("\n[7] 送出端：圖文只發一條（不再「一條純文字 + 一條�
 import asyncio
 
 from app.autoreply import autoreply
+from app.channels import igfb
 from app.channels import whatsapp_send, wechat_send
 
 _a = kb_db.get_asset(own_aid)
@@ -465,6 +466,57 @@ try:
                                              to="85200000000", caption=_text))
     check(st6["failed"] == 1 and st6.get("captioned") is False,
           "圖檔不存在 → 記 failed、captioned=False（呼叫端會補發文字）")
+
+    # ---- IG / FB：Meta 會「自己來下載」那個網址，所以一定要公開絕對 URL ----
+    # 症狀（使用者）：IG 客戶只收到文字、沒有圖。根因是這裡原本直接 skipped
+    # （註解寫「本服務沒有公開圖床」—— 但其實有：/media + PUBLIC_BASE_URL）。
+    calls = []
+
+    async def _fake_send_dm(platform, recipient_id, message_type, text, file_url, mime):
+        calls.append({"platform": platform, "type": message_type, "url": file_url,
+                      "mime": mime, "text": text})
+        return {"status": 200, "body": '{"message_id":"mid.test"}'}
+
+    _orig_dm = igfb.send_dm
+    igfb.send_dm = _fake_send_dm
+    try:
+        url = autoreply.public_asset_url(_asset["rel_path"])
+        check(url.startswith("https://") and "/media/" in url,
+              "public_asset_url() 拼出外網可達的絕對網址", url)
+        check(autoreply.public_asset_url("kb/舊圖/assets/x.png") == "",
+              "舊圖不在公開目錄 → 回空字串（呼叫端才知道發不出去）")
+
+        calls.clear()
+        st_ig = asyncio.run(autoreply._send_assets("ig", "dm", [_asset],
+                                                   to="1000000000000000", caption=_text))
+        check(st_ig["sent"] == 1, "★ IG 會真的把圖送出去（不再靜默 skipped）",
+              f"sent={st_ig['sent']} reason={st_ig.get('reason')!r}")
+        check(calls and calls[0]["type"] == "file" and calls[0]["url"].startswith("https://"),
+              "IG 走附件型別、且用公開絕對 URL", str(calls[:1])[:110])
+        check(st_ig["captioned"] is False,
+              "IG 的 attachment 沒有 caption → captioned=False（呼叫端會補發文字）")
+
+        calls.clear()
+        st_fb = asyncio.run(autoreply._send_assets("fb", "dm", [_asset], to="psid.test"))
+        check(st_fb["sent"] == 1 and calls[0]["platform"] == "fb", "FB 同樣走得通")
+
+        # 沒設 PUBLIC_BASE_URL → 要優雅降級 + 講清楚原因（不是靜默）
+        from app.core import config as _c
+        _saved_base = _c.PUBLIC_BASE_URL
+        _c.PUBLIC_BASE_URL = ""
+        try:
+            check(autoreply.public_asset_url(_asset["rel_path"]) == "",
+                  "沒設 PUBLIC_BASE_URL → 拼不出絕對網址")
+            st_nb = asyncio.run(autoreply._send_assets("ig", "dm", [_asset], to="x"))
+            check(st_nb["skipped"] == 1 and "PUBLIC_BASE_URL" in (st_nb.get("reason") or ""),
+                  "沒設定時 skipped 且 reason 說明原因", (st_nb.get("reason") or "")[:46])
+        finally:
+            _c.PUBLIC_BASE_URL = _saved_base
+    finally:
+        igfb.send_dm = _orig_dm
+
+    check(autoreply.assets_inline_caption("ig", "dm", [_asset], _text) is False,
+          "IG 不會被當成「文字塞進 caption 的一條」（它的 attachment 沒有 caption）")
 finally:
     whatsapp_send.upload_media, whatsapp_send.send_image = _orig_up, _orig_img
     wechat_send.send_image = _orig_wx
@@ -560,6 +612,15 @@ try:
           "微信：文字一條 + 圖片一條（圖片沒有 caption，平台限制）", repr(kinds))
     check(_calls[1][1] == "",
           "★ 微信那張圖不帶文字 → 客戶不會看到重複的一段話")
+
+    # IG：使用者 回報「ins 端只有文字」—— 舊版附圖那一步靜默 skip。
+    # 現在應該看到「文字一條 + 圖一條」（IG 的 attachment 沒有 caption）。
+    _calls.clear()
+    _run_inbound("ig")
+    kinds = [c[0] for c in _calls]
+    check(kinds == ["text", "image"],
+          "★ IG：文字 + 圖都會送（不再只有文字）", repr(kinds))
+    check(_calls[1][1] == "", "IG 那張圖不帶文字（attachment 沒有 caption）")
 finally:
     _restore()
 

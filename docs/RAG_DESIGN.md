@@ -1297,7 +1297,7 @@ detail       = 知識庫：命中 6 塊，但模型判定資料不足以回答
 |---|---|---|
 | WhatsApp（`send_image(..., caption=)`）| 文字當 caption 隨圖送出 | **1 條**（圖 + 文字）|
 | 微信（`send_image` 沒有 caption 欄位）| 文字一條、圖一條（**圖不帶文字**）| 2 條（先說明、後圖）|
-| IG / FB | 這個服務不發圖（attachment 需要公開可抓的 URL）| 1 條（純文字）|
+| **IG / FB** | `send_dm(..., "file", file_url, mime)` → Meta **自己來下載**那個 URL | 2 條（先說明、後圖）|
 | 貼文留言（公開場合）| 一律不發圖 | 1 條（純文字）|
 
 實作要點：
@@ -1309,6 +1309,34 @@ detail       = 知識庫：命中 6 塊，但模型判定資料不足以回答
   客戶端會看到同一段話重複出現。
 - 圖送失敗 / 渠道不支援 → `captioned=False` → 呼叫端補發文字，**文字不會消失**。
 - `reply_detail` 會帶上「（附圖 N/M）」，工作台的訊息標記與紀錄頁看得出來這條附了圖。
+
+**(e) ★ IG / FB 也能收圖（2026-10-12 修）**
+
+症狀（使用者）：「在 ins 界面和 `xxxxxxxx` 的溝通中，我這邊發了圖文結合的信息過去，
+但是 ins 端只有文字」。實查 `igfb_dm`（conversation_key `1000000000000000`）：
+那條 outbound 的文字裡**確實帶著** `![圖 1 安装包下载页面示意图](/media/7a1102f7f0eec5f8.png)`
+（＝自動回覆的原樣落地），但客戶端只有文字。
+
+根因：`_send_assets()` 的 `else` 分支直接 `out["skipped"] += 1`，註解寫
+「IG / FB 的 attachment 要公開可抓的 URL，**本服務沒有公開圖床**」——
+**這個前提是錯的**：`media/kb_assets/` 就掛在公開的 `/media`，而且 `PUBLIC_BASE_URL`
+（ngrok）也在，`https://<ngrok>/media/<sha>.png` 實測外部回 **200 image/png**。
+
+修法：
+- 新增 `autoreply.public_asset_url(rel_path)` → 拼出 Meta 抓得到的**絕對網址**。
+  兩個前提都要成立，否則回空字串：① 圖在公開圖片目錄（`media_url_of_rel()` 有值；
+  舊圖在 `media/kb/<uuid>/assets/` 底下 → 回空）② 有設 `PUBLIC_BASE_URL`。
+- `_send_assets()` 加 `ig` / `fb` 分支 → `igfb.send_dm(channel, to, "file", "", url, mime)`
+  （`send_dm` 依 mime 挑 `ig_send_attachment` / `fb_send_attachment`）。
+- `skipped` 不再靜默：`out["reason"]` 記下人話原因（「圖片不在公開目錄，或沒設定
+  `PUBLIC_BASE_URL`」），`handle_inbound` 把它寫進 `reply_detail` 與 log。
+- ⚠️ **IG / FB 的 attachment payload 只有 `url`、沒有 caption** → 一定走
+  「文字一條 + 圖一條」，`captioned=False`。
+
+⚠️ 兩個維運前提（不滿足就會發不出圖，且現在會看到原因）：
+1. **`PUBLIC_BASE_URL` 要跟著 ngrok 走** —— ngrok 免費版重啟會換網址，沒更新就全部抓不到。
+2. **IG 私訊有 24 小時窗口** —— 只能回覆客戶最後一則訊息後 24 小時內；
+   自動回覆是即時觸發所以通常沒問題，但「批次補做舊訊息（backfill）」可能超出窗口被 Meta 拒絕。
 
 ### 21.3 順手修掉的一個顯示 bug
 
