@@ -27,6 +27,7 @@ playwright 內建的 node.exe 也直接在 `ncrypto::CSPRNG` abort）。所以�
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,9 +42,8 @@ except Exception:
     pass
 
 BASE = os.environ.get("UI_BASE", "http://127.0.0.1:8001").rstrip("/")
-NODE = os.environ.get(
-    "UI_NODE",
-    r"C:\Users\user\.workbuddy\binaries\node\versions\22.22.2-6\node.exe")
+# Node 執行檔：優先用 UI_NODE 環境變數，其次找 PATH 上的 node
+NODE = os.environ.get("UI_NODE") or shutil.which("node") or "node"
 
 FAIL = []
 
@@ -688,7 +688,7 @@ document.querySelector = function (sel) {
   if (String(sel).indexOf('kbNewKind') >= 0) return { value: __kindVal, checked: true };
   return __realQS ? null : null;
 };
-ck(kbNewKind() === 'image', '沒選時預設圖片知識庫（使用者 列在前面的那個）');
+ck(kbNewKind() === 'image', '沒選時預設圖片知識庫（清單中排在前面那個）');
 __kindVal = 'doc';
 ck(kbNewKind() === 'doc', '選了文檔知識庫就回 doc');
 
@@ -742,7 +742,7 @@ ck(kbBoundImageLib(3) === null, '獨立圖片庫不會被當成別人的附帶�
 ck(kbBoundImageLib(2) === null, '圖片庫自己沒有附帶圖片庫');
 
 console.log('\n[3g5] 圖片庫的麵包屑：獨立圖片庫不該再多一層、也不能連到空的文檔頁');
-// 使用者：「建立圖片庫（效果展示）後左上角顯示 知識庫 › 效果展示 › 圖片庫，
+// 「建立圖片庫（效果展示）後左上角顯示 知識庫 › 效果展示 › 圖片庫，
 //        點『效果展示』還進到一個名為效果展示的空文檔知識庫 —— 不需要，應該是 知識庫 › 效果展示」
 arState.kb = { collections: colWithLib, totals: {}, model: {} };
 arState.kbAssets = { assets: [], stats: {}, include_filtered: true };
@@ -1291,7 +1291,7 @@ def check_kb_new_modal_markup() -> None:
     """「新增知識庫」彈窗的**靜態節點**（JS 抽取只看 <script>，抓不到這段 HTML）。
 
     驗到的是「這個彈窗真的存在於頁面裡」—— 沒有它，`openKbNew()` 會靜靜地什麼都不做。
-    形狀要求（使用者 指定）：兩個單選（圖片／文檔）→ 庫名 → 添加／取消。
+    形狀要求（指定）：兩個單選（圖片／文檔）→ 庫名 → 添加／取消。
     """
     path = os.path.join(HERE, "ui", "console_ui.html")
     txt = io.open(path, encoding="utf-8").read()
@@ -1353,8 +1353,9 @@ def check_infotip_tooltip() -> None:
 
 
 def main() -> int:
-    if not os.path.exists(NODE):
+    if not (os.path.exists(NODE) or shutil.which(NODE)):
         print(f"  ⚠ 找不到 node：{NODE}")
+        print("    請安裝 Node.js，或設 UI_NODE=<node 執行檔完整路徑>")
         return 2
 
     print("=" * 72)

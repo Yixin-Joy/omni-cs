@@ -210,7 +210,7 @@ def _strip_images(text: str) -> str:
 def assets_inline_caption(channel: str, scope: str, assets: list, text: str) -> bool:
     """這次回覆能不能「文字塞進圖片 caption」變成一條（＝客戶不會收到重複的兩條）。
 
-    ★ 使用者 回報：舊版固定「先發一條純文字 → 再發一張 caption 又是同一段文字的圖」，
+    ★ 回報：舊版固定「先發一條純文字 → 再發一張 caption 又是同一段文字的圖」，
     客戶端就看到「一條不帶圖的 + 一條一模一樣帶圖的」。能帶 caption 的渠道就一條搞定。
 
     · WhatsApp：`send_image(to, media_id, caption)` 支援（caption 上限 1024 字元）→ True。
@@ -536,7 +536,7 @@ async def handle_inbound(
     if not send_text.strip() and assets:
         send_text = _assets_caption(assets)   # 純圖片回覆：文字用題注當說明
 
-    # ★ 送出策略（使用者 2026-10-12 回報：客戶收到「一條不帶圖的 + 一條一模一樣帶圖的」）
+    # ★ 送出策略（2026-10-12 回報：客戶收到「一條不帶圖的 + 一條一模一樣帶圖的」）
     #   舊版固定「文字一條 → 圖一張（caption 又是同一段文字）」→ 內容重複了兩次。
     #   現在：**能用 caption 帶文字的渠道就把文字塞進圖片一起發，只發一條**；
     #   不能帶 caption 的（微信 `send_image` 沒有 caption）才文字一條、圖一條 —— 但圖不帶文字，
@@ -558,7 +558,7 @@ async def handle_inbound(
                      "，文字已隨圖送出" if st.get("captioned") else "")
         elif st.get("reason"):
             # ★ 沒送成也要留原因：以前是靜默 skipped，使用者只看到「IG 沒收到圖」
-            #   卻完全查不出為什麼（使用者 2026-10-12 就是這樣問的）。
+            #   卻完全查不出為什麼（2026-10-12 就是這樣問的）。
             log.warning("自動回復沒有附圖（%s）：%s", channel, st["reason"])
             asset_note = "無附圖：" + st["reason"]
         return st

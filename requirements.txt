@@ -26,3 +26,5 @@ pillow>=10.0
 # RAG 知識庫：本地 embedding / rerank
 # fastembed 走 onnxruntime，**不需要 torch**；首次使用會自動下載模型（見 RAG_DESIGN.md §7）
 fastembed>=0.9.0
+# 向量運算（kb_embed / kb_search 直接使用）
+numpy>=1.24

@@ -3580,7 +3580,7 @@ function kbAssetsPageHtml() {
   const col = cid ? kbCollectionById(cid) : null;
   const scope = kbAssetScopeName();
 
-  /* 麵包屑（使用者 2026-10-12：「建立圖片庫（效果展示）後左上角顯示
+  /* 麵包屑（2026-10-12：「建立圖片庫（效果展示）後左上角顯示
      知識庫 › 效果展示 › 圖片庫，點『效果展示』還進到一個空的文檔庫 —— 不需要」）：
      · 獨立圖片庫      → 知識庫 › <庫名>                 （它自己就是一個庫，不該再多一層）
      · 文檔庫附帶圖片庫 → 知識庫 › <文檔庫名> › 圖片庫     （這一層才有意義：回得去文件清單）
@@ -4313,10 +4313,10 @@ function kbIndexStats(cid) {
 
 /* 「＋ 新增知識庫」→ 小彈窗（#kbNewOverlay）：
      上排兩個單選（圖片知識庫／文檔知識庫）→ 中間填庫名 → 下面「添加 / 取消」。
-   ⚠️ 不用 prompt / confirm 問「是/否」（使用者 明確要求）；類型是明明白白的兩個選項。
+   ⚠️ 不用 prompt / confirm 問「是/否」（明確要求）；類型是明明白白的兩個選項。
    彈窗是**靜態節點**（寫在 HTML 裡、不進 #spBody），所以設定面板的輪詢重繪不會動到它。 */
 
-// 目前選中的類型（預設圖片知識庫 —— 這是使用者 列在前面的那個）
+// 目前選中的類型（預設圖片知識庫 —— 這是清單中排在前面那個）
 function kbNewKind() {
   const el = document.querySelector('input[name="kbNewKind"]:checked');
   return (el && el.value === 'doc') ? 'doc' : 'image';
@@ -5190,7 +5190,7 @@ function renderMatchedRows(rows, showAll, thr) {
   // ★ rows 已按 final 由高到低排 —— 所以第一筆就是最高分。
   //   ⚠️ 「入選（picked）」＝**真的會被送進模型**：沒過門檻時引擎直接降級、
   //   一塊都不送，這裡就會是 0 塊。以前後端無條件標 picked=True，害工作台顯示
-  //   「入選 6 塊」但模型一塊都沒看到（使用者 2026-10-12 回報），現在對齊了。
+  //   「入選 6 塊」但模型一塊都沒看到（2026-10-12 回報），現在對齊了。
   const top1 = Number((rows[0] || {}).final || 0);
   const thrTxt = (thr === null || thr === undefined || thr === '')
     ? '' : ' ' + Number(thr).toFixed(2);

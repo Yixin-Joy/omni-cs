@@ -16,7 +16,7 @@
    https://你的-ngrok-或-natapp-位址/webhook
    ```
    （本專案 `main.py` 的 `/webhook` 同時接 WhatsApp / IG / FB，共用同一支。）
-3. 「驗證權杖（Verify Token）」填你 `.env` 裡的 `META_VERIFY_TOKEN` 值（目前是 `123`）。
+3. 「驗證權杖（Verify Token）」填你 `.env` 裡的 `META_VERIFY_TOKEN` 值（自行設定的任意字串，兩邊要一致）。
 4. 按「驗證並儲存」。Meta 會打一次 GET `/webhook`，我們回傳 challenge，就會顯示成功。
 
 ---
@@ -32,8 +32,8 @@
 | **Instagram（IG 登入路徑那顆帳號）** | `messages` | IG 私訊即時推送 |
 | **Instagram（IG 登入路徑那顆帳號）** | `comments` | IG 貼文留言即時推送 |
 
-> 注意：IG 的 webhook 是「**Instagram 登入路徑**」下的那顆帳號（ID 尾 78048800，
-> 就是 `META_IG_ACCESS_TOKEN` 這支 IGAA token 對應的帳號），不是粉專連結的 IG business 帳號。
+> 注意：IG 的 webhook 是「**Instagram 登入路徑**」下的那顆帳號
+> （就是 `META_IG_ACCESS_TOKEN` 這支 IGAA token 對應的帳號），不是粉專連結的 IG business 帳號。
 
 ---
 

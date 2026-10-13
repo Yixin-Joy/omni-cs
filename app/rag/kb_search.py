@@ -579,7 +579,7 @@ def _finish(res: SearchResult, merged: list[Hit], query: str) -> SearchResult:
             used += len(h.text)
         picked = kept
     # ★ 「入選（picked）」的語意是：**這一塊真的會被送進模型**。
-    #   為什麼不能無條件標 True（2026-10-12，使用者 回報「很多個入選但實際都沒過門檻」）：
+    #   為什麼不能無條件標 True（2026-10-12，回報「很多個入選但實際都沒過門檻」）：
     #   `_pick()` 只做「按分數排序取前 top_k」，**完全不看門檻**；
     #   而 `_rag_try()` 在 `top1 < 門檻` 時直接 return、**一塊都不送**。
     #   於是工作台顯示「入選 6 塊」，實際上模型一塊都沒看到 —— 兩邊的說法互相矛盾。

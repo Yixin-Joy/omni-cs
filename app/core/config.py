@@ -26,9 +26,9 @@ WECHAT_ENCODING_AES_KEY = _get("WECHAT_ENCODING_AES_KEY")
 # 註：本服務已不再轉發任何外部系統（原 TARGET_WEBHOOK_URL 指向的 9033 已切斷），
 #     微信 / WhatsApp 來訊一律只落地本機 DB，由客服工作台讀取。
 
-# 寫進來訊 payload 的渠道標識（純識別用，不再外送）
+# 寫進來訊 payload 的渠道標識（純識別用，不再外送；部署時在 .env 自行設定）
 CHANNEL = _get("CHANNEL", "web")
-CHANNEL_IDENTITY_ID = _get("CHANNEL_IDENTITY_ID", "00000000-0000-0000-0000-000000000000")
+CHANNEL_IDENTITY_ID = _get("CHANNEL_IDENTITY_ID")
 
 # 本服務對外可訪問的 https 基址（ngrok 產生的位址，去掉結尾斜線）
 PUBLIC_BASE_URL = _get("PUBLIC_BASE_URL", "")
@@ -46,9 +46,9 @@ WHATSAPP_ACCESS_TOKEN = _get("WHATSAPP_ACCESS_TOKEN")
 # 發送 WhatsApp 消息用（Meta 後台 WhatsApp > API Setup 的 Phone Number ID）
 WHATSAPP_PHONE_NUMBER_ID = _get("WHATSAPP_PHONE_NUMBER_ID")
 
-# WhatsApp 渠道標識（純識別用，不再外送）
+# WhatsApp 渠道標識（純識別用，不再外送；部署時在 .env 自行設定）
 WHATSAPP_CHANNEL = _get("WHATSAPP_CHANNEL", "web")
-WHATSAPP_CHANNEL_IDENTITY_ID = _get("WHATSAPP_CHANNEL_IDENTITY_ID", "00000000-0000-0000-0000-000000000000")
+WHATSAPP_CHANNEL_IDENTITY_ID = _get("WHATSAPP_CHANNEL_IDENTITY_ID")
 
 # Meta Graph API 版本
 GRAPH_API_VERSION = _get("GRAPH_API_VERSION", "v22.0")

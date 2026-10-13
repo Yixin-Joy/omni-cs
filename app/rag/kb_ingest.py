@@ -227,7 +227,7 @@ def save_doc_assets(doc: dict, parsed) -> list[tuple]:
     綁定分塊時要靠這個對應關係（ParsedAsset 上的 anchor_block 不會存進 DB）。
 
     落地位置：`media/kb_assets/<sha16>.<ext>`（公開，對外 `/media/<sha16>.<ext>`）。
-    所屬知識庫：**文檔庫的圖一律落進它的「<名>_圖片庫」**（使用者 定案的綁定）。
+    所屬知識庫：**文檔庫的圖一律落進它的「<名>_圖片庫」**（定案的綁定）。
 
     ⚠️ 沒有任何 AI 呼叫：題注有就填進去，沒有就留空等人填／等按鈕生成。
     """
@@ -529,7 +529,7 @@ def embed_document(doc_id: int, mode: str = "pending", on_progress=None) -> dict
         for i in range(0, total, batch):
             group = targets[i:i + batch]
             # ★ 只把「文字」送進 embedding —— markdown 圖片標記（`![題注](/media/…））
-            #   留在 text 欄位給前端渲染／給 LLM 看，但不參與向量化（使用者 定案的規則）。
+            #   留在 text 欄位給前端渲染／給 LLM 看，但不參與向量化（定案的規則）。
             texts = [kb_chunk.strip_md_images(c["text"]) for c in group]
             try:
                 vecs = provider.encode(texts, batch_size=batch)

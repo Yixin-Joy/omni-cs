@@ -1,27 +1,46 @@
 # ===== 環境與憑證（絕不可提交）=====
+# 所有金鑰、權杖、連線字串都放在 .env，範本見 .env.example
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json
+
+# ===== 虛擬環境 =====
 .venv/
 venv/
+env/
 
 # ===== Python =====
 __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
+.eggs/
+build/
+dist/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # ===== 執行期資料 / 快取 =====
-# media/ 是對外 /files 的靜態目錄
+# media/ 是對外 /files 與 /media 的靜態目錄，內含客戶來訊檔案，一律不進版控。
+# （服務啟動時會自動建立 media/ 與 media/kb_assets/）
 media/
 # jieba 詞典快取（jieba 實際讀 %TEMP%，根目錄那份是殘留）
 jieba.cache
 # edition_change 的執行期狀態，每次檢查都會變
 meta_occ_snapshot.json
 *.log
+_uv*.log
 
-# ===== RAG 本地模型（jina-embeddings-v2-base-zh 約 640MB，不進版控）=====
+# ===== RAG 本地模型（jina-embeddings-v2-base-zh 約 640MB，首次啟動自動下載）=====
 models/
 
 # ===== 二進位工具（體積大，不進版控）=====
@@ -36,14 +55,20 @@ node_modules/
 package.json
 pnpm-lock.yaml
 
+# ===== 開發輔助工具的工作目錄（含內部筆記，不進版控）=====
+.workbuddy/
+.claude/
+.codex/
+.agents/
+
 # ===== 編輯器 / 系統 =====
 .vscode/
 .idea/
+*.swp
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# RAG 驗證用臨時資料（每次跑驗證重建，不入庫）
+# ===== 驗證用臨時資料（每次跑驗證重建，不入庫）=====
 _p1_samples/
-
-# 服務啟動 log（uvicorn 導向檔，服務在跑時檔案被佔用、本來也不該入庫）
-_uv*.log
+*.tmp

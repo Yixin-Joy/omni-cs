@@ -42,7 +42,7 @@ _MAX_PREFIX = 120
 def strip_md_images(text: str) -> str:
     """把 markdown 圖片標記拿掉，只留文字。
 
-    ★ 這是「**只把文字做向量化**」的實作（使用者 定案的規則）：
+    ★ 這是「**只把文字做向量化**」的實作（定案的規則）：
     chunk 的 text 欄位保留 `![題注](/media/xxx.png)`（前端要渲染、LLM 要看得到有圖），
     但送進 embedding 與字面比對前必須剝掉 —— 否則 `xxx.png`／URL 這種雜訊會
     稀釋相似度，而且同樣的圖在不同塊裡會製造假相似。

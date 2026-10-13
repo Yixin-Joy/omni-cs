@@ -1,24 +1,32 @@
 """建資料庫 platform_forwarder 與所有資料表（含 AI 自動回復相關表）。
 
 可重複執行，不會清掉既有資料。
+
+連線資訊一律取自 `.env` 的 `DATABASE_URL`（與服務同一組設定，不在這裡寫死帳密）。
+建庫前要先連上一個已存在的維護庫，所以把 `DATABASE_URL` 的庫名換成 `postgres`。
 """
 import os
 import sys
+from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 專案根
 
 import psycopg2
 
-HOST = "localhost"
-PORT = 5432
-USER = "postgres"
-PASSWORD = "postgres"
-ADMIN_DB = "postgres"  # 用現有庫連上去，執行 CREATE DATABASE
-NEW_DB = "platform_forwarder"
+from app.core.config import DATABASE_URL  # noqa: E402  (會載入 .env)
+
+NEW_DB = os.getenv("PGNEW_DB", "platform_forwarder")
+ADMIN_DB = os.getenv("PGADMIN_DB", "postgres")
+
+
+def _swap_dbname(url: str, dbname: str) -> str:
+    """把連線字串裡的資料庫名換掉，其餘（帳密、host、port、參數）原樣保留。"""
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(path="/" + dbname))
 
 
 def connect(dbname):
-    return psycopg2.connect(host=HOST, port=PORT, user=USER, password=PASSWORD, dbname=dbname)
+    return psycopg2.connect(_swap_dbname(DATABASE_URL, dbname))
 
 
 lines = []
