@@ -49,6 +49,27 @@ def fetch_attempts(task_id: int) -> list[dict] | None:
         return None
 
 
+def fetch_attempts_batch(task_ids: list[int]) -> dict[str, list] | None:
+    """一次取多筆任務的發送嘗試（運維頁列表展開用）。
+
+    回 `{task_id_str: [attempt, ...]}`；**連不上 / 非 200 回 None**（呼叫端要區分
+    「沒有紀錄」與「拿不到」）。空清單回 `{}`，不打網路。
+    """
+    ids = [int(i) for i in (task_ids or [])][:500]
+    if not ids:
+        return {}
+    try:
+        with _client() as c:
+            r = c.post("/internal/api/outbound-attempt/batch", json={"task_ids": ids})
+            if r.status_code != 200:
+                log.warning("批次取發送紀錄失敗 status=%s", r.status_code)
+                return None
+            return (r.json() or {}).get("items") or {}
+    except Exception as e:  # noqa: BLE001
+        log.warning("批次取發送紀錄異常: %s", e)
+        return None
+
+
 def push_account_map(items: list[dict] | None = None) -> bool:
     """①主動推送（MIGRATION_PLAN §1.3）：綁定/解綁後把映射推給 Connector。
 
@@ -102,6 +123,48 @@ def _native_account_id(platform: str, bp_account_id) -> str:
         conn.close()
 
 
+def fetch_conversations(platform: str, platform_account_id=0, *, scope: str = "dm",
+                        limit: int = 50, before: str = "") -> list[dict] | None:
+    """工作台會話列表（走 Connector `conversations`，設計案 §4.2）。
+
+    `platform_account_id` 是 CRM 的 `crm_business_platform_account.id`；
+    連不上 / 非 200 回 **None**（呼叫端要區分「沒會話」與「拿不到」）。
+    """
+    try:
+        native = _native_account_id(platform, platform_account_id)
+        if not native:
+            return []
+        params = {"platform": platform, "platform_business_account_id": native,
+                  "scope": scope, "limit": int(limit)}
+        if before:
+            params["before"] = before
+        with _client() as c:
+            r = c.get("/internal/api/conversations", params=params)
+            if r.status_code != 200:
+                log.warning("取會話列表失敗 status=%s", r.status_code)
+                return None
+            return (r.json() or {}).get("items") or []
+    except Exception as e:  # noqa: BLE001
+        log.warning("取會話列表異常: %s", e)
+        return None
+
+
+def upload_media(data: bytes, filename: str, *, scope: str = "outbound") -> dict | None:
+    """把二進制推給 Connector 存檔，回 `{media_key, sha256, size}`；失敗回 None。"""
+    try:
+        with _client() as c:
+            r = c.post("/internal/api/media/upload",
+                       params={"scope": scope},
+                       files={"file": (filename or "upload.bin", data)})
+            if r.status_code != 200:
+                log.warning("推送媒體失敗 status=%s", r.status_code)
+                return None
+            return r.json()
+    except Exception as e:  # noqa: BLE001
+        log.warning("推送媒體異常: %s", e)
+        return None
+
+
 def fetch_history(platform: str, end_user_sender_id: str, *,
                   platform_account_id=0, limit: int = 20,
                   before: str = "", scope: str = "dm") -> list[dict] | None:
@@ -130,7 +193,8 @@ def fetch_history(platform: str, end_user_sender_id: str, *,
 
 
 def mark_message(platform: str, *, message_ids=None, message_id: str = "",
-                 comment_id: str = "", conversation_id: str = "", state: str = "",
+                 comment_id: str = "", conversation_id: str = "",
+                 end_user_sender_id: str = "", state: str = "",
                  tier: str = "", detail: str = "", handled=None) -> int:
     """標記訊息的自動回復處置狀態（走 Connector `messages/mark`）。回傳受影響列數。"""
     body: dict = {"platform": platform}
@@ -142,6 +206,8 @@ def mark_message(platform: str, *, message_ids=None, message_id: str = "",
         body["comment_id"] = comment_id
     if conversation_id:
         body["conversation_id"] = conversation_id
+    if end_user_sender_id:
+        body["end_user_sender_id"] = end_user_sender_id
     if state:
         body["state"] = state
     if tier:
