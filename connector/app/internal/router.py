@@ -222,6 +222,8 @@ class MarkIn(BaseModel):
     message_id: str | None = None
     comment_id: str | None = None
     conversation_id: str | None = None
+    # ★ 工作台「清紅點」用：整個會話（私訊＝某個 sender 的全部訊息）
+    end_user_sender_id: str | None = None
     state: str | None = None
     tier: str | None = None
     detail: str | None = None
@@ -262,6 +264,8 @@ def messages_mark(payload: MarkIn):
                     where.append("message_id=%s"); wargs.append(payload.message_id)
                 if payload.conversation_id:
                     where.append("conversation_id=%s"); wargs.append(payload.conversation_id)
+                if payload.end_user_sender_id:
+                    where.append("sender_id=%s"); wargs.append(payload.end_user_sender_id)
             else:
                 if payload.comment_id:
                     table = "igfb_comment"
@@ -273,8 +277,13 @@ def messages_mark(payload: MarkIn):
                         where.append("message_id = ANY(%s)"); wargs.append(list(payload.message_ids))
                     if payload.message_id:
                         where.append("message_id=%s"); wargs.append(payload.message_id)
+                    if payload.end_user_sender_id:
+                        # ig/fb 的會話鍵是 sender_id，退回 conversation_key（與 messages/query 一致）
+                        where.append("(sender_id=%s OR conversation_key=%s)")
+                        wargs += [payload.end_user_sender_id, payload.end_user_sender_id]
             if len(where) == 1:
-                return _err(400, "缺少 message_id / message_ids / comment_id / conversation_id")
+                return _err(400, "缺少 message_id / message_ids / comment_id / conversation_id /"
+                                 " end_user_sender_id")
             cur.execute(f"UPDATE {table} SET {', '.join(sets)} WHERE " + " AND ".join(where),
                         tuple(args + wargs))
             n = cur.rowcount
@@ -282,6 +291,143 @@ def messages_mark(payload: MarkIn):
     finally:
         conn.close()
     return {"ok": True, "updated": n}
+
+
+# ---------------------------------------------------------------- 會話列表（工作台）
+
+_CONV_LIMIT_MAX = 200
+
+
+def _conv_dm_forward_sql(before: str | None) -> str:
+    """wechat / whatsapp 私訊：`forward_log` 依 sender_id 聚合。"""
+    return (
+        "SELECT sender_id AS ckey,"
+        "       max(message_time) AS last_ts,"
+        "       count(*) FILTER (WHERE direction = 'inbound'"
+        "                          AND COALESCE(is_handled, false) = false) AS pending,"
+        "       count(*) AS total,"
+        "       (array_agg(direction ORDER BY message_time DESC NULLS LAST))[1] AS last_dir,"
+        "       (array_agg(message_type ORDER BY message_time DESC NULLS LAST))[1] AS last_type,"
+        "       (array_agg(raw_content ORDER BY message_time DESC NULLS LAST))[1] AS last_raw,"
+        "       (array_agg(forwarded_payload ORDER BY message_time DESC NULLS LAST))[1] AS last_payload,"
+        "       NULL::text AS last_name, NULL::text AS post_id"
+        "  FROM forward_log"
+        " WHERE platform = %s AND platform_business_account_id = %s"
+        "   AND sender_id IS NOT NULL AND sender_id <> ''"
+        "   AND (%s IS NULL OR message_time < %s::timestamptz)"
+        " GROUP BY sender_id ORDER BY last_ts DESC NULLS LAST LIMIT %s"
+    )
+
+
+def _conv_dm_igfb_sql() -> str:
+    """ig / fb 私訊：`igfb_dm` 依 sender_id（退回 conversation_key）聚合。"""
+    return (
+        "SELECT COALESCE(NULLIF(sender_id, ''), conversation_key) AS ckey,"
+        "       max(created_at) AS last_ts,"
+        "       count(*) FILTER (WHERE direction = 'inbound'"
+        "                          AND COALESCE(is_handled, false) = false) AS pending,"
+        "       count(*) AS total,"
+        "       (array_agg(direction ORDER BY created_at DESC NULLS LAST))[1] AS last_dir,"
+        "       (array_agg(message_type ORDER BY created_at DESC NULLS LAST))[1] AS last_type,"
+        "       (array_agg(text ORDER BY created_at DESC NULLS LAST))[1] AS last_raw,"
+        "       NULL::jsonb AS last_payload,"
+        "       (array_agg(COALESCE(sender_name, '') ORDER BY created_at DESC NULLS LAST))[1] AS last_name,"
+        "       NULL::text AS post_id"
+        "  FROM igfb_dm"
+        " WHERE platform = %s AND platform_business_account_id = %s"
+        "   AND COALESCE(NULLIF(sender_id, ''), conversation_key) IS NOT NULL"
+        "   AND (%s IS NULL OR created_at < %s::timestamptz)"
+        " GROUP BY 1 ORDER BY last_ts DESC NULLS LAST LIMIT %s"
+    )
+
+
+def _conv_comment_sql() -> str:
+    """ig / fb 留言：`igfb_comment` 每則留言一條會話（key = comment_id）。"""
+    return (
+        "SELECT comment_id AS ckey,"
+        "       max(created_at) AS last_ts,"
+        "       count(*) FILTER (WHERE COALESCE(is_handled, false) = false) AS pending,"
+        "       count(*) AS total,"
+        "       'inbound'::text AS last_dir,"
+        "       'comment'::text AS last_type,"
+        "       (array_agg(text ORDER BY created_at DESC NULLS LAST))[1] AS last_raw,"
+        "       NULL::jsonb AS last_payload,"
+        "       (array_agg(COALESCE(from_name, '') ORDER BY created_at DESC NULLS LAST))[1] AS last_name,"
+        "       (array_agg(post_id ORDER BY created_at DESC NULLS LAST))[1] AS post_id"
+        "  FROM igfb_comment"
+        " WHERE platform = %s AND platform_business_account_id = %s"
+        "   AND comment_id IS NOT NULL AND comment_id <> ''"
+        "   AND (%s IS NULL OR created_at < %s::timestamptz)"
+        " GROUP BY comment_id ORDER BY last_ts DESC NULLS LAST LIMIT %s"
+    )
+
+
+@router.get("/conversations")
+def conversations(
+    platform: str = Query(...),
+    platform_business_account_id: str = Query(...),
+    scope: str = Query(default="dm"),
+    limit: int = Query(default=50),
+    before: str | None = Query(default=None),
+):
+    """工作台會話列表（設計案 §4.2）—— CRM 不碰 fdw，一律走這裡。
+
+    依 `end_user_sender_id` 聚合；回傳每筆**最後一則**訊息的純文字（`text`、
+    已由 `_msg_text` 正規化）、方向、未處理筆數（`pending` = 來訊且未標記
+    `is_handled`）與總筆數。前端紅點即 `pending > 0`。
+
+    - `scope='dm'`：wechat / whatsapp → `forward_log`；ig / fb → `igfb_dm`。
+    - `scope='comment'`：ig / fb → `igfb_comment`（每則留言一個會話）。
+
+    ⚠️ 逐列容錯：任一列 `_msg_text` 解析失敗只讓該列 text 為空，不影響其他列。
+    """
+    n = max(1, min(int(limit or 50), _CONV_LIMIT_MAX))
+    if platform in ("wechat", "whatsapp"):
+        if scope != "dm":
+            return _err(400, f"{platform} 不支援 scope={scope}")
+        sql = _conv_dm_forward_sql(before)
+        args = (platform, platform_business_account_id, before, before, n)
+    elif platform in ("ig", "fb"):
+        if scope == "comment":
+            sql = _conv_comment_sql()
+        else:
+            sql = _conv_dm_igfb_sql()
+        args = (platform, platform_business_account_id, before, before, n)
+    else:
+        return _err(400, f"不支援的平台: {platform}")
+
+    try:
+        conn = db.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, args)
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 —— 查詢失敗回結構化錯誤，不 500
+        return _err(500, f"會話查詢失敗: {type(e).__name__}: {e}")
+
+    items = []
+    for r in rows:
+        try:
+            items.append({
+                "key": r[0],
+                "sender_id": r[0],
+                "sender_name": (r[8] or "") if len(r) > 8 else "",
+                "last_ts": r[1].isoformat() if r[1] else None,
+                "pending": int(r[2] or 0),
+                "total": int(r[3] or 0),
+                "direction": r[4] or "inbound",
+                "message_type": r[5] or "text",
+                "text": _msg_text(r[6], r[7]),
+                "post_id": r[9] if len(r) > 9 else None,
+                "scope": scope,
+                "platform": platform,
+                "platform_business_account_id": platform_business_account_id,
+            })
+        except Exception:  # noqa: BLE001 —— 單列壞掉不拖垮整份清單
+            continue
+    return {"ok": True, "items": items, "scope": scope, "platform": platform}
 
 
 @router.get("/ping")
