@@ -9,13 +9,16 @@
 """
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.core import config
 from app.core import db
 from app.internal.router import router as internal_router
 from app.worker import runner as worker_runner
+from app.webhook import router as webhook_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("connector")
@@ -33,14 +36,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="multi-cs-connector", lifespan=lifespan)
 app.include_router(internal_router)
 
+# 客戶來訊媒體的公開靜態目錄（webhook 下載的語音/視頻/圖片）
+Path(config.MEDIA_DIR).mkdir(exist_ok=True)
+app.mount("/files", StaticFiles(directory=config.MEDIA_DIR), name="files")
+
+# 對外收訊入口（微信 / WhatsApp / IG / FB）
+app.include_router(webhook_router)
+
 
 @app.get("/health")
 async def health():
     return {"ok": True, "service": config.SERVICE_NAME}
-
-
-# ---- 待搬入（階段三）----
-# 1. webhook 路由：從 legacy app/main.py 搬（/wechat、/webhook、/whatsapp/webhook）
-# 2. 通道接收與正規化：legacy app/channels/{wechat,whatsapp,igfb}.py
-# 3. 來訊媒體下載與永久存儲（media/）
-# 4. 收到 webhook → 落地 → 非同步通知 CRM /internal/api/ai/inbound

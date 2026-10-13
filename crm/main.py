@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.admin.router import router as admin_router
 from app.agent.console_router import router as agent_console_router
@@ -48,6 +49,14 @@ app.include_router(agent_router)
 app.include_router(agent_console_router)
 app.include_router(ops_router)
 app.include_router(internal_router)
+
+# ★ 知識庫圖片的公開目錄（從舊單體搬入）—— 只掛**圖片專用**目錄，
+#   這樣 markdown 裡的 `![題注](/media/xxx.png)` 能直接渲染。
+#   客戶來訊媒體（/files）不在這裡 —— 那是 Connector 的職責（拆服務後各管各的）。
+from app.rag import rag_config as _rag_config  # noqa: E402
+Path(_rag_config.RAG_MEDIA_DIR).mkdir(parents=True, exist_ok=True)
+app.mount(_rag_config.RAG_MEDIA_URL_PREFIX.rstrip("/") or "/media",
+          StaticFiles(directory=_rag_config.RAG_MEDIA_DIR), name="kb-media")
 
 
 @app.get("/health")
