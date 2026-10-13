@@ -352,10 +352,14 @@ Multi-CS/  (現有 repo)
 | AI/RAG 全量資料遷移對帳 | `scripts/migrate_ai_data.py --verify` | **32 / 32** | 行數逐表對平、0 孤兒、key 欄位轉型、開關展開、綁定覆蓋、帳號層、向量數一致、媒體檔案齊備 |
 | 前端（無真瀏覽器，Node + 最小 DOM 樁） | `crm/tests/ui_check.py` | **全通過** | `confirm()` 閘門、`infotip`、子頁跳轉、登入頁身分選擇。**未覆蓋**：真渲染 / CSS / 事件 |
 
-**尚未移植到 CRM 的自檢**（階段五收尾時一併處理；階段四已先補完上面的工作台/運維/貼文三支）：
-根 `tests/` 的品質校準類 —— `kb_search_check.py`（**召回分數分佈校準，`min_score` 就是它定的**）、
-`kb_check.py`（[1b] 分塊閘門）、`kb_asset_check.py`、`engine_check.py`、`rag_model_check.py`。
-這些目前還跑在根 `app/`（舊單體）上；搬家後要改成 import `app.rag` 的 CRM 版才會驗到真正上線的程式。
+**尚未移植到 CRM 的自檢** —— ✅ **2026-10-13 已全部移植完畢**（見下方「收尾」）。
+原本列在這裡的根 `tests/` 品質校準類（`kb_search_check.py`、`kb_check.py`、
+`kb_asset_check.py`、`engine_check.py`、`rag_model_check.py`）＋ `kb_scope_check.py`、
+`kb_api_check.py`、`model_check.py`、`ui_check.py` 都已在 `crm/tests/` 有 CRM 版。
+
+★ **根那一份不要刪**：`tests/` 與根 `app/`（舊單體 console，8001）**仍在上線服務**，
+知識庫管理頁還在那邊。CRM 版是「同一套自檢、改打 CRM 的程式與 DB」，
+兩者驗的是**不同的服務**，不是新舊取代關係。
 
 ### 階段四：客服工作台與運維 —— ✅ 完成（2026-10-13）
 **目標**：三個身分各自的頁面都能用；異常場景查得到、救得回來。
@@ -418,15 +422,71 @@ Multi-CS/  (現有 repo)
 | 認證 / RBAC / 首頁分派 | `crm/tests/auth_check.py` | **全通過** | 三身分各自的真實首頁特徵節點（admin/agent/ops） |
 | 全模組 import | —（即時掃描） | **CRM 42 / Connector 15，0 FAIL** | `app/**` 逐模組 import |
 
-**尚未移植到 CRM 的自檢**（階段五收尾時一併處理）：
-根 `tests/` 的品質校準類 —— `kb_search_check.py`（**召回分數分佈校準，`min_score` 就是它定的**）、
-`kb_check.py`（[1b] 分塊閘門）、`kb_asset_check.py`、`engine_check.py`、`rag_model_check.py`。
-這些目前還跑在根 `app/`（舊單體）上；搬家後要改成 import `app.rag` 的 CRM 版才會驗到真正上線的程式。
+**尚未移植到 CRM 的自檢** —— ✅ **2026-10-13 已全部移植完畢**（見下方「收尾」）。
 另：舊 `autoreply_console.py` / `kb_console.py` 未接線（改走 `console_router`）；
 `scripts/backfill.py` 仍是舊簽名。
 
 ### 階段五（可選）：拆不同主機
 - 底層 fdw/內網 → HTTP，業務代碼不動。
+
+---
+
+### 收尾：品質校準自檢移植（T25）—— ✅ 完成（2026-10-13）
+
+**目標**：把根 `tests/` 那一批「品質校準」自檢搬到 CRM，讓它們驗的是**真正上線的程式**
+（`crm/app/*` + `crm_db`），而不是舊單體。
+
+- [x] **共用工具 `crm/tests/_ck.py`** —— 路徑 bootstrap、`sql()`（只碰 `crm_db`）、
+      `ensure_business()` / `purge_business()`（自檢資料一律掛在 `__CK__` 前綴的獨立商家，
+      跑完清乾淨）、`check()` / `check_or_env()` / `report()`。
+      ★ `check_or_env` 把 429／逾時標 `[環境]`，總結會印「另有 N 項因環境未驗證」——
+      `engine_check` 與 `model_check` **共用同一份 `ENV_HINTS`**（不要各寫一套）。
+      ⚠️ `purge_business` 清 `post_ai_config` 要多 join 一層
+      （它**沒有** `business_id`，靠 `business_platform_account_id` 連到商家）。
+- [x] **兩個關鍵環境事實**（影響所有 CRM 自檢的寫法）：
+      ★ **`kb_*` 表在兩個 DB 都存在**（`crm_db` 與 `platform_forwarder`）—— 舊單體殘留；
+      CRM 側自檢**一律打 `crm_db`**（`_ck.sql()` 已是）。
+      ★ **`crm_db` 有真實商家資料**（`Epro_test` #1、11 個知識庫、18 份文件…）
+      → 自檢一定用 `__CK__` 前綴的獨立商家，**不要**拿真實 id 傳進去。
+- [x] **直接呼叫端點函式，不走 HTTP**：CRM 的 `/console/kb/*` **還沒接線**
+      （階段四決策），且 `/console/agent/*` 要 session + CSRF。
+      自檢改成「直接呼叫處理函式 + 傳一個假 session dict」
+      （`{"roles":["agent"],"active_role":"agent","is_super_agent":True,"is_kb_editor":True}`）。
+      ⚠️ **`x: str = Query(default="")` 直接呼叫時預設值是 `Query` 物件**（不是空字串）
+      → 這類參數一定要顯式傳，否則 `(q or "").strip()` 會爆 `AttributeError`。
+- [x] **移植清單與實測**：
+
+| 自檢 | 位置 | 結果 | 移植時修掉的東西 |
+|---|---|---|---|
+| 檢索品質校準 | `crm/tests/kb_search_check.py` | **30 / 0** | ★ 原版斷言寫死「不相關問句全擋下（用執行期 `min_score`）」= **假 FAIL**（門檻是 UI 調的參數）→ 改成「最高分 < 建議門檻 0.32」＋一行 `（觀察）` |
+| 分塊閘門 [1b] | `crm/tests/kb_check.py` | **69 / 0** | 加 `business_id=BIZ` 範圍、第二個庫驗「檢索參數全庫共用」；收尾改 `purge_business` |
+| 四層引擎 | `crm/tests/engine_check.py` | **49 / 0**（3 `[環境]`） | 整支重寫：原版打 `/console/autoreply/test/engine` → 改直接 `reply_engine.answer()`；`list_logs` 回的是 `{"logs":…,"total":…}`（不是 `items`） |
+| 圖文入庫 / 送出 | `crm/tests/kb_asset_check.py` | **113 / 0** | `asset_file` 回 `FileResponse` → `res.body` **本來就是空的**，改驗 `getattr(rf,"path")` 的檔案大小；[8] 改成「只建 1 個任務」逐平台驗 |
+| 範圍 / 降級洞 | `crm/tests/kb_scope_check.py` | 10 條洞（診斷腳本） | ★ 2a 原本寫死 `abs(scaled - round(0.28*0.35,4))` → 假陽性（全域 `min_score` 已改 0.25）→ 改成用**實測降級門檻**比對；`load_ready_chunks` 在 CRM 是**三參數**（打樁要 `*a, **kw`）。**4b/4c 證明正式路徑有擋住未分組文件** |
+| 知識庫端點 | `crm/tests/kb_api_check.py` | **55 / 0** | [0] 路由齊全性：⚠️ `route.path` **已含 router prefix**，且 `/params`、`/search` 各有 GET+POST（34 個路由物件 / 32 條唯一路徑）—— 要先剝 prefix 再比 |
+| 本地模型 | `crm/tests/rag_model_check.py` | **10 / 0** | 改成走 **`kb_embed.get_provider()`**（服務真正用的那條路）＋複用 `kb_embed.heal_snapshot_cache`（原本自帶重複的 70 行）；參數全讀 `rag_config` |
+| 模型連線 / 對話 | `crm/tests/model_check.py` | **19 / 0**（1 `[環境]`） | 改走 `_ck.check_or_env`（原版逾時 = 紅一片）；新增 `[0]` 設定來源對齊 |
+| 前端靜態 | `crm/tests/ui_check.py` | **全通過** | 新增 `[6]` 貼文彈窗閘門（`#ovPost` 靜態節點、三組開關/勾選、`layerKeyOf` kb→rag、送出的三鍵、後端「空勾 400」）與 `[7]` `mdImages` 閘門 |
+| 前端渲染 | `crm/tests/console_render_check.py` | **111 / 0** | ★ **不是移植而是另寫**（見下） |
+
+- [x] ★ **根 `tests/ui_check.py` 不是「移植」而是「另寫」** —— 這點一開始判斷錯了：
+      根那支（1410 行）驗的是**舊單體**的知識庫 console（`arState`、`renderSettingsTab()`、
+      `#kbNewOverlay`、`_kbParamCache`）；CRM 版 `crm/ui/console_ui.html` 是**階段四的客服工作台**
+      （會話 / 自動回覆 / 命中測試 / 回覆紀錄），上述符號**一個都沒有**。
+      → 保留根那支（**舊單體 console 8001 仍在上線服務知識庫管理**），
+      CRM 版另寫 `crm/tests/console_render_check.py`（沿用「Node + 最小 DOM 樁」手法）。
+      ★ 關鍵技巧：CRM 版把整份 script 包在 IIFE 裡，外面摸不到 `state`
+      → harness 在載入前**拆掉外層 IIFE**（不改檔案本身），`state` 與渲染函式就變頂層可見。
+- [x] **渲染自檢抓到的真問題（已修）**：
+      * `renderLogs()` 的「回覆」欄只用 `esc(…slice(0,40))` → 純圖回覆會露出
+        `![題注](/media/xxx.png)` 原始字串。**修**：新增 `mdPreview(s,n)`
+        （先把 `![..](..)` 換成「[圖]」再截斷，不放 `<img>`），會話清單預覽同樣處理。
+      * `renderConv()` 的 AI 留痕只用 `esc(g.detail || g.answer)` → 圖不會畫出來。
+        **修**：改走 `mdImages()`。
+      * `repo.conversation_logs()` 的 SELECT **漏了 `score`** → 前端「留痕顯示分數」
+        那段判斷式永遠不成立（**死碼**）。**修**：SELECT 補 `score`。
+- [x] **`.gitignore`** 補 `crm/_ck_samples/`（`_ck.sandbox_dir()` 每次跑重建的樣本，比照 `_p1_samples/`）。
+- [ ] **未覆蓋**（要人工）：瀏覽器真的把 HTML 畫出來、CSS 版型、真實事件（點擊/輸入）。
 
 ---
 
@@ -440,10 +500,12 @@ Multi-CS/  (現有 repo)
 | 禁止 `confirm()` | 二選一給按鈕/單選（`ui_check` 已有閘門） |
 | 說明文字 | 一律收進 `infotip()`「i」圓標 |
 | 彈窗 | 靜態節點，不進輪詢重繪區 |
-| 圖片渲染 | 每一處顯示回覆/內文都走 `mdImages()` |
+| 圖片渲染 | 每一處顯示回覆/內文都走 `mdImages()`（清單預覽走 `mdPreview()`，見 §5 收尾） |
 | 知識庫 | 沿用 `kbView` 多頁跳轉、`kbForgetDoc()`、麵包屑規則 |
 
-> 現有 `ui_check.py` 的閘門要跟著搬到 `crm/tests/`，並補 admin/ops 分頁的渲染檢查。
+> ✅ 已做：`crm/tests/ui_check.py` 補了貼文彈窗與 `mdImages` 閘門；
+> CRM 版的**渲染**檢查另寫在 `crm/tests/console_render_check.py`（`ui_check` 只做靜態）。
+> ⚠️ 根 `tests/ui_check.py` **不要刪** —— 舊單體 console 還在上線服務知識庫管理。
 
 ---
 
