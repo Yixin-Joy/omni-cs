@@ -44,12 +44,18 @@
     "outbound": { "max_retry": 3, "backoff_seconds": 1, "claim_batch": 50,
                   "per_business_limit": 10, "processing_timeout": 300 },
     "callback": { "max_retry": 5 },
-    "alert": { "mass_failure_threshold": 20, "email_recipients": [] },
+    "ai": { "claim_batch": 5, "queue_max_retry": 2, "queue_stuck_timeout": 600 },
+    "alert": { "mass_failure_threshold": 20, "failure_window_minutes": 10,
+               "email_min_severity": "warning", "email_recipients": [] },
     "media": { "kb_cache_ttl_days": 7 }
   },
   "flat": { "outbound.max_retry": 3, "...": "..." }
 }
 ```
+
+> 這份清單是**可調參數的唯一真相**（`crm/app/core/schema.py` 的 `OPS_CONFIG_DEFAULTS`）。
+> 運維頁（`/ops`）的「重試參數」分頁就是逐鍵讀寫這裡；**改了立即生效，不需重啟**
+> （`claim` 每次都重新讀）。寫入端點在 CRM 的 `/console/ops/config`，**只認白名單裡的鍵**。
 
 ### 1.3 `GET /internal/api/account-map` — 拉帳號映射（同步兜底）
 
@@ -170,6 +176,19 @@ RETURNING t.id, ...;
 > **同一 `(alert_type, dedupe_key)` 且未確認**的告警會合併成一條：累加 `count`、更新 `last_seen_at`。
 > 這正是設計案要的「同一帳號只顯示一條，持續更新首次/最後/累計」。
 
+告警寫進 `crm_alert`，在運維頁（`/ops` → 告警）清單化、可單筆／全部確認。
+**確認後不再重複寄信**（寄信用 `notified_at` 標記，見 `crm/app/ops/alerting.py`）。
+
+CRM 自己也會產生告警（不必等 Connector 上報）：
+
+| `alert_type` | 觸發條件 |
+|---|---|
+| `mass_failure` | 近 `alert.failure_window_minutes` 分鐘內 `failed` 任務數 ≥ `alert.mass_failure_threshold` |
+
+> ★ **郵件是通知、不是保證**：`ALERT_EMAIL_ENABLED` + `SMTP_HOST` + `alert.email_recipients`
+> 三個都有才會寄；缺任何一個就整組 no-op（只記 log，**不拋例外**），
+> 一封寄不出去的信不會把告警巡檢迴圈打斷。
+
 ---
 
 ## 2. Connector 提供給 CRM
@@ -260,13 +279,51 @@ RETURNING t.id, ...;
 | `message_ids` | | 批次；或下面單筆定位 |
 | `message_id` | | 單筆 |
 | `comment_id` | | `ig`/`fb` 留言（走 `igfb_comment`） |
-| `conversation_id` | | `wechat`/`whatsapp` 會話 |
+| `conversation_id` | | `wechat`/`whatsapp` 會話（訊息表這欄常常是空的，優先用下面那個） |
+| `end_user_sender_id` | | ★ 工作台清紅點用這個：`forward_log` 比 `sender_id`；`igfb_dm` 比 `sender_id` 或 `conversation_key` |
 | `state` / `tier` / `detail` / `handled` | | 只寫**有給**的欄位；四個都沒給 → `updated: 0`（不是錯誤） |
 
-定位欄位至少要給一個，否則 400 `缺少 message_id / message_ids / comment_id / conversation_id`。
+定位欄位至少要給一個，否則 400。
 
 **表歸屬**：`wechat` / `whatsapp` → `forward_log`；`ig` / `fb` → `igfb_dm`
 （有 `comment_id` 則 `igfb_comment`）。回 `{"ok": true, "updated": n}`。
+
+### 2.10 `GET /internal/api/conversations` — 工作台會話列表
+
+★ **CRM 的客服工作台靠這支列出會話**（CRM 不碰 fdw）。依 `end_user_sender_id`
+（留言則是 `comment_id`）聚合，**一列＝一個會話**，取每個會話最後一則訊息的內容。
+
+| 參數 | 必填 | 說明 |
+|---|---|---|
+| `platform` | ✔ | `wechat` / `whatsapp` / `ig` / `fb` |
+| `platform_business_account_id` | ✔ | 平台原生 ID（不是 CRM 的自增 id） |
+| `scope` | | `dm`（預設）/ `comment`。`wechat`/`whatsapp` 給 `comment` → 400 |
+| `limit` | | 預設 50，上限 200 |
+| `before` | | 選填，ISO 時間（向前翻頁） |
+
+```json
+{ "ok": true, "scope": "dm", "platform": "whatsapp", "items": [
+  { "key": "8613800000000", "sender_id": "8613800000000", "sender_name": "Amy",
+    "last_ts": "2026-10-13T15:02:11+08:00", "pending": 2, "total": 7,
+    "direction": "inbound", "message_type": "text", "text": "請問有現貨嗎",
+    "post_id": null, "scope": "dm", "platform": "whatsapp",
+    "platform_business_account_id": "1362588056935295" } ] }
+```
+
+- `key`：會話鍵 —— 私訊＝`end_user_sender_id`，留言＝`comment_id`（前端拿它回查訊息 / 清紅點）。
+- `pending`：`direction='inbound' AND is_handled=false` 的筆數 → **工作台紅點**。
+- `post_id`：只有 `scope=comment` 會有值（貼文特殊配置要用）。
+- ⚠️ **逐列容錯**：任一列的文字解析失敗只讓該列 `text` 為空，不影響其他列；
+  整支查詢失敗回 `{"ok": false, "error": ...}` + 500，**不噴例外**。
+
+**表歸屬**：`wechat`/`whatsapp` → `forward_log`（依 `sender_id` 聚合）；
+`ig`/`fb` 私訊 → `igfb_dm`（`COALESCE(NULLIF(sender_id,''), conversation_key)`）；
+`ig`/`fb` 留言 → `igfb_comment`（每則留言一會話）。
+
+> ⚠️ 這三張表的 `platform_business_account_id` / `business_id` / `bp_account_id`
+> 在舊資料裡是 **NULL**。不回填的話工作台「按帳號查」會一筆都撈不到
+> （行數對得上、介面卻是空的）。回填工具：`scripts/backfill_connector_accounts.py`
+> （`--apply` 寫入 / `--verify` 對帳；預設 dry-run）。
 
 ---
 

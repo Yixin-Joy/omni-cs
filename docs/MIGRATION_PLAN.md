@@ -334,9 +334,11 @@ Multi-CS/  (現有 repo)
       自檢 `crm/tests/phase3_scope_check.py`（29 項）。
 - [ ] **驗收**：真訊息進來 → CRM 跑引擎 → 命中建任務 → Connector 送出；`autoreply_log` 有完整留痕
       （後半段已通；前半段待 Connector webhook 接收與正規化接上）。
-- [ ] 階段四前置（搬遷時發現）：`app/autoreply/autoreply_console.py` 仍 import
-      `app.utils.xlsx_io` —— **CRM 沒有 `app/utils/`**。接線時要把根 `app/utils/xlsx_io.py` 一起搬過來
-      （或改寫表格匯入/匯出）。目前它沒被 `main.py` 引入，服務照常啟動。
+- [x] 階段四前置（搬遷時發現）：`app/autoreply/autoreply_console.py` 仍 import
+      `app.utils.xlsx_io` —— **CRM 沒有 `app/utils/`**。→ **已解**：根 `app/utils/`（`xlsx_io.py`）
+      已複製到 `crm/app/utils/`，兩個舊 console 模組的 import 全部通過（模組本身仍未接線）。
+- [ ] 舊 `autoreply_console.py` / `kb_console.py` **未接線**（見階段四決策：改走新的
+      `console_router.py`）；`scripts/backfill.py` 仍是舊簽名。
 
 #### 階段三自檢總表（實測結果，2026-10-13）
 
@@ -350,16 +352,78 @@ Multi-CS/  (現有 repo)
 | AI/RAG 全量資料遷移對帳 | `scripts/migrate_ai_data.py --verify` | **32 / 32** | 行數逐表對平、0 孤兒、key 欄位轉型、開關展開、綁定覆蓋、帳號層、向量數一致、媒體檔案齊備 |
 | 前端（無真瀏覽器，Node + 最小 DOM 樁） | `crm/tests/ui_check.py` | **全通過** | `confirm()` 閘門、`infotip`、子頁跳轉、登入頁身分選擇。**未覆蓋**：真渲染 / CSS / 事件 |
 
-**尚未移植到 CRM 的自檢**（階段四收尾時一併處理）：
+**尚未移植到 CRM 的自檢**（階段五收尾時一併處理；階段四已先補完上面的工作台/運維/貼文三支）：
 根 `tests/` 的品質校準類 —— `kb_search_check.py`（**召回分數分佈校準，`min_score` 就是它定的**）、
 `kb_check.py`（[1b] 分塊閘門）、`kb_asset_check.py`、`engine_check.py`、`rag_model_check.py`。
 這些目前還跑在根 `app/`（舊單體）上；搬家後要改成 import `app.rag` 的 CRM 版才會驗到真正上線的程式。
 
-### 階段四：客服工作台與運維
-- 工作台：會話列表（走 Connector API）、紅點、人工回覆（建任務）、審計
-- 貼文特殊配置彈窗（沿用舊 UI 機制）
-- ops 運維頁：失敗任務、重試參數、手動重跑、告警清單、郵件告警
-- **驗收**：全流程功能 + 異常場景（網路斷、回調失敗、逾時、PG 重啟）測試
+### 階段四：客服工作台與運維 —— ✅ 完成（2026-10-13）
+**目標**：三個身分各自的頁面都能用；異常場景查得到、救得回來。
+- [x] **Connector 會話 API**（`GET /internal/api/conversations`）—— 工作台列表的唯一來源，
+      CRM 不碰 fdw。依 `end_user_sender_id` 聚合（留言用 `comment_id`），
+      `pending` = 來訊未處理（前端紅點）、`post_id`（貼文配置要用）。
+      `wechat`/`whatsapp` 給 `scope=comment` → 400；**逐列容錯**（一列壞掉不拖垮整份清單）。
+      `messages/mark` 補 `end_user_sender_id` 定位（**私訊的 `conversation_id` 是空的**，
+      清紅點一定要用 sender）。自檢 `connector/tests/phase4_conversations_check.py`（28 項）。
+- [x] **★ 帳號歸屬回填**（不做就靜默失效）：legacy 三張訊息表的
+      `platform_business_account_id` / `business_id` / `bp_account_id` **全是 NULL**
+      → 工作台「按帳號查」一筆都撈不到（**行數對得上，介面卻是空的**）。
+      `scripts/backfill_connector_accounts.py`（預設 dry-run，`--apply` / `--verify`；
+      只填「該平台唯一帳號」者，多帳號平台跳過並回報）。實跑：`forward_log` 97/97、
+      `igfb_dm` 164/164、`igfb_comment` 63/63。
+- [x] **CRM 工作台後端**：`app/agent/{repo,router}.py`（`/console/agent`：商家 / 帳號 /
+      會話列表（多帳號合併）/ 對話 + AI 留痕 / 人工回覆建任務 / 清紅點 / 附件轉推）。
+      人工回覆 = **建任務與審計同一事務**（`source='manual'`）。
+      Connector 不可達 → **502**（明確區分「沒會話」與「拿不到」）。自檢 40 項。
+- [x] **配置 / 清單 / 紀錄 / 命中測試端點**：`app/agent/console_router.py`。
+      ★ 決策：舊單體帶過來的 `autoreply_console.py`（860 行）與 `kb_console.py`（988 行）
+      **仍是舊 API**（`all_settings` / `set_global` / `list_faqs()` 不帶 `business_id`），
+      接線等於整支重寫 → 改為新增這支薄路由器（沿用已 business 化的 db 層），
+      舊兩支**暫不接線**。順帶把根 `app/utils/` 移植到 `crm/app/utils/`。
+- [x] **貼文特殊配置彈窗**（`GET|POST /console/agent/post-config`）：
+      三組獨立勾選（FAQ / 表格 / 知識庫）+ 每組一個開關。
+      ★ 鐵則 **開關開著就不能空勾**（空集合＝用使用者以為已停用的資料回答，比不回更糟）；
+      ★ **沒配置過（`configured=false`）＝與私訊完全相同**（彈窗預設勾選就是基準集）；
+      ★ 跨商家項目 → 400；貼文總開關關 → 三層全空（`source='post_off'`）；
+      ★ 該商家留言總開關關 → 前端**不顯示入口**（`comment_switch_on`）。
+      覆蓋式儲存（沒勾的被清掉，不殘留孤兒）。自檢 47 項。
+- [x] **ops 運維頁**：`app/ops/{repo,router}.py` + `ui/ops.html`。概覽（任務 / AI 佇列 /
+      告警 / 近 24h 產出 / 郵件狀態）、失敗任務（`failed` + `uncertain`，篩選 + 分頁 +
+      發送嘗試明細）、**手動重跑**（`failed`/`uncertain` → `pending`，`sent`/`processing`
+      拒絕：重跑等於重複發送）、重試參數（白名單 + 型別校驗，改了立即生效）、
+      告警清單（單筆 / 全部確認）、審計。自檢 75 項。
+- [x] **告警與郵件**：`app/ops/alerting.py`。偵測（近窗 `failed` ≥ 門檻 → `mass_failure`，
+      靠 `dedupe_key` 合併累計）+ 通知（未確認且 `notified_at IS NULL` → **一封** digest）。
+      ★ **郵件是通知不是保證**：三個設定缺一就整組 no-op（只記 log，不拋），
+      寄不出去不會打斷巡檢迴圈；**只有真的寄出才回寫 `notified_at`**。
+      掛進 worker 第三條迴圈（`ALERT_SWEEP_SECONDS`，預設 5 分鐘）。
+- [x] **RBAC 落地**：agent 端點 `require_agent`；ops 端點 `require_ops`；
+      變更一律 `require_csrf`。★ 審計頁的「管理員可看全部」不能用 `rbac.is_admin(sess)`
+      —— 進到 ops 端點就代表當前生效身分是 `ops`（`roles_of()` 一次只回一個），
+      要看的是**登入快照裡有沒有 admin**（`roles_all`）。
+- **驗收**：全流程功能 + 異常場景（網路斷、回調失敗、逾時、PG 重啟）測試 ——
+      「網路斷」＝ Connector 不可達 → 502 已驗；「逾時」＝ `sweep_once` 三情境已驗；
+      「回調失敗」＝ 重試/退避 + 手動重跑已驗；「PG 重啟」＝ 連線由 `psycopg2` 每次重建，
+      schema `IF NOT EXISTS` 可重跑（未做專項壓測）。
+
+#### 階段四自檢總表（實測結果，2026-10-13）
+
+| 檢查 | 位置 | 結果 | 覆蓋 |
+|---|---|---|---|
+| Connector 會話 API | `connector/tests/phase4_conversations_check.py` | **28 / 28** | token 認證、四平台聚合、`scope` 校驗、逐列容錯、`before` 分頁 |
+| 客服工作台後端 | `crm/tests/phase4_workbench_check.py` | **40 / 40** | 真起 Connector 子進程；商家範圍、多帳號合併、紅點、人工回覆建任務（同事務審計）、清紅點、命中測試、502 |
+| ops 運維與告警 | `crm/tests/phase4_ops_check.py` | **75 / 75** | 權限、概覽計數、失敗任務篩選分頁、重跑邊界、參數型別校驗、告警合併與確認、**郵件打樁實寄 + `notified_at`**、大量失敗、審計限縮、CSRF |
+| 貼文特殊配置 | `crm/tests/phase4_post_config_check.py` | **47 / 47** | 預設＝基準集、空勾 400（三層各驗）、跨商家 400、覆蓋式儲存、`post_off`、移除回退、兩則貼文互不干擾 |
+| 前端（無真瀏覽器） | `crm/tests/ui_check.py` | **全通過** | 4 個頁面（含 `ops.html`）；`confirm()` 閘門、`infotip`、`ov` 靜態節點、身分選單 |
+| 認證 / RBAC / 首頁分派 | `crm/tests/auth_check.py` | **全通過** | 三身分各自的真實首頁特徵節點（admin/agent/ops） |
+| 全模組 import | —（即時掃描） | **CRM 42 / Connector 15，0 FAIL** | `app/**` 逐模組 import |
+
+**尚未移植到 CRM 的自檢**（階段五收尾時一併處理）：
+根 `tests/` 的品質校準類 —— `kb_search_check.py`（**召回分數分佈校準，`min_score` 就是它定的**）、
+`kb_check.py`（[1b] 分塊閘門）、`kb_asset_check.py`、`engine_check.py`、`rag_model_check.py`。
+這些目前還跑在根 `app/`（舊單體）上；搬家後要改成 import `app.rag` 的 CRM 版才會驗到真正上線的程式。
+另：舊 `autoreply_console.py` / `kb_console.py` 未接線（改走 `console_router`）；
+`scripts/backfill.py` 仍是舊簽名。
 
 ### 階段五（可選）：拆不同主機
 - 底層 fdw/內網 → HTTP，業務代碼不動。
