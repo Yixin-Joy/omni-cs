@@ -101,6 +101,10 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt      # Windows
 ```
 
+> ⚠️ 若 `.venv` 是在**含中文的路徑**下建立的（本機就是），`.venv\Scripts\python.exe` /
+> `pip.exe` 會失效（報 `failed to open pyvenv.cfg`）。改用系統 Python 安裝：
+> `<你的 python> -m pip install -r requirements.txt`，跑服務同理（見第 5 步）。
+
 > `connector/requirements.txt` 與 `crm/requirements.txt` 是各自的最小依賴清單（用於獨立部署）；
 > 本機開發直接裝根 `requirements.txt` 即可，兩邊都涵蓋。
 
@@ -135,23 +139,45 @@ cp crm/.env.example crm/.env
 
 - **Connector**（`connector/.env`）：`DATABASE_URL`（指到 `platform_forwarder`）、
   `CRM_INTERNAL_BASE=http://127.0.0.1:8020`、`INTERNAL_API_TOKEN`（兩邊要一致）、
-  各渠道憑證（微信 / WhatsApp / Meta，見第八節）。
+  各渠道**握手 token**（微信 / WhatsApp / Meta，見第八節）。
+  ⚠️ **業務憑證**（AppSecret / Access Token / EncodingAESKey）**不在 .env** —— 改在 admin
+  後台「商家 → 平台帳號 → 憑證」填（存 CRM 資料庫，Connector 收發時自動取用）。
 - **CRM**（`crm/.env`）：`DATABASE_URL`（指到 `crm_db`）、
   `CONNECTOR_INTERNAL_BASE=http://127.0.0.1:8010`、`INTERNAL_API_TOKEN`（同上）、
   `DEEPSEEK_API_KEY`（要用 AI 自動回覆）。
 
 ### 5. 啟動（開兩個終端）
 
-```bash
-# 終端 1：Connector（cd connector/）
-uvicorn main:app --host 127.0.0.1 --port 8010
+**最簡單**：在專案根目錄執行（或雙擊）兩個啟動腳本：
 
-# 終端 2：CRM（cd crm/）
-uvicorn main:app --host 127.0.0.1 --port 8020
+```
+start_connector.bat     # Connector -> http://127.0.0.1:8010
+start_crm.bat           # CRM       -> http://127.0.0.1:8020
 ```
 
-> 兩個服務各自的 `.env` 是由 `python-dotenv` 從**啟動時的 cwd**載入，所以一定要
-> `cd` 到對應子目錄再啟動，否則會讀錯設定。
+> ⚠️ **不要用 `.venv\Scripts\python.exe`** —— 本專案的 `.venv` 是搬到這裡之前、在含
+> 中文的路徑下建立的，其 launcher 已失效（`failed to open pyvenv.cfg`）。但
+> `.venv\Lib\site-packages` 本身完好，所以兩個 `.bat` 改用系統 Python
+> （`pythoncore-3.14`）＋ `PYTHONPATH` 指過去啟動，效果與 venv 相同。
+
+**手動（等價，開兩個終端）**：
+
+```bat
+REM 終端 1：Connector
+cd C:\Users\its-admin\Desktop\Multi-CS\connector
+set PYTHONPATH=C:\Users\its-admin\Desktop\Multi-CS\connector;C:\Users\its-admin\Desktop\Multi-CS\.venv\Lib\site-packages
+C:\Users\its-admin\AppData\Local\Python\pythoncore-3.14-64\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8010
+
+REM 終端 2：CRM
+cd C:\Users\its-admin\Desktop\Multi-CS\crm
+set PYTHONPATH=C:\Users\its-admin\Desktop\Multi-CS\crm;C:\Users\its-admin\Desktop\Multi-CS\.venv\Lib\site-packages
+C:\Users\its-admin\AppData\Local\Python\pythoncore-3.14-64\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8020
+```
+
+> 兩個服務各自的 `.env` 由 `python-dotenv` 從**啟動時的 cwd**載入，所以一定要 `cd` 到
+> 對應子目錄再啟動，否則會讀錯設定（`.bat` 已幫你 `cd`）。
+> 若要用**替代埠**（例如想同時保留舊實例）：兩個 `.bat` 內的 `--port` 改掉即可，但
+> Connector/CRM 的 `*_INTERNAL_BASE` 要跟著改。
 
 ### 6. 打開頁面
 
@@ -185,21 +211,27 @@ uvicorn main:app --host 127.0.0.1 --port 8020
 ## 六、各渠道接入
 
 - **微信公眾號**：`mp.weixin.qq.com` 伺服器配置 URL 填 `https://你的域名/wechat`，Token 對應
-  `WECHAT_TOKEN`。
+  `WECHAT_TOKEN`（握手 token）。
 - **WhatsApp / IG / FB**：Meta 後台 Callback URL 填 `https://你的域名/whatsapp/webhook`，
   Verify token 對應 `WHATSAPP_VERIFY_TOKEN` / `META_VERIFY_TOKEN`。完整 checklist 見
   `docs/META_SETUP.md`。
 
-> ⚠️ **webhook 接收與正規化目前尚未從舊單體搬到 Connector**（`connector/main.py` 註記
-> 「待搬入」）。這表示：**新架構的「收訊入口」還沒接上**，客戶來訊仍由舊單體（8001）接收。
-> 收訊之後的整條鏈（CRM 引擎 → 建任務 → Connector 發送）已經打通並全綠。這是目前唯一的
-> 未完成項，見 `docs/MIGRATION_PLAN.md` 階段三。
+> **多租戶 URL（可選）**：若要按商家用不同憑證，改用帶原生 ID 的路徑 ——
+> 微信 `/wechat/{AppID}`、Meta `/webhook/{phone_number_id|page_id|ig_user_id}`。
+> 不帶 ID 的舊路徑仍保留（走 `.env` 憑證，適合單商家過渡）。
+
+> ✅ **webhook 接收與正規化已於 2026-10-13 搬到 Connector**：客戶來訊現在由 Connector 收到
+> → 正規化 → 落地 `platform_forwarder` → 非同步打 CRM `/internal/api/ai/inbound` 入隊。
+> 整條鏈（收訊 → CRM 引擎 → 建任務 → Connector 發送 → 回調）已打通，自檢 `webhook_check.py`
+> 53 項全綠。**舊單體（8001）的 webhook 端點仍保留並行**（過渡期），等你把隧道指向 8010
+> 後再停掉舊的。
 
 ---
 
 ## 七、對外 / 內網接口
 
-**對外（Connector，公網）**：webhook 接收（見上，尚未接線）。
+**對外（Connector，公網）**：webhook 接收 —— `/wechat`、`/whatsapp/webhook`、`/webhook`
+（及其 `/{native_id}` 變體）；客戶來訊媒體走 `/files/*` 靜態路徑。
 
 **內網（Connector ↔ CRM，走 `X-Internal-Token`）**：契約見 `docs/INTERNAL_API.md`，主要：
 
@@ -227,7 +259,7 @@ uvicorn main:app --host 127.0.0.1 --port 8020
 | `PUBLIC_BASE_URL` | 對外 https 位址（拼媒體下載連結給 Meta 抓檔，跟著 ngrok 走） |
 | `MEDIA_DIR` / `KB_CACHE_DIR` | 媒體 / 知識庫快取目錄 |
 | `OUTBOUND_SEND_MODE` | `live`（真發）或 `mock`（離線自檢用） |
-| `WECHAT_*` / `WHATSAPP_*` / `META_*` | 各渠道憑證（同舊版說明） |
+| `WECHAT_TOKEN` / `WHATSAPP_VERIFY_TOKEN` / `META_VERIFY_TOKEN` / `META_APP_SECRET` | **握手 token**（webhook 接入驗證用；驗證階段不知商家，故留 .env） |
 
 ### CRM（`crm/.env`）
 
@@ -247,6 +279,21 @@ uvicorn main:app --host 127.0.0.1 --port 8020
 
 > AI 提示詞相關（`DEEPSEEK_SYSTEM_PROMPT` 等）寫法同舊版：多行用雙引號、換行寫 `\n`，
 > 佔位符大括號要寫成 `{{` `}}`。
+
+### 平台憑證（業務，存 DB 而非 .env）
+
+多租戶設計：**按商家區分**的業務憑證存 `crm_business_platform_account.credential`（JSONB），
+由 admin 在後台「商家 → 平台帳號」填寫，經帳號映射同步到 Connector 的 `connector_account_map`
+快取，Connector 收發時用 `account_map.credential_of()` 取用。
+
+| 平台 | 業務憑證欄位（存 DB） |
+|---|---|
+| 微信 | `appid`、`appsecret`、`encoding_aes_key` |
+| WhatsApp | `access_token`、`phone_number_id` |
+| Facebook | `page_id`、`page_access_token` |
+| Instagram | `ig_user_id`、`ig_access_token` |
+
+> 欄位單一真相：CRM `config.CREDENTIAL_FIELDS` ↔ Connector `account_map.CREDENTIAL_KEYS`。
 
 ---
 
@@ -273,7 +320,8 @@ CRM 側主要自檢：
 | `rag_model_check.py` / `model_check.py` | 本地 embedding / AI 模型連線 |
 | `ui_check.py` / `console_render_check.py` | 前端靜態 / 渲染（Node + 最小 DOM 樁） |
 
-Connector 側：`phase2_check.py`（端到端，真的起兩個服務）、`phase4_conversations_check.py`（會話列表）。
+Connector 側：`webhook_check.py`（收訊：驗證 / 正規化 / 落地 / notify / 憑證，53 項）、
+`phase2_check.py`（端到端，真的起兩個服務）、`phase4_conversations_check.py`（會話列表）。
 
 > ⚠️ **環境坑**：`.venv` 的 `python.exe` 在「路徑含中文」時會起不來，自檢一律用底層 python
 > （見 `.venv/pyvenv.cfg` 的 `home =`）＋ `PYTHONPATH` 指到 `.venv\Lib\site-packages`。
@@ -289,7 +337,7 @@ Connector 側：`phase2_check.py`（端到端，真的起兩個服務）、`phas
 | 改了程式碼但行為沒變 | 服務沒帶 `--reload`，改完後端要重啟；前端按 `Ctrl+Shift+R` 強制刷新。 |
 | CRM 讀錯設定 / 起不來 | 啟動時 cwd 不對，`python-dotenv` 讀到別處的 `.env`。要 `cd` 到對應子目錄。 |
 | 內網 API 401 | 兩邊 `INTERNAL_API_TOKEN` 不一致。 |
-| 工作台看不到新訊息 | 收訊入口（webhook）尚未搬到 Connector，來訊仍走舊單體。 |
+| 工作台看不到新訊息 | 收訊已搬到 Connector（8010）。檢查：① 隧道是否指向 8010；② 該平台帳號是否已在後台綁定且啟用（未註冊帳號不會入隊）；③ 兩邊 `INTERNAL_API_TOKEN` 是否一致。 |
 | 自動回復都掉人工 | 看「回覆紀錄」分頁的 `reason`（`no_match` / `no_api_key` / `llm_error` / `throttled` ...）。 |
 | AI 回覆空字串 | `DEEPSEEK_MODEL` 是 reasoning 模型時 `max_tokens` 太小，思考吃掉額度。調大。 |
 
@@ -300,14 +348,16 @@ Connector 側：`phase2_check.py`（端到端，真的起兩個服務）、`phas
 ```
 Multi-CS/
 ├─ connector/                   # 純通道服務（8010）
-│  ├─ main.py                   # 入口：內網 API + webhook（待接線）
+│  ├─ main.py                   # 入口：內網 API + webhook + /files 靜態掛載
 │  ├─ app/
 │  │  ├─ internal/              # 內網 API（auth / router）
-│  │  ├─ channels/              # 發送適配（base / wechat / whatsapp）
+│  │  ├─ webhook.py             # 對外收訊（微信 / WhatsApp / IG / FB）→ 落地 → 通知 CRM
+│  │  ├─ channels/              # 收：*_recv（wechat / whatsapp / igfb）；發：base / wechat / whatsapp
+│  │  ├─ forwarder.py           # 媒體下載（微信 media_id / Meta Graph）
 │  │  ├─ worker/                # outbound（claim→發送→回調）/ account_sync / callback
 │  │  ├─ media.py / account_map.py
 │  │  └─ core/                  # config / db
-│  └─ tests/                    # phase2 / phase4 自檢
+│  └─ tests/                    # webhook / phase2 / phase4 自檢
 │
 ├─ crm/                         # 大腦服務（8020）
 │  ├─ main.py                   # 入口：工作台 / 後台 / 運維 / 內網 API + 背景 worker
@@ -340,7 +390,13 @@ Multi-CS/
 
 - ✅ 階段一（資料基礎層）／階段二（異步任務與事件）／階段四（客服工作台與運維）／
   T25（品質校準自檢移植到 CRM）全部完成。
-- ⚠️ 階段三「收訊入口（webhook 接收與正規化）」尚未從舊單體搬到 Connector —— 這是**唯一未完成項**。
+- ✅ 階段三：AI 引擎 / 知識庫已搬，**webhook 收訊（塊A）+ 靜態掛載（塊B）已於 2026-10-13
+  搬到 Connector**（客戶來訊現在由 Connector 收）。
+- ✅ 平台憑證進 DB（多租戶）：業務憑證存 `crm_business_platform_account.credential`，
+  admin 後台填；握手 token 留 `.env`。
+- ⚠️ **唯一未完成項：知識庫管理 console（塊C）尚未遷進 CRM** —— 舊單體的「知識庫 / FAQ /
+  業務表格內容管理」那一套 UI + API 還在 8001；CRM 目前只有客服工作台（會話 / 自動回覆配置 /
+  命中測試 / 回覆紀錄），缺內容管理頁。**這塊做完才能安全刪掉舊單體。**
 - 其餘「未接線」為刻意保留：舊 `autoreply_console.py` / `kb_console.py`（改走新的
   `console_router.py`）、`scripts/backfill.py` 舊簽名。
 
