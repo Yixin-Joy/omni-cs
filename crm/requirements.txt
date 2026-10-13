@@ -1,0 +1,25 @@
+# CRM 服務 —— 大腦 + 資料 + 工作台（含 AI 引擎與 RAG 知識庫）
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+python-dotenv>=1.0
+psycopg2-binary>=2.9
+python-multipart>=0.0.9
+
+# Excel / CSV 匯入匯出（FAQ 問答對、業務表格）
+openpyxl>=3.1.0
+
+# FAQ 語義匹配：繁簡正規化 + 分詞 + 相似度打分
+jieba>=0.42.1
+opencc-python-reimplemented>=0.1.7
+
+# RAG 知識庫：文件解析（PDF / Word / Excel）
+pypdf>=6.0
+python-docx>=1.2
+
+# RAG 知識庫：PDF 行級解析（pdfplumber(MIT)，不用 PyMuPDF(AGPL)）
+pdfplumber>=0.11
+pillow>=10.0
+
+# RAG 知識庫：本地 embedding（走 onnxruntime，不需要 torch）
+fastembed>=0.9.0

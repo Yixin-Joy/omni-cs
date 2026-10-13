@@ -1,0 +1,9 @@
+# Connector 服務 —— 純通道 + 媒體存儲
+# 只保留「收訊息 / 存訊息 / 發訊息 / 存媒體」需要的依賴；AI 與知識庫的依賴一律不裝。
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+python-dotenv>=1.0
+pycryptodome>=3.20          # 微信消息解密
+psycopg2-binary>=2.9
+python-multipart>=0.0.9     # 內網媒體上傳

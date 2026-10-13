@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登入 · 客服系統</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --panel: #ffffff; --border: #e5e9f0; --text: #1f2a37; --text-soft: #6b7280;
+    --accent: #1a7f5c; --accent-dark: #116a4b; --accent-soft: #e6f4ee; --red: #e02020;
+    --shadow: 0 1px 3px rgba(15, 30, 50, 0.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang TC", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    width: 348px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 26px 24px 22px; box-shadow: var(--shadow);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+  .brand .logo {
+    width: 36px; height: 36px; border-radius: 10px; background: var(--accent);
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 17px;
+  }
+  .brand h1 { font-size: 17px; font-weight: 700; }
+  .brand span { display: block; font-size: 12px; color: var(--text-soft); font-weight: 400; }
+  label { display: block; font-size: 12.5px; color: var(--text-soft); margin-bottom: 5px; font-weight: 600; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px;
+    background: #fafbfc; font-size: 14px; outline: none; color: var(--text); margin-bottom: 14px;
+  }
+  input:focus { border-color: var(--accent); background: #fff; }
+  button {
+    width: 100%; padding: 11px; border: none; border-radius: 9px; background: var(--accent);
+    color: #fff; font-size: 14.5px; font-weight: 700; cursor: pointer; transition: background .15s;
+    font-family: inherit;
+  }
+  button:hover { background: var(--accent-dark); }
+  button:disabled { opacity: .6; cursor: default; }
+  button.ghost {
+    background: #fafbfc; border: 1px solid var(--border); color: var(--text-soft);
+    font-size: 13px; padding: 9px;
+  }
+  button.ghost:hover { background: #f2f4f7; color: var(--text); }
+  .msg {
+    display: none; margin-bottom: 14px; padding: 9px 12px; border-radius: 9px;
+    background: #fdecec; color: var(--red); font-size: 12.5px; line-height: 1.5;
+  }
+  .msg.show { display: block; }
+
+  /* ---------- 選身分 ---------- */
+  [hidden] { display: none !important; }
+  .who { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
+  .who .ava {
+    width: 34px; height: 34px; border-radius: 50%; background: #e2e8f0; color: #475569;
+    display: flex; align-items: center; justify-content: center; font-weight: 700;
+    font-size: 14px; flex-shrink: 0;
+  }
+  .who .nm { font-weight: 700; font-size: 13.5px; }
+  .who .rl { color: var(--text-soft); font-size: 11.5px; display: flex; align-items: center; }
+  .roles { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+  .rolebtn {
+    display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 10px; background: #fafbfc; color: var(--text);
+    font-size: 13.5px; font-weight: 700; cursor: pointer; text-align: left;
+    font-family: inherit; transition: all .12s;
+  }
+  .rolebtn:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .rolebtn .ic {
+    width: 26px; height: 26px; border-radius: 8px; background: var(--accent-soft);
+    color: var(--accent-dark); display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; flex-shrink: 0;
+  }
+  .rolebtn .sub2 { margin-left: auto; color: var(--text-soft); font-weight: 400; font-size: 11px;
+    text-align: right; max-width: 150px; line-height: 1.35; }
+
+  /* ---------- 「i」圓標（說明收在這裡，不在界面直說） ---------- */
+  .infotip {
+    display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;
+    border-radius: 50%; background: #e5e9f0; color: #6b7280; font-size: 10px; font-style: normal;
+    font-weight: 700; cursor: help; margin-left: 5px; position: relative; flex-shrink: 0;
+  }
+  .infotip:hover { background: var(--accent-soft); color: var(--accent-dark); }
+  .infotip::after {
+    content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 7px);
+    transform: translateX(-50%); width: 210px; background: #1f2a37; color: #fff; font-size: 11.5px;
+    line-height: 1.6; font-weight: 400; padding: 7px 10px; border-radius: 8px; text-align: left;
+    opacity: 0; pointer-events: none; transition: opacity .15s; z-index: 20;
+    box-shadow: 0 8px 24px rgba(0,0,0,.2);
+  }
+  .infotip:hover::after { opacity: 1; }
+</style>
+</head>
+<body>
+  <form class="card" id="form" autocomplete="on">
+    <div class="brand">
+      <div class="logo">客</div>
+      <h1>客服系統<span>多渠道 AI 客服工作台</span></h1>
+    </div>
+    <div class="msg" id="msg"></div>
+
+    <!-- 第一步：帳號密碼 -->
+    <div id="stepLogin">
+      <label for="account">登入帳號</label>
+      <input type="text" id="account" name="account" autocomplete="username" autofocus>
+      <label for="password">密碼</label>
+      <input type="password" id="password" name="password" autocomplete="current-password">
+      <button type="submit" id="btn">登入</button>
+    </div>
+
+    <!-- 第二步：只有多身分帳號才會出現 -->
+    <div id="stepRole" hidden>
+      <div class="who">
+        <div class="ava" id="roleAva">–</div>
+        <div>
+          <div class="nm" id="roleName">–</div>
+          <div class="rl">選擇登入身分<span class="infotip"
+            data-tip="這個帳號有多個身分。不同身分看到的功能不同；登入後可在頁面左下角的頭像隨時切換，不需要重新輸入密碼。">i</span></div>
+        </div>
+      </div>
+      <div class="roles" id="roleList"></div>
+      <button type="button" class="ghost" id="btnBack">返回</button>
+    </div>
+  </form>
+
+<script>
+(function () {
+  'use strict';
+  var LABEL = { admin: '管理員', agent: '客服坐席', ops: '運維' };
+  var DESC = {
+    admin: '商家、平台帳號、員工權限',
+    agent: '會話回覆、知識庫',
+    ops: '失敗任務、重試參數、告警'
+  };
+
+  var form = document.getElementById('form');
+  var msg = document.getElementById('msg');
+  var btn = document.getElementById('btn');
+  var stepLogin = document.getElementById('stepLogin');
+  var stepRole = document.getElementById('stepRole');
+  var roleList = document.getElementById('roleList');
+  var ticket = '';
+
+  function show(text) { msg.textContent = text; msg.classList.add('show'); }
+  function hide() { msg.classList.remove('show'); }
+  function busy(on, text) { btn.disabled = on; btn.textContent = text || '登入'; }
+
+  function post(body) {
+    return fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; })
+        .then(function (d) { return { s: r.status, d: d || {} }; });
+    });
+  }
+
+  function renderRoles(data) {
+    ticket = data.ticket || '';
+    var staff = data.staff || {};
+    var nm = staff.staff_name || staff.login_account || '';
+    document.getElementById('roleAva').textContent = nm ? nm.slice(0, 1) : '–';
+    document.getElementById('roleName').textContent = nm;
+    roleList.innerHTML = (data.available_roles || []).map(function (r) {
+      return '<button type="button" class="rolebtn" data-role="' + r + '">'
+        + '<span class="ic">' + (LABEL[r] || r).slice(0, 1) + '</span>'
+        + '<span>' + (LABEL[r] || r) + '</span>'
+        + '<span class="sub2">' + (DESC[r] || '') + '</span>'
+        + '</button>';
+    }).join('');
+    stepLogin.hidden = true;
+    stepRole.hidden = false;
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    hide();
+    var account = document.getElementById('account').value.trim();
+    var password = document.getElementById('password').value;
+    if (!account || !password) { show('請輸入帳號與密碼'); return; }
+    busy(true, '登入中…');
+    post({ account: account, password: password }).then(function (res) {
+      if (res.s === 200 && res.d.ok) {
+        if (res.d.need_role) { busy(false); renderRoles(res.d); return; }
+        window.location.href = '/';
+        return;
+      }
+      busy(false);
+      show(res.d.error || '登入失敗，請稍後再試');
+    }).catch(function () {
+      busy(false);
+      show('網路異常，請稍後再試');
+    });
+  });
+
+  roleList.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('.rolebtn') : null;
+    if (!b) return;
+    hide();
+    b.disabled = true;
+    post({ ticket: ticket, role: b.getAttribute('data-role') }).then(function (res) {
+      if (res.s === 200 && res.d.ok) { window.location.href = '/'; return; }
+      b.disabled = false;
+      show(res.d.error || '登入失敗，請稍後再試');
+    }).catch(function () {
+      b.disabled = false;
+      show('網路異常，請稍後再試');
+    });
+  });
+
+  document.getElementById('btnBack').onclick = function () {
+    hide();
+    ticket = '';
+    stepRole.hidden = true;
+    stepLogin.hidden = false;
+    document.getElementById('password').value = '';
+    busy(false);
+    document.getElementById('password').focus();
+  };
+})();
+</script>
+</body>
+</html>

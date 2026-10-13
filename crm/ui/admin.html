@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>管理員後台</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --panel: #ffffff; --border: #e5e9f0; --text: #1f2a37; --text-soft: #6b7280;
+    --accent: #1a7f5c; --accent-dark: #116a4b; --accent-soft: #e6f4ee;
+    --red: #e02020; --red-soft: #fdecec; --amber: #b45309; --amber-soft: #fdf3e3;
+    --shadow: 0 1px 3px rgba(15, 30, 50, 0.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang TC", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px; -webkit-font-smoothing: antialiased;
+  }
+  .app { display: flex; height: 100vh; overflow: hidden; }
+
+  /* ---------- 側邊欄 ---------- */
+  .sidebar { width: 236px; background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0; }
+  .sidebar-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--border); }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .logo { width: 34px; height: 34px; border-radius: 9px; background: var(--accent); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; }
+  .brand h1 { font-size: 16px; font-weight: 700; }
+  .brand span { display: block; font-size: 11.5px; color: var(--text-soft); font-weight: 400; }
+  .nav { padding: 10px; flex: 1; }
+  .nav button {
+    width: 100%; text-align: left; padding: 10px 12px; margin-bottom: 4px; border: 1px solid transparent;
+    border-radius: 9px; background: transparent; color: var(--text); font-size: 13.5px; font-weight: 600;
+    cursor: pointer; transition: all .12s; font-family: inherit;
+  }
+  .nav button:hover { background: #f6f8fa; }
+  .nav button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
+  .sidebar-foot { padding: 12px 14px; border-top: 1px solid var(--border); font-size: 12.5px;
+    position: relative; }
+  .who { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+  .who .ava { width: 30px; height: 30px; border-radius: 50%; background: #e2e8f0; color: #475569;
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0; }
+  .who .nm { font-weight: 600; }
+  .who .rl { color: var(--text-soft); font-size: 11.5px; }
+  /* 多身分帳號：頭像可點，彈出切換選單（單身分不會有任何視覺提示） */
+  .who.clickable { cursor: pointer; border-radius: 9px; padding: 5px 6px; margin: -5px -6px 4px;
+    transition: background .12s; }
+  .who.clickable:hover { background: #f6f8fa; }
+  .who .caret { margin-left: auto; color: var(--text-soft); font-size: 10px; }
+  .rolemenu { display: none; position: absolute; left: 10px; right: 10px; bottom: calc(100% - 4px);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 11px;
+    box-shadow: 0 10px 30px rgba(15, 30, 50, .14); padding: 8px; z-index: 200; }
+  .rolemenu.open { display: block; }
+  .rolemenu-head { font-size: 11.5px; color: var(--text-soft); font-weight: 700; padding: 2px 6px 7px; }
+  .roleitem { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    padding: 8px 9px; border: 1px solid transparent; border-radius: 8px; background: transparent;
+    color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .roleitem:hover { background: #f6f8fa; }
+  .roleitem.cur { background: var(--accent-soft); color: var(--accent-dark); cursor: default; }
+  .roleitem .ic { width: 22px; height: 22px; border-radius: 7px; background: #eef1f5; color: #475569;
+    display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700;
+    flex-shrink: 0; }
+  .roleitem.cur .ic { background: #fff; color: var(--accent-dark); }
+  .roleitem .now { margin-left: auto; font-size: 10.5px; font-weight: 700; color: var(--accent-dark); }
+  .logout { width: 100%; padding: 7px; border: 1px solid var(--border); border-radius: 8px;
+    background: #fafbfc; color: var(--text-soft); font-size: 12.5px; cursor: pointer; font-family: inherit; }
+  .logout:hover { border-color: var(--red); color: var(--red); background: var(--red-soft); }
+
+  /* ---------- 主區 ---------- */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .topbar { padding: 16px 22px; border-bottom: 1px solid var(--border); background: var(--panel);
+    display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  .topbar h2 { font-size: 17px; font-weight: 700; }
+  .topbar .sp { flex: 1; }
+  .body { flex: 1; overflow-y: auto; padding: 20px 22px 40px; }
+
+  /* ---------- 元件 ---------- */
+  button.primary, button.ghost, button.danger {
+    padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer;
+    border: 1px solid transparent; transition: all .12s; font-family: inherit;
+  }
+  button.primary { background: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent-dark); }
+  button.ghost { background: #fafbfc; border-color: var(--border); color: var(--text-soft); }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  button.danger { background: #fff; border-color: var(--border); color: var(--text-soft); }
+  button.danger:hover { border-color: var(--red); color: var(--red); background: var(--red-soft); }
+  button.tiny { padding: 5px 9px; font-size: 12px; border-radius: 7px; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); }
+  th, td { padding: 10px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid #f0f2f5; }
+  th { background: #fafbfc; color: var(--text-soft); font-weight: 600; font-size: 12px; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #fbfcfd; }
+  .num { color: var(--text-soft); font-variant-numeric: tabular-nums; }
+  .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .muted { color: var(--text-soft); }
+
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700;
+    background: #eef1f5; color: var(--text-soft); }
+  .pill.ok { background: var(--accent-soft); color: var(--accent-dark); }
+  .pill.off { background: var(--red-soft); color: var(--red); }
+  .pill.warn { background: var(--amber-soft); color: var(--amber); }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 700;
+    background: #eef1f5; color: #475569; margin-right: 4px; }
+  .tag.admin { background: #e7eefc; color: #1e40af; }
+  .tag.agent { background: var(--accent-soft); color: var(--accent-dark); }
+  .tag.ops { background: var(--amber-soft); color: var(--amber); }
+  .tag.flag { background: #f3e8ff; color: #7e22ce; }
+
+  .switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none;
+    padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px; background: #fafbfc;
+    font-size: 12.5px; font-weight: 600; color: var(--text-soft); font-family: inherit; transition: all .12s; }
+  .switch .dot2 { width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
+  .switch.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
+  .switch.on .dot2 { background: var(--accent); }
+  .switch.off { background: var(--red-soft); border-color: #f5c2c2; color: var(--red); }
+  .switch.off .dot2 { background: var(--red); }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 18px; box-shadow: var(--shadow); margin-bottom: 16px; }
+  .card h3 { font-size: 14px; font-weight: 700; margin-bottom: 12px; }
+  .grid { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  /* ---------- 「i」圓標 ---------- */
+  .infotip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
+    border-radius: 50%; background: #e5e9f0; color: #6b7280; font-size: 11px; font-style: normal;
+    font-weight: 700; cursor: help; margin-left: 5px; vertical-align: middle; flex-shrink: 0; }
+  .infotip:hover { background: var(--accent-soft); color: var(--accent-dark); }
+  .tipbox { position: fixed; z-index: 9999; max-width: 300px; background: #1f2a37; color: #fff;
+    font-size: 12px; line-height: 1.6; padding: 8px 11px; border-radius: 8px; pointer-events: none;
+    box-shadow: 0 8px 24px rgba(0,0,0,.2); display: none; }
+
+  /* ---------- 彈窗（靜態節點） ---------- */
+  .ov { position: fixed; inset: 0; background: rgba(15, 30, 50, .38); display: none;
+    align-items: center; justify-content: center; z-index: 900; padding: 20px; }
+  .ov.show { display: flex; }
+  .box { background: var(--panel); border-radius: 13px; width: 100%; max-width: 460px;
+    max-height: 88vh; overflow-y: auto; padding: 20px 22px; box-shadow: 0 18px 48px rgba(0,0,0,.22); }
+  .box.wide { max-width: 620px; }
+  .box h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+  .box .sub { font-size: 12.5px; color: var(--text-soft); margin-bottom: 15px; }
+  .fld { margin-bottom: 13px; }
+  .fld > label { display: block; font-size: 12.5px; color: var(--text-soft); font-weight: 600; margin-bottom: 5px; }
+  .fld input[type=text], .fld input[type=password], .fld select {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
+    background: #fafbfc; font-size: 13.5px; outline: none; color: var(--text); font-family: inherit; }
+  .fld input:focus, .fld select:focus { border-color: var(--accent); background: #fff; }
+  .chk { display: inline-flex; align-items: center; gap: 7px; margin: 0 14px 8px 0; cursor: pointer;
+    font-size: 13px; font-weight: 600; }
+  .chk input { width: 15px; height: 15px; accent-color: var(--accent); }
+  .box .acts { justify-content: flex-end; margin-top: 18px; gap: 9px; }
+  .err { display: none; margin-bottom: 12px; padding: 9px 12px; border-radius: 8px;
+    background: var(--red-soft); color: var(--red); font-size: 12.5px; }
+  .err.show { display: block; }
+
+  /* toast */
+  #toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: #1f2a37; color: #fff; padding: 10px 18px; border-radius: 9px; font-size: 13px;
+    opacity: 0; transition: all .22s; pointer-events: none; z-index: 99999; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.bad { background: var(--red); }
+
+  .empty { padding: 36px 20px; text-align: center; color: var(--text-soft); font-size: 13px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <div class="brand">
+        <div class="logo">客</div>
+        <h1>客服系統<span id="brandSub">管理員後台</span></h1>
+      </div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="sidebar-foot">
+      <div class="who" id="whoBox">
+        <div class="ava" id="ava">–</div>
+        <div>
+          <div class="nm" id="meName">–</div>
+          <div class="rl" id="meRole">–</div>
+        </div>
+        <span class="caret" id="whoCaret" hidden>▼</span>
+      </div>
+      <!-- 靜態節點：身分切換選單（單身分帳號不會被打開，也不會有 caret） -->
+      <div class="rolemenu" id="roleMenu">
+        <div class="rolemenu-head">切換身分<span class="infotip"
+          data-tip="管理員預設具備全部身分（管理員 / 客服坐席 / 運維），可自由切換。切換後直接進該身分的首頁，不需要重新登入；切換到客服身分時自動視為超級坐席（可看全部商家）。">i</span></div>
+        <div id="roleList"></div>
+      </div>
+      <button class="logout" id="btnLogout">登出</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h2 id="pageTitle">商家管理</h2>
+      <span id="pageTip"></span>
+      <div class="sp"></div>
+      <div class="acts" id="pageActs"></div>
+    </header>
+    <div class="body" id="view"></div>
+  </main>
+</div>
+
+<!-- ===================== 靜態彈窗節點（不進重繪區） ===================== -->
+<div class="ov" id="ovBiz">
+  <div class="box">
+    <h3 id="ovBizTitle">新增商家</h3>
+    <div class="sub" id="ovBizSub">商家＝我方外包業務客戶，可綁定多個平台業務帳號。</div>
+    <div class="err" id="ovBizErr"></div>
+    <div class="fld"><label>商家名稱</label><input type="text" id="bizName" placeholder="例：Epro_test"></div>
+    <div class="fld"><label>備註</label><input type="text" id="bizMemo" placeholder="選填"></div>
+    <div class="fld"><label class="chk"><input type="checkbox" id="bizEnabled" checked><span>啟用</span></label></div>
+    <div class="acts">
+      <button class="ghost" data-close>取消</button>
+      <button class="primary" id="bizSave">儲存</button>
+    </div>
+  </div>
+</div>
+
+<div class="ov" id="ovAcct">
+  <div class="box wide">
+    <h3 id="ovAcctTitle">平台帳號</h3>
+    <div class="sub">平台原生帳號 ID 是兩個服務的對齊鍵，同一平台的一個帳號只能屬於一個商家。
+      <span class="infotip" data-tip="例：WhatsApp 的 phone_number_id、IG 的 account id、FB 的 page id。請填平台給的原生值，不要填本系統的流水號。">i</span></div>
+    <div class="err" id="ovAcctErr"></div>
+    <div class="card" style="box-shadow:none;margin-bottom:14px">
+      <h3>新增綁定</h3>
+      <div class="fld"><label>平台</label><select id="acctPlatform"></select></div>
+      <div class="fld"><label>平台原生帳號 ID</label><input type="text" id="acctNative" placeholder="例：1362588056935295"></div>
+      <div class="fld"><label>顯示名稱</label><input type="text" id="acctDisplay" placeholder="選填，例：客服主號"></div>
+      <div class="acts" style="justify-content:flex-start"><button class="primary" id="acctAdd">新增綁定</button></div>
+    </div>
+    <table>
+      <thead><tr><th>平台</th><th>原生 ID</th><th>顯示名稱</th><th>AI 回覆</th><th>狀態</th></tr></thead>
+      <tbody id="acctRows"></tbody>
+    </table>
+    <div class="acts"><button class="ghost" data-close>關閉</button></div>
+  </div>
+</div>
+
+<div class="ov" id="ovStaff">
+  <div class="box">
+    <h3 id="ovStaffTitle">新增員工</h3>
+    <div class="sub">員工帳號屬於外包公司全局帳號池，一個帳號可同時具備多個角色。</div>
+    <div class="err" id="ovStaffErr"></div>
+    <div class="fld" id="fldAcct"><label>登入帳號</label><input type="text" id="stAccount" placeholder="英文或數字"></div>
+    <div class="fld" id="fldPwd"><label>初始密碼</label><input type="password" id="stPassword" placeholder="至少 8 位"></div>
+    <div class="fld"><label>員工姓名</label><input type="text" id="stName"></div>
+    <div class="fld"><label>角色<span class="infotip"
+        data-tip="勾選的角色＝該帳號登入後可在頁面內切換的身分。★ 管理員是超集：只要勾了「管理員」，該帳號就自動可切換客服 / 運維，不必另外勾。">i</span></label>
+      <label class="chk"><input type="checkbox" value="admin" class="stRole"><span>管理員</span></label>
+      <label class="chk"><input type="checkbox" value="agent" class="stRole"><span>客服坐席</span></label>
+      <label class="chk"><input type="checkbox" value="ops" class="stRole"><span>運維</span></label>
+    </div>
+    <div class="fld" id="fldFlags"><label>坐席旗標</label>
+      <label class="chk"><input type="checkbox" id="stSuper"><span>超級坐席（可看全部商家）</span></label>
+      <label class="chk"><input type="checkbox" id="stKbEdit"><span>知識庫編輯</span></label>
+    </div>
+    <div class="fld" id="fldEnabled"><label class="chk"><input type="checkbox" id="stEnabled" checked><span>啟用</span></label></div>
+    <div class="acts">
+      <button class="ghost" data-close>取消</button>
+      <button class="primary" id="stSave">儲存</button>
+    </div>
+  </div>
+</div>
+
+<div class="ov" id="ovPerm">
+  <div class="box">
+    <h3 id="ovPermTitle">商家授權</h3>
+    <div class="sub">勾選此坐席可訪問的商家。未勾選＝看不到該商家的任何會話。
+      <span class="infotip" data-tip="若該員工是「超級坐席」，會直接跳過白名單看全部商家，此處勾選無意義。">i</span></div>
+    <div class="err" id="ovPermErr"></div>
+    <div id="permList" class="fld"></div>
+    <div class="acts">
+      <button class="ghost" data-close>取消</button>
+      <button class="primary" id="permSave">儲存</button>
+    </div>
+  </div>
+</div>
+
+<div class="ov" id="ovPwd">
+  <div class="box">
+    <h3>重設密碼</h3>
+    <div class="sub" id="ovPwdSub"></div>
+    <div class="err" id="ovPwdErr"></div>
+    <div class="fld"><label>新密碼</label><input type="password" id="pwdNew" placeholder="至少 8 位"></div>
+    <div class="acts">
+      <button class="ghost" data-close>取消</button>
+      <button class="primary" id="pwdSave">重設</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/ui/common.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var PLATFORM_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
+  var ROLE_LABEL = { admin: '管理員', agent: '客服坐席', ops: '運維' };
+  var SCOPES = [
+    { platform: 'wechat', scope: 'dm', label: '微信 私訊' },
+    { platform: 'whatsapp', scope: 'dm', label: 'WhatsApp 私訊' },
+    { platform: 'ig', scope: 'dm', label: 'Instagram 私訊' },
+    { platform: 'ig', scope: 'comment', label: 'Instagram 貼文留言' },
+    { platform: 'fb', scope: 'dm', label: 'Facebook 私訊' },
+    { platform: 'fb', scope: 'comment', label: 'Facebook 貼文留言' }
+  ];
+  var TABS = [
+    { key: 'biz', label: '商家管理', title: '商家管理',
+      tip: '維護外包客戶（商家）。一個商家可綁多個平台業務帳號。' },
+    { key: 'ai', label: 'AI 開關', title: 'AI 自動回覆開關',
+      tip: '第一層開關：商家 × 平台 × 場景。實際生效還要 AND 上該平台帳號自己的開關。' },
+    { key: 'staff', label: '員工與權限', title: '員工與權限',
+      tip: '全局帳號池。角色可複合，例如「運維 + 客服」可同時看運維頁與會話。' },
+    { key: 'audit', label: '審計日誌', title: '審計日誌',
+      tip: '只插入、不修改。任何人員、權限、知識庫、回覆操作都在這裡留痕。' }
+  ];
+
+  var state = {
+    tab: 'biz', csrf: '', me: null,
+    businesses: [], staff: [], accounts: [], aiSwitch: [], aiBizId: null, audit: [],
+    permStaffId: null, acctBizId: null, editBizId: null, editStaffId: null
+  };
+
+  // -------------------------------------------------- 工具
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function infotip(text) {
+    return '<span class="infotip" data-tip="' + esc(text) + '">i</span>';
+  }
+  function $(id) { return document.getElementById(id); }
+
+  var toastTimer = null;
+  function toast(msg, bad) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.className = bad ? 'show bad' : 'show';
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = ''; }, 2400);
+  }
+
+  function api(path, method, body) {
+    method = method || 'GET';
+    var opt = { method: method, credentials: 'same-origin', headers: {} };
+    if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+    if (method !== 'GET') { opt.headers['X-CSRF-Token'] = state.csrf; }
+    return fetch(path, opt).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        return { status: r.status, data: d || {} };
+      });
+    });
+  }
+
+  function guard(res) {
+    if (res.status === 401) { window.location.href = '/login'; return false; }
+    if (res.status === 403) { toast(res.data.error || '沒有權限', true); return false; }
+    if (!res.data.ok) { toast(res.data.error || '操作失敗', true); return false; }
+    return true;
+  }
+
+  // -------------------------------------------------- 「i」圓標定位（fixed，不受 overflow 裁切）
+  var tipEl = document.createElement('div');
+  tipEl.className = 'tipbox';
+  document.body.appendChild(tipEl);
+
+  document.addEventListener('mouseover', function (e) {
+    var t = e.target && e.target.closest ? e.target.closest('.infotip') : null;
+    if (!t) return;
+    tipEl.textContent = t.getAttribute('data-tip') || '';
+    tipEl.style.display = 'block';
+    var r = t.getBoundingClientRect();
+    var x = r.left + r.width / 2 - tipEl.offsetWidth / 2;
+    var y = r.bottom + 8;
+    if (y + tipEl.offsetHeight > window.innerHeight - 8) y = r.top - tipEl.offsetHeight - 8;
+    if (y < 8) y = 8;
+    x = Math.max(8, Math.min(x, window.innerWidth - tipEl.offsetWidth - 8));
+    tipEl.style.left = x + 'px';
+    tipEl.style.top = y + 'px';
+  });
+  document.addEventListener('mouseout', function (e) {
+    if (e.target && e.target.closest && e.target.closest('.infotip')) tipEl.style.display = 'none';
+  });
+
+  // -------------------------------------------------- 彈窗
+  function openOv(id) { $(id).classList.add('show'); }
+  function closeOv(id) { $(id).classList.remove('show'); }
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (t && t.hasAttribute && t.hasAttribute('data-close')) {
+      var ov = t.closest('.ov');
+      if (ov) ov.classList.remove('show');
+    }
+    if (t && t.classList && t.classList.contains('ov')) t.classList.remove('show');
+  });
+  function ovErr(id, msg) {
+    var el = $(id);
+    if (!msg) { el.classList.remove('show'); el.textContent = ''; return; }
+    el.textContent = msg; el.classList.add('show');
+  }
+
+  // -------------------------------------------------- 側邊欄 / 頁首
+  function renderNav() {
+    var nav = $('nav');
+    nav.innerHTML = '';
+    TABS.forEach(function (t) {
+      var b = document.createElement('button');
+      b.textContent = t.label;
+      if (state.tab === t.key) b.className = 'active';
+      b.onclick = function () { state.tab = t.key; render(); };
+      nav.appendChild(b);
+    });
+    var cur = TABS.filter(function (t) { return t.key === state.tab; })[0] || TABS[0];
+    $('pageTitle').textContent = cur.title;
+    $('pageTip').innerHTML = infotip(cur.tip);
+  }
+
+  function renderActs(items) {
+    var box = $('pageActs');
+    box.innerHTML = '';
+    (items || []).forEach(function (it) {
+      var b = document.createElement('button');
+      b.className = it.cls || 'primary';
+      b.textContent = it.label;
+      b.onclick = it.onClick;
+      box.appendChild(b);
+    });
+  }
+
+  // -------------------------------------------------- 分頁：商家
+  function viewBiz() {
+    renderActs([{ label: '+ 新增商家', cls: 'primary', onClick: function () { openBiz(null); } }]);
+    var rows = state.businesses.map(function (b) {
+      return '<tr>'
+        + '<td class="num">' + b.id + '</td>'
+        + '<td><b>' + esc(b.business_name) + '</b>'
+        + (b.business_memo ? '<div class="muted" style="font-size:12px">' + esc(b.business_memo) + '</div>' : '')
+        + '</td>'
+        + '<td class="num">' + b.account_count + '</td>'
+        + '<td class="num">' + b.kb_count + '</td>'
+        + '<td class="num">' + b.faq_count + '</td>'
+        + '<td class="num">' + b.table_count + '</td>'
+        + '<td>' + (b.enabled ? '<span class="pill ok">啟用</span>' : '<span class="pill off">停用</span>') + '</td>'
+        + '<td><div class="acts">'
+        + '<button class="ghost tiny" data-act="biz-edit" data-id="' + b.id + '">編輯</button>'
+        + '<button class="ghost tiny" data-act="biz-acct" data-id="' + b.id + '">平台帳號</button>'
+        + '<button class="ghost tiny" data-act="biz-ai" data-id="' + b.id + '">AI 開關</button>'
+        + '</div></td></tr>';
+    }).join('');
+    $('view').innerHTML = state.businesses.length
+      ? '<table><thead><tr><th>ID</th><th>商家</th><th>平台帳號</th><th>知識庫</th><th>FAQ</th>'
+        + '<th>業務表格</th><th>狀態</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      : '<div class="empty">還沒有商家，先新增一個。</div>';
+  }
+
+  function openBiz(id) {
+    state.editBizId = id;
+    var b = id ? findById(state.businesses, id) : null;
+    $('ovBizTitle').textContent = b ? '編輯商家' : '新增商家';
+    $('bizName').value = b ? b.business_name : '';
+    $('bizMemo').value = b ? (b.business_memo || '') : '';
+    $('bizEnabled').checked = b ? !!b.enabled : true;
+    ovErr('ovBizErr', '');
+    openOv('ovBiz');
+    setTimeout(function () { $('bizName').focus(); }, 30);
+  }
+
+  // -------------------------------------------------- 分頁：AI 開關
+  function viewAi() {
+    renderActs([]);
+    if (!state.businesses.length) {
+      $('view').innerHTML = '<div class="empty">先建立商家。</div>';
+      return;
+    }
+    if (!state.aiBizId) state.aiBizId = state.businesses[0].id;
+    var opts = state.businesses.map(function (b) {
+      return '<option value="' + b.id + '"' + (b.id === state.aiBizId ? ' selected' : '') + '>'
+        + esc(b.business_name) + '</option>';
+    }).join('');
+    var pills = SCOPES.map(function (s) {
+      var item = state.aiSwitch.filter(function (x) {
+        return x.platform === s.platform && x.scope === s.scope;
+      })[0] || { enabled: true, configured: false };
+      var cls = item.enabled ? 'switch on' : 'switch off';
+      return '<button class="' + cls + '" data-act="ai-toggle" data-p="' + s.platform + '" data-s="' + s.scope + '">'
+        + '<span class="dot2"></span>' + esc(s.label)
+        + (item.configured ? '' : ' <span class="muted" style="font-weight:400">(預設)</span>')
+        + '</button>';
+    }).join('');
+    $('view').innerHTML =
+      '<div class="card"><h3>選擇商家</h3>'
+      + '<div class="fld"><select id="aiBizSel">' + opts + '</select></div>'
+      + '<div class="acts"><button class="ghost" data-act="ai-all-on">全部開啟</button>'
+      + '<button class="ghost" data-act="ai-all-off">全部關閉</button></div></div>'
+      + '<div class="card"><h3>第一層開關' + infotip('關閉某場景後，該商家該場景完全不跑 AI。實際生效＝這裡的設定 AND 平台帳號自己的 AI 開關。') + '</h3>'
+      + '<div class="grid">' + pills + '</div></div>'
+      + '<div class="card" style="border:none;background:transparent;box-shadow:none;padding:0">'
+      + '<div class="muted" style="font-size:12.5px">設定會逐筆寫入。標「預設」表示尚未單獨設定過，目前沿用預設值（開啟）。</div></div>';
+    var sel = $('aiBizSel');
+    if (sel) sel.onchange = function () { state.aiBizId = parseInt(this.value, 10); loadAi(); };
+  }
+
+  // -------------------------------------------------- 分頁：員工
+  function viewStaff() {
+    renderActs([{ label: '+ 新增員工', cls: 'primary', onClick: function () { openStaff(null); } }]);
+    var rows = state.staff.map(function (s) {
+      var roles = (s.roles || []).map(function (r) {
+        return '<span class="tag ' + esc(r) + '">' + esc(ROLE_LABEL[r] || r) + '</span>';
+      }).join('');
+      var flags = [];
+      if (s.is_super_agent) flags.push('<span class="tag flag">超級坐席</span>');
+      if (s.is_kb_editor) flags.push('<span class="tag flag">知識庫編輯</span>');
+      var perm = s.is_super_agent ? '<span class="muted">全部</span>'
+        : ('<span class="num">' + (s.business_ids || []).length + ' 個</span>');
+      return '<tr>'
+        + '<td class="num">' + s.id + '</td>'
+        + '<td>' + esc(s.login_account) + '</td>'
+        + '<td>' + esc(s.staff_name) + '</td>'
+        + '<td>' + (roles || '<span class="muted">—</span>') + '</td>'
+        + '<td>' + (flags.join('') || '<span class="muted">—</span>') + '</td>'
+        + '<td>' + perm + '</td>'
+        + '<td class="num">' + s.active_sessions + '</td>'
+        + '<td>' + (s.enabled ? '<span class="pill ok">啟用</span>' : '<span class="pill off">停用</span>') + '</td>'
+        + '<td><div class="acts">'
+        + '<button class="ghost tiny" data-act="st-edit" data-id="' + s.id + '">編輯</button>'
+        + '<button class="ghost tiny" data-act="st-perm" data-id="' + s.id + '">授權</button>'
+        + '<button class="ghost tiny" data-act="st-pwd" data-id="' + s.id + '">密碼</button>'
+        + '<button class="danger tiny" data-act="st-kick" data-id="' + s.id + '">踢下線</button>'
+        + '</div></td></tr>';
+    }).join('');
+    $('view').innerHTML = state.staff.length
+      ? '<table><thead><tr><th>ID</th><th>帳號</th><th>姓名</th><th>角色</th><th>旗標</th>'
+        + '<th>商家授權</th><th>在線</th><th>狀態</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      : '<div class="empty">還沒有員工。</div>';
+  }
+
+  function openStaff(id) {
+    state.editStaffId = id;
+    var s = id ? findById(state.staff, id) : null;
+    $('ovStaffTitle').textContent = s ? '編輯員工' : '新增員工';
+    $('fldAcct').style.display = s ? 'none' : '';
+    $('fldPwd').style.display = s ? 'none' : '';
+    $('fldEnabled').style.display = s ? '' : 'none';
+    $('stAccount').value = s ? s.login_account : '';
+    $('stPassword').value = '';
+    $('stName').value = s ? s.staff_name : '';
+    $('stEnabled').checked = s ? !!s.enabled : true;
+    var roles = s ? (s.roles || []) : [];
+    Array.prototype.forEach.call(document.querySelectorAll('.stRole'), function (c) {
+      c.checked = roles.indexOf(c.value) >= 0;
+    });
+    $('stSuper').checked = s ? !!s.is_super_agent : false;
+    $('stKbEdit').checked = s ? !!s.is_kb_editor : false;
+    syncFlagEnabled();
+    ovErr('ovStaffErr', '');
+    openOv('ovStaff');
+  }
+
+  function pickedRoles() {
+    return Array.prototype.filter.call(document.querySelectorAll('.stRole'), function (c) { return c.checked; })
+      .map(function (c) { return c.value; });
+  }
+  function syncFlagEnabled() {
+    var isAgent = pickedRoles().indexOf('agent') >= 0;
+    $('stSuper').disabled = !isAgent;
+    $('stKbEdit').disabled = !isAgent;
+    if (!isAgent) { $('stSuper').checked = false; $('stKbEdit').checked = false; }
+  }
+
+  function openPerm(id) {
+    state.permStaffId = id;
+    var s = findById(state.staff, id);
+    $('ovPermTitle').textContent = '商家授權 · ' + (s ? s.staff_name : '');
+    var owned = (s && s.business_ids) || [];
+    $('permList').innerHTML = state.businesses.length
+      ? state.businesses.map(function (b) {
+        return '<label class="chk" style="display:flex"><input type="checkbox" class="permChk" value="' + b.id + '"'
+          + (owned.indexOf(b.id) >= 0 ? ' checked' : '') + '><span>' + esc(b.business_name)
+          + ' <span class="muted">#' + b.id + '</span></span></label>';
+      }).join('')
+      : '<div class="muted">尚無商家。</div>';
+    ovErr('ovPermErr', '');
+    openOv('ovPerm');
+  }
+
+  function openPwd(id) {
+    var s = findById(state.staff, id);
+    $('ovPwdSub').textContent = '為「' + (s ? s.staff_name : '') + '」設定新密碼。重設後該員工所有登入會被踢下線。';
+    $('pwdNew').value = '';
+    $('pwdSave').setAttribute('data-id', id);
+    ovErr('ovPwdErr', '');
+    openOv('ovPwd');
+  }
+
+  // -------------------------------------------------- 分頁：審計
+  function viewAudit() {
+    renderActs([{ label: '重新整理', cls: 'ghost', onClick: loadAudit }]);
+    var rows = state.audit.map(function (a) {
+      return '<tr>'
+        + '<td class="num" style="white-space:nowrap">' + esc(fmtTime(a.operate_at)) + '</td>'
+        + '<td>' + esc(a.staff_name || '—') + '</td>'
+        + '<td><span class="tag">' + esc(a.operate_type) + '</span></td>'
+        + '<td class="num">' + (a.business_id === null || a.business_id === undefined ? '—' : a.business_id) + '</td>'
+        + '<td class="muted" style="font-size:12px;word-break:break-all">'
+        + esc(a.payload ? JSON.stringify(a.payload) : '') + '</td></tr>';
+    }).join('');
+    $('view').innerHTML = state.audit.length
+      ? '<table><thead><tr><th>時間</th><th>操作人</th><th>類型</th><th>商家</th><th>明細</th></tr></thead><tbody>'
+        + rows + '</tbody></table>'
+      : '<div class="empty">暫無紀錄。</div>';
+  }
+
+  function fmtTime(s) {
+    if (!s) return '—';
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return String(s);
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+      + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function findById(list, id) {
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+
+  // -------------------------------------------------- 載入 / 渲染
+  function render() {
+    renderNav();
+    if (state.tab === 'biz') viewBiz();
+    else if (state.tab === 'ai') viewAi();
+    else if (state.tab === 'staff') viewStaff();
+    else viewAudit();
+  }
+
+  function loadMe() {
+    return api('/api/auth/me').then(function (res) {
+      if (res.status !== 200 || !res.data.ok) { window.location.href = '/login'; return false; }
+      state.me = res.data.staff;
+      state.csrf = res.data.csrf_token || '';
+      var nm = state.me.staff_name || '';
+      $('ava').textContent = nm ? nm.slice(0, 1) : '–';
+      $('meName').textContent = nm;
+      $('meRole').textContent = (state.me.roles || []).map(function (r) {
+        return ROLE_LABEL[r] || r;
+      }).join(' · ');
+      // 多身分帳號 → 頭像可點切換（單身分：common.js 直接不做任何事）
+      if (window.TopUser) {
+        window.TopUser.init({ me: state.me, onError: function (m) { toast(m, true); } });
+      }
+      return true;
+    });
+  }
+
+  function loadBiz() {
+    return api('/api/admin/businesses').then(function (res) {
+      if (guard(res)) state.businesses = res.data.items || [];
+    });
+  }
+  function loadStaff() {
+    return api('/api/admin/staff').then(function (res) {
+      if (guard(res)) state.staff = res.data.items || [];
+    });
+  }
+  function loadAi() {
+    if (!state.aiBizId) return Promise.resolve();
+    return api('/api/admin/ai-switch?business_id=' + state.aiBizId).then(function (res) {
+      if (guard(res)) state.aiSwitch = res.data.items || [];
+    });
+  }
+  function loadAudit() {
+    return api('/api/admin/audit?limit=100').then(function (res) {
+      if (guard(res)) { state.audit = res.data.items || []; if (state.tab === 'audit') viewAudit(); }
+    });
+  }
+
+  function reloadAll() {
+    return loadBiz().then(loadStaff).then(function () {
+      if (state.aiBizId) return loadAi();
+    }).then(function () {
+      render();
+    });
+  }
+
+  // -------------------------------------------------- 事件委派
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !t.getAttribute) return;
+    var act = t.getAttribute('data-act');
+    if (!act) return;
+    var id = parseInt(t.getAttribute('data-id'), 10);
+
+    if (act === 'biz-edit') openBiz(id);
+    else if (act === 'biz-acct') openAcct(id);
+    else if (act === 'biz-ai') { state.tab = 'ai'; state.aiBizId = id; loadAi().then(render); }
+    else if (act === 'st-edit') openStaff(id);
+    else if (act === 'st-perm') openPerm(id);
+    else if (act === 'st-pwd') openPwd(id);
+    else if (act === 'st-kick') {
+      api('/api/admin/staff/kick', 'POST', { id: id }).then(function (res) {
+        if (guard(res)) { toast('已踢下線（' + (res.data.killed || 0) + ' 個登入）'); loadStaff().then(render); }
+      });
+    } else if (act === 'ai-toggle') {
+      var p = t.getAttribute('data-p'), s = t.getAttribute('data-s');
+      var cur = state.aiSwitch.filter(function (x) { return x.platform === p && x.scope === s; })[0] || { enabled: true };
+      api('/api/admin/ai-switch', 'POST', { business_id: state.aiBizId, platform: p, scope: s, enabled: !cur.enabled })
+        .then(function (res) { if (guard(res)) loadAi().then(render); });
+    } else if (act === 'ai-all-on' || act === 'ai-all-off') {
+      var on = act === 'ai-all-on';
+      api('/api/admin/ai-switch/bulk', 'POST', { business_id: state.aiBizId, enabled: on })
+        .then(function (res) { if (guard(res)) { toast(on ? '已全部開啟' : '已全部關閉'); loadAi().then(render); } });
+    }
+  });
+
+  // 角色勾選連動旗標
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.classList && e.target.classList.contains('stRole')) syncFlagEnabled();
+  });
+
+  // -------------------------------------------------- 儲存動作
+  $('bizSave').onclick = function () {
+    var name = $('bizName').value.trim();
+    if (!name) { ovErr('ovBizErr', '請填商家名稱'); return; }
+    var body = { business_name: name, business_memo: $('bizMemo').value.trim() };
+    var p;
+    if (state.editBizId) {
+      body.id = state.editBizId; body.enabled = $('bizEnabled').checked;
+      p = api('/api/admin/businesses/update', 'POST', body);
+    } else {
+      p = api('/api/admin/businesses', 'POST', body);
+    }
+    p.then(function (res) {
+      if (!guard(res)) { ovErr('ovBizErr', res.data.error || '儲存失敗'); return; }
+      closeOv('ovBiz'); toast('已儲存');
+      loadBiz().then(function () { render(); });
+    });
+  };
+
+  $('stSave').onclick = function () {
+    var roles = pickedRoles();
+    if (!roles.length) { ovErr('ovStaffErr', '至少要選一個角色'); return; }
+    var name = $('stName').value.trim();
+    if (!name) { ovErr('ovStaffErr', '請填員工姓名'); return; }
+    var body = {
+      staff_name: name, roles: roles,
+      is_super_agent: $('stSuper').checked, is_kb_editor: $('stKbEdit').checked
+    };
+    var p;
+    if (state.editStaffId) {
+      body.id = state.editStaffId; body.enabled = $('stEnabled').checked;
+      p = api('/api/admin/staff/update', 'POST', body);
+    } else {
+      body.login_account = $('stAccount').value.trim();
+      body.password = $('stPassword').value;
+      p = api('/api/admin/staff', 'POST', body);
+    }
+    p.then(function (res) {
+      if (!guard(res)) { ovErr('ovStaffErr', res.data.error || '儲存失敗'); return; }
+      closeOv('ovStaff'); toast('已儲存');
+      loadStaff().then(render);
+    });
+  };
+
+  $('permSave').onclick = function () {
+    var ids = Array.prototype.filter.call(document.querySelectorAll('.permChk'), function (c) { return c.checked; })
+      .map(function (c) { return parseInt(c.value, 10); });
+    api('/api/admin/staff/permissions', 'POST', { staff_id: state.permStaffId, business_ids: ids })
+      .then(function (res) {
+        if (!guard(res)) { ovErr('ovPermErr', res.data.error || '儲存失敗'); return; }
+        closeOv('ovPerm'); toast('授權已更新');
+        loadStaff().then(render);
+      });
+  };
+
+  $('pwdSave').onclick = function () {
+    var pw = $('pwdNew').value;
+    if (pw.length < 8) { ovErr('ovPwdErr', '密碼至少 8 位'); return; }
+    var id = parseInt(this.getAttribute('data-id'), 10);
+    api('/api/admin/staff/password', 'POST', { id: id, password: pw }).then(function (res) {
+      if (!guard(res)) { ovErr('ovPwdErr', res.data.error || '重設失敗'); return; }
+      closeOv('ovPwd'); toast('密碼已重設，該員工已被踢下線');
+      loadStaff().then(render);
+    });
+  };
+
+  // ---- 平台帳號彈窗
+  function openAcct(bizId) {
+    state.acctBizId = bizId;
+    var b = findById(state.businesses, bizId);
+    $('ovAcctTitle').textContent = '平台帳號 · ' + (b ? b.business_name : '');
+    $('acctPlatform').innerHTML = Object.keys(PLATFORM_LABEL).map(function (p) {
+      return '<option value="' + p + '">' + PLATFORM_LABEL[p] + '</option>';
+    }).join('');
+    $('acctNative').value = '';
+    $('acctDisplay').value = '';
+    ovErr('ovAcctErr', '');
+    loadAcct().then(function () { openOv('ovAcct'); });
+  }
+
+  function renderAcctRows(items) {
+    $('acctRows').innerHTML = items.length ? items.map(function (a) {
+      return '<tr>'
+        + '<td>' + esc(PLATFORM_LABEL[a.platform] || a.platform) + '</td>'
+        + '<td class="muted" style="font-size:12px;word-break:break-all">' + esc(a.platform_business_account_id) + '</td>'
+        + '<td>' + esc(a.display_name || '—') + '</td>'
+        + '<td><button class="switch ' + (a.ai_auto_reply_enabled ? 'on' : 'off') + '" data-acct-ai="' + a.id + '">'
+        + '<span class="dot2"></span>' + (a.ai_auto_reply_enabled ? '開' : '關') + '</button></td>'
+        + '<td><button class="switch ' + (a.enabled ? 'on' : 'off') + '" data-acct-en="' + a.id + '">'
+        + '<span class="dot2"></span>' + (a.enabled ? '啟用' : '停用') + '</button></td>'
+        + '</tr>';
+    }).join('') : '<tr><td colspan="5" class="muted">尚未綁定平台帳號。</td></tr>';
+  }
+
+  function loadAcct() {
+    return api('/api/admin/accounts?business_id=' + state.acctBizId).then(function (res) {
+      if (!guard(res)) return;
+      state.acctCache = res.data.items || [];
+      renderAcctRows(state.acctCache);
+    });
+  }
+
+  $('acctAdd').onclick = function () {
+    var native = $('acctNative').value.trim();
+    if (!native) { ovErr('ovAcctErr', '請填平台原生帳號 ID'); return; }
+    api('/api/admin/accounts', 'POST', {
+      business_id: state.acctBizId,
+      platform: $('acctPlatform').value,
+      platform_business_account_id: native,
+      display_name: $('acctDisplay').value.trim()
+    }).then(function (res) {
+      if (!guard(res)) { ovErr('ovAcctErr', res.data.error || '新增失敗'); return; }
+      ovErr('ovAcctErr', '');
+      $('acctNative').value = '';
+      $('acctDisplay').value = '';
+      toast('已綁定');
+      loadAcct().then(function () { loadBiz().then(function () { if (state.tab === 'biz') viewBiz(); }); });
+    });
+  };
+
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !t.getAttribute) return;
+    var aiId = t.getAttribute('data-acct-ai');
+    var enId = t.getAttribute('data-acct-en');
+    if (aiId) {
+      var row = findAcct(parseInt(aiId, 10));
+      if (!row) return;
+      api('/api/admin/accounts/update', 'POST', {
+        id: row.id, display_name: row.display_name,
+        ai_auto_reply_enabled: !row.ai_auto_reply_enabled, enabled: row.enabled
+      }).then(function (res) { if (guard(res)) loadAcct(); });
+    } else if (enId) {
+      var row2 = findAcct(parseInt(enId, 10));
+      if (!row2) return;
+      api('/api/admin/accounts/update', 'POST', {
+        id: row2.id, display_name: row2.display_name,
+        ai_auto_reply_enabled: row2.ai_auto_reply_enabled, enabled: !row2.enabled
+      }).then(function (res) {
+        if (guard(res)) loadAcct().then(function () { loadBiz().then(function () { if (state.tab === 'biz') viewBiz(); }); });
+      });
+    }
+  });
+
+  function findAcct(id) {
+    return (state.acctCache || []).filter(function (a) { return a.id === id; })[0];
+  }
+
+  // -------------------------------------------------- 登出
+  $('btnLogout').onclick = function () {
+    api('/api/auth/logout', 'POST', {}).then(function () { window.location.href = '/login'; });
+  };
+
+  // -------------------------------------------------- 啟動
+  loadMe().then(function (ok) {
+    if (!ok) return;
+    return reloadAll();
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>客服系統</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --panel: #ffffff; --border: #e5e9f0; --text: #1f2a37; --text-soft: #6b7280;
+    --accent: #1a7f5c; --accent-dark: #116a4b; --accent-soft: #e6f4ee; --red: #e02020;
+    --shadow: 0 1px 3px rgba(15, 30, 50, 0.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang TC", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center; -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    width: 400px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 26px 24px; box-shadow: var(--shadow); text-align: center;
+  }
+  .logo {
+    width: 44px; height: 44px; border-radius: 12px; background: var(--accent); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 20px;
+    margin: 0 auto 14px;
+  }
+  h1 { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+  p { font-size: 13px; color: var(--text-soft); line-height: 1.7; margin-bottom: 16px; }
+  button {
+    padding: 9px 18px; border: 1px solid var(--border); border-radius: 9px; background: #fafbfc;
+    color: var(--text-soft); font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+  button:hover { border-color: var(--red); color: var(--red); background: #fdecec; }
+
+  /* ---------- 身分（多身分才可點切換） ---------- */
+  .who {
+    position: relative; display: flex; align-items: center; gap: 10px; text-align: left;
+    border: 1px solid var(--border); border-radius: 11px; padding: 9px 11px; margin-bottom: 14px;
+    background: #fafbfc; transition: all .12s;
+  }
+  .who.clickable { cursor: pointer; }
+  .who.clickable:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .who .ava {
+    width: 32px; height: 32px; border-radius: 50%; background: #e2e8f0; color: #475569;
+    display: flex; align-items: center; justify-content: center; font-weight: 700;
+    font-size: 13px; flex-shrink: 0;
+  }
+  .who .nm { font-weight: 700; font-size: 13.5px; }
+  .who .rl { color: var(--text-soft); font-size: 11.5px; }
+  .who .caret { margin-left: auto; color: var(--text-soft); font-size: 10px; }
+  .rolemenu {
+    display: none; position: absolute; top: calc(100% + 6px); left: 0; right: 0; text-align: left;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 11px;
+    box-shadow: 0 10px 30px rgba(15, 30, 50, .14); padding: 8px; z-index: 200;
+  }
+  .rolemenu.open { display: block; }
+  .rolemenu-head { font-size: 11.5px; color: var(--text-soft); font-weight: 700; padding: 2px 6px 7px; }
+  .roleitem {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 9px;
+    border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text);
+    font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit;
+  }
+  .roleitem:hover { background: #f6f8fa; }
+  .roleitem.cur { background: var(--accent-soft); color: var(--accent-dark); cursor: default; }
+  .roleitem .ic {
+    width: 22px; height: 22px; border-radius: 7px; background: #eef1f5; color: #475569;
+    display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700;
+    flex-shrink: 0;
+  }
+  .roleitem.cur .ic { background: #fff; color: var(--accent-dark); }
+  .roleitem .now { margin-left: auto; font-size: 10.5px; font-weight: 700; color: var(--accent-dark); }
+  #msg { display: none; margin-bottom: 12px; padding: 8px 11px; border-radius: 9px;
+    background: #fdecec; color: var(--red); font-size: 12.5px; text-align: left; }
+  #msg.show { display: block; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">客</div>
+    <h1 id="pageTitle">客服系統</h1>
+    <div class="who" id="whoBox">
+      <div class="ava" id="ava">–</div>
+      <div>
+        <div class="nm" id="meName">–</div>
+        <div class="rl" id="meRole">–</div>
+      </div>
+      <span class="caret" id="whoCaret" hidden>▼</span>
+      <!-- 靜態節點：身分切換選單 -->
+      <div class="rolemenu" id="roleMenu">
+        <div class="rolemenu-head">切換身分</div>
+        <div id="roleList"></div>
+      </div>
+    </div>
+    <div id="msg"></div>
+    <p>
+      你的首頁正在開發中。<br>
+      客服工作台與運維頁會在後續階段開通。
+    </p>
+    <button id="btnLogout">登出</button>
+  </div>
+
+<script src="/ui/common.js"></script>
+<script>
+(function () {
+  'use strict';
+  var LABEL = { admin: '管理員', agent: '客服坐席', ops: '運維' };
+  var TITLE = { admin: '管理員後台', agent: '客服工作台', ops: '運維監控' };
+  var msg = document.getElementById('msg');
+
+  fetch('/api/auth/me', { credentials: 'same-origin' }).then(function (r) {
+    return r.json().catch(function () { return {}; });
+  }).then(function (d) {
+    if (!d || !d.ok) { window.location.href = '/login'; return; }
+    var s = d.staff || {};
+    document.getElementById('pageTitle').textContent = TITLE[s.active_role] || '客服系統';
+    document.getElementById('ava').textContent = (s.staff_name || '–').slice(0, 1);
+    document.getElementById('meName').textContent = s.staff_name || '';
+    document.getElementById('meRole').textContent = LABEL[s.active_role] || s.active_role || '—';
+    if (window.TopUser) {
+      window.TopUser.init({
+        me: s,
+        onError: function (m) { msg.textContent = m; msg.classList.add('show'); }
+      });
+    }
+  }).catch(function () { /* 保持頁面，不擋 */ });
+
+  document.getElementById('btnLogout').onclick = function () {
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+      .then(function () { window.location.href = '/login'; });
+  };
+})();
+</script>
+</body>
+</html>
