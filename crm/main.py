@@ -16,11 +16,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.admin.router import router as admin_router
+from app.agent.console_router import router as agent_console_router
+from app.agent.router import router as agent_router
 from app.auth import deps, rbac
 from app.auth.router import router as auth_router
 from app.core import config
 from app.core import db
 from app.internal.router import router as internal_router
+from app.ops.router import router as ops_router
 from app.worker import runner as worker_runner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -41,6 +44,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="multi-cs-crm", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(agent_router)
+app.include_router(agent_console_router)
+app.include_router(ops_router)
 app.include_router(internal_router)
 
 
@@ -71,11 +77,11 @@ def page_ui_asset(name: str):
     return _ui(name, media)
 
 
-# 身分 → 首頁（admin / agent / ops；客服與運維頁在後續階段補齊）
+# 身分 → 首頁（admin / agent / ops 三台都已接線）
 PAGE_BY_ROLE = {
     rbac.ROLE_ADMIN: "admin.html",
-    rbac.ROLE_AGENT: "placeholder.html",
-    rbac.ROLE_OPS: "placeholder.html",
+    rbac.ROLE_AGENT: "console_ui.html",
+    rbac.ROLE_OPS: "ops.html",
 }
 
 
@@ -116,7 +122,7 @@ def page_agent(request: Request):
         return _redirect_login()
     if not rbac.is_agent(sess):
         return RedirectResponse("/", status_code=302)
-    return _ui("placeholder.html")
+    return _ui("console_ui.html")
 
 
 @app.get("/ops")
@@ -126,7 +132,7 @@ def page_ops(request: Request):
         return _redirect_login()
     if not rbac.can_manage_ops(sess):
         return RedirectResponse("/", status_code=302)
-    return _ui("placeholder.html")
+    return _ui("ops.html")
 
 
 @app.get("/favicon.ico")

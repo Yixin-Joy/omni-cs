@@ -175,7 +175,8 @@ CREATE TABLE IF NOT EXISTS crm_alert (
     count           int DEFAULT 1,
     acknowledged    boolean DEFAULT false,
     acknowledged_by bigint,
-    acknowledged_at timestamptz
+    acknowledged_at timestamptz,
+    notified_at     timestamptz      -- 已寄出告警郵件的時間（NULL = 還沒通知過）
 );
 CREATE INDEX IF NOT EXISTS idx_alert_open ON crm_alert(acknowledged, last_seen_at);
 
@@ -435,6 +436,9 @@ MIGRATIONS = (
     "ALTER TABLE kb_param DROP CONSTRAINT IF EXISTS kb_param_collection_id_fkey;"
     " ALTER TABLE kb_param ADD CONSTRAINT kb_param_collection_id_fkey"
     "   FOREIGN KEY (collection_id) REFERENCES kb_collection(id) ON DELETE CASCADE",
+    # 階段四：告警已通知（寄過郵件）的時間 —— 沒這欄，同一條告警每輪巡檢都會重寄一次。
+    # `notified_at IS NULL` = 還沒通知過（新告警或又累計過次數的告警）。
+    "ALTER TABLE crm_alert ADD COLUMN IF NOT EXISTS notified_at timestamptz",
 )
 
 # 運維可配置參數（設計案 §15.3 建議值），首次建庫寫入；已存在不覆蓋。
@@ -450,6 +454,10 @@ OPS_CONFIG_DEFAULTS = {
     "ai.queue_max_retry": 2,
     "ai.queue_stuck_timeout": 600,
     "alert.mass_failure_threshold": 20,
+    # 判定「大量失敗」的時間窗（分鐘）——只數這個窗內的 failed 任務
+    "alert.failure_window_minutes": 10,
+    # 寄信的最低嚴重度：'info' | 'warning' | 'critical'（低於此值只留在清單、不寄）
+    "alert.email_min_severity": "warning",
     "alert.email_recipients": [],
     "media.kb_cache_ttl_days": 7,
 }

@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>運維</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --panel: #ffffff; --border: #e5e9f0; --text: #1f2a37; --text-soft: #6b7280;
+    --accent: #1a7f5c; --accent-dark: #116a4b; --accent-soft: #e6f4ee;
+    --red: #e02020; --red-soft: #fdecec; --amber: #b45309; --amber-soft: #fdf3e3;
+    --blue: #1e40af; --blue-soft: #e7eefc;
+    --shadow: 0 1px 3px rgba(15, 30, 50, 0.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang TC", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px; -webkit-font-smoothing: antialiased;
+  }
+  .app { display: flex; height: 100vh; overflow: hidden; }
+
+  /* ---------- 側邊欄 ---------- */
+  .sidebar { width: 236px; background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0; }
+  .sidebar-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--border); }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .logo { width: 34px; height: 34px; border-radius: 9px; background: var(--amber); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; }
+  .brand h1 { font-size: 16px; font-weight: 700; }
+  .brand span { display: block; font-size: 11.5px; color: var(--text-soft); font-weight: 400; }
+  .nav { padding: 10px; flex: 1; overflow-y: auto; }
+  .nav button {
+    width: 100%; text-align: left; padding: 10px 12px; margin-bottom: 4px; border: 1px solid transparent;
+    border-radius: 9px; background: transparent; color: var(--text); font-size: 13.5px; font-weight: 600;
+    cursor: pointer; transition: all .12s; font-family: inherit;
+  }
+  .nav button:hover { background: #f6f8fa; }
+  .nav button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
+  .nav .badge { float: right; background: var(--red-soft); color: var(--red); border-radius: 999px;
+    padding: 1px 7px; font-size: 11px; font-weight: 700; }
+  .sidebar-foot { padding: 12px 14px; border-top: 1px solid var(--border); font-size: 12.5px; position: relative; }
+  .who { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+  .who .ava { width: 30px; height: 30px; border-radius: 50%; background: #e2e8f0; color: #475569;
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0; }
+  .who .nm { font-weight: 600; }
+  .who .rl { color: var(--text-soft); font-size: 11.5px; }
+  .who.clickable { cursor: pointer; border-radius: 9px; padding: 5px 6px; margin: -5px -6px 4px; transition: background .12s; }
+  .who.clickable:hover { background: #f6f8fa; }
+  .who .caret { margin-left: auto; color: var(--text-soft); font-size: 10px; }
+  .rolemenu { display: none; position: absolute; left: 10px; right: 10px; bottom: calc(100% - 4px);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 11px;
+    box-shadow: 0 10px 30px rgba(15, 30, 50, .14); padding: 8px; z-index: 200; }
+  .rolemenu.open { display: block; }
+  .rolemenu-head { font-size: 11.5px; color: var(--text-soft); font-weight: 700; padding: 2px 6px 7px; }
+  .roleitem { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    padding: 8px 9px; border: 1px solid transparent; border-radius: 8px; background: transparent;
+    color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .roleitem:hover { background: #f6f8fa; }
+  .roleitem.cur { background: var(--accent-soft); color: var(--accent-dark); cursor: default; }
+  .roleitem .ic { width: 22px; height: 22px; border-radius: 7px; background: #eef1f5; color: #475569;
+    display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+  .roleitem.cur .ic { background: #fff; color: var(--accent-dark); }
+  .roleitem .now { margin-left: auto; font-size: 10.5px; font-weight: 700; color: var(--accent-dark); }
+  .logout { width: 100%; padding: 7px; border: 1px solid var(--border); border-radius: 8px;
+    background: #fafbfc; color: var(--text-soft); font-size: 12.5px; cursor: pointer; font-family: inherit; }
+  .logout:hover { border-color: var(--red); color: var(--red); background: var(--red-soft); }
+
+  /* ---------- 主區 ---------- */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .topbar { padding: 14px 22px; border-bottom: 1px solid var(--border); background: var(--panel);
+    display: flex; align-items: center; gap: 12px; flex-shrink: 0; flex-wrap: wrap; }
+  .topbar h2 { font-size: 17px; font-weight: 700; }
+  .topbar .sp { flex: 1; }
+  .body { flex: 1; overflow-y: auto; padding: 20px 22px 40px; }
+
+  /* ---------- 元件 ---------- */
+  button.primary, button.ghost, button.danger {
+    padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer;
+    border: 1px solid transparent; transition: all .12s; font-family: inherit;
+  }
+  button.primary { background: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent-dark); }
+  button.ghost { background: #fafbfc; border-color: var(--border); color: var(--text-soft); }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  button.danger { background: #fff; border-color: var(--border); color: var(--text-soft); }
+  button.danger:hover { border-color: var(--red); color: var(--red); background: var(--red-soft); }
+  button.tiny { padding: 5px 9px; font-size: 12px; border-radius: 7px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  select, input[type=text], input[type=number] {
+    padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fafbfc;
+    font-size: 13px; color: var(--text); font-family: inherit; outline: none; }
+  select:focus, input[type=text]:focus, input[type=number]:focus { border-color: var(--accent); background: #fff; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); }
+  th, td { padding: 10px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid #f0f2f5;
+    vertical-align: top; }
+  th { background: #fafbfc; color: var(--text-soft); font-weight: 600; font-size: 12px; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #fbfcfd; }
+  .num { color: var(--text-soft); font-variant-numeric: tabular-nums; }
+  .acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .muted { color: var(--text-soft); }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .wrap { word-break: break-all; }
+
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700;
+    background: #eef1f5; color: var(--text-soft); white-space: nowrap; }
+  .pill.ok { background: var(--accent-soft); color: var(--accent-dark); }
+  .pill.off { background: var(--red-soft); color: var(--red); }
+  .pill.warn { background: var(--amber-soft); color: var(--amber); }
+  .pill.info { background: var(--blue-soft); color: var(--blue); }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 700;
+    background: #eef1f5; color: #475569; margin-right: 4px; }
+
+  .switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none;
+    padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px; background: #fafbfc;
+    font-size: 12.5px; font-weight: 600; color: var(--text-soft); font-family: inherit; transition: all .12s; }
+  .switch .dot2 { width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
+  .switch.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
+  .switch.on .dot2 { background: var(--accent); }
+  .switch.off { background: var(--red-soft); border-color: #f5c2c2; color: var(--red); }
+  .switch.off .dot2 { background: var(--red); }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 18px; box-shadow: var(--shadow); margin-bottom: 16px; }
+  .card h3 { font-size: 14px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; }
+  .grid { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+  /* KPI 卡 */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    box-shadow: var(--shadow); }
+  .kpi .lbl { font-size: 12px; color: var(--text-soft); font-weight: 600; margin-bottom: 6px; }
+  .kpi .val { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .kpi.warn .val { color: var(--amber); }
+  .kpi.bad .val { color: var(--red); }
+  .kpi.good .val { color: var(--accent-dark); }
+
+  .kv { display: grid; grid-template-columns: 168px 1fr; gap: 6px 12px; font-size: 13px; }
+  .kv .k { color: var(--text-soft); font-weight: 600; }
+
+  /* ---------- 「i」圓標 ---------- */
+  .infotip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
+    border-radius: 50%; background: #e5e9f0; color: #6b7280; font-size: 11px; font-style: normal;
+    font-weight: 700; cursor: help; margin-left: 5px; vertical-align: middle; flex-shrink: 0; }
+  .infotip:hover { background: var(--accent-soft); color: var(--accent-dark); }
+  .tipbox { position: fixed; z-index: 9999; max-width: 300px; background: #1f2a37; color: #fff;
+    font-size: 12px; line-height: 1.6; padding: 8px 11px; border-radius: 8px; pointer-events: none;
+    box-shadow: 0 8px 24px rgba(0,0,0,.2); display: none; }
+
+  /* ---------- 彈窗（靜態節點） ---------- */
+  .ov { position: fixed; inset: 0; background: rgba(15, 30, 50, .38); display: none;
+    align-items: center; justify-content: center; z-index: 900; padding: 20px; }
+  .ov.show { display: flex; }
+  .box { background: var(--panel); border-radius: 13px; width: 100%; max-width: 460px;
+    max-height: 88vh; overflow-y: auto; padding: 20px 22px; box-shadow: 0 18px 48px rgba(0,0,0,.22); }
+  .box.wide { max-width: 660px; }
+  .box h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+  .box .sub { font-size: 12.5px; color: var(--text-soft); margin-bottom: 15px; }
+  .fld { margin-bottom: 13px; }
+  .fld > label { display: block; font-size: 12.5px; color: var(--text-soft); font-weight: 600; margin-bottom: 5px; }
+  .fld input[type=text], .fld input[type=number], .fld select {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
+    background: #fafbfc; font-size: 13.5px; outline: none; color: var(--text); font-family: inherit; }
+  .box .acts { justify-content: flex-end; margin-top: 18px; gap: 9px; }
+  .err { display: none; margin-bottom: 12px; padding: 9px 12px; border-radius: 8px;
+    background: var(--red-soft); color: var(--red); font-size: 12.5px; }
+  .err.show { display: block; }
+
+  /* toast */
+  #toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: #1f2a37; color: #fff; padding: 10px 18px; border-radius: 9px; font-size: 13px;
+    opacity: 0; transition: all .22s; pointer-events: none; z-index: 99999; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.bad { background: var(--red); }
+
+  .empty { padding: 36px 20px; text-align: center; color: var(--text-soft); font-size: 13px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+  .mdimg { max-width: 220px; border-radius: 8px; display: block; margin-top: 6px; }
+  .attempt { padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px;
+    font-size: 12.5px; display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <div class="brand">
+        <div class="logo">運</div>
+        <h1>客服系統<span>運維</span></h1>
+      </div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="sidebar-foot">
+      <div class="who" id="whoBox">
+        <div class="ava" id="ava">–</div>
+        <div>
+          <div class="nm" id="meName">–</div>
+          <div class="rl" id="meRole">–</div>
+        </div>
+        <span class="caret" id="whoCaret" hidden>▼</span>
+      </div>
+      <!-- 靜態節點：身分切換選單 -->
+      <div class="rolemenu" id="roleMenu">
+        <div class="rolemenu-head">切換身分<span class="infotip"
+          data-tip="管理員預設具備全部身分，可自由切換；切換後直接進該身分的首頁，不需要重新登入。">i</span></div>
+        <div id="roleList"></div>
+      </div>
+      <button class="logout" id="btnLogout">登出</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h2 id="pageTitle">運維概覽</h2>
+      <span id="pageTip"></span>
+      <div class="sp"></div>
+      <div class="grid" id="pageCtl"></div>
+      <div class="acts" id="pageActs"></div>
+    </header>
+    <div class="body" id="view"></div>
+  </main>
+</div>
+
+<!-- ===================== 靜態彈窗節點（不進重繪區） ===================== -->
+<div class="ov" id="ovTask">
+  <div class="box wide">
+    <h3 id="ovTaskTitle">任務明細</h3>
+    <div class="sub" id="ovTaskSub">外送任務的內容與實際發送嘗試紀錄。</div>
+    <div class="err" id="ovTaskErr"></div>
+    <div id="ovTaskBody"></div>
+    <div class="acts">
+      <button class="ghost" data-close>關閉</button>
+      <button class="primary" id="btnTaskRetry">重跑這筆</button>
+    </div>
+  </div>
+</div>
+
+<div class="ov" id="ovMail">
+  <div class="box">
+    <h3>測試告警郵件</h3>
+    <div class="sub">寄一封測試信驗證 SMTP 設定。留空則寄給參數裡設定的收件人。</div>
+    <div class="err" id="ovMailErr"></div>
+    <div class="fld"><label>收件人（選填，逗號分隔）</label>
+      <input type="text" id="mailTo" placeholder="例：ops@example.com"></div>
+    <div class="acts">
+      <button class="ghost" data-close>取消</button>
+      <button class="primary" id="mailSend">寄出</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="/ui/common.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var PLATFORM_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
+  var ROLE_LABEL = { admin: '管理員', agent: '客服坐席', ops: '運維' };
+  var STATUS_LABEL = { pending: '待處理', processing: '處理中', sent: '已送出',
+    failed: '失敗', uncertain: '待確認' };
+  var STATUS_CLASS = { pending: 'info', processing: 'info', sent: 'ok', failed: 'off', uncertain: 'warn' };
+  var SEV_LABEL = { info: '提醒', warning: '警告', critical: '嚴重' };
+  var SEV_CLASS = { info: 'info', warning: 'warn', critical: 'off' };
+  var CONFIG_GROUP = { outbound: '外送任務', callback: '回調', ai: 'AI 佇列',
+    alert: '告警', media: '媒體' };
+
+  var TABS = [
+    { key: 'dash', label: '概覽', title: '運維概覽',
+      tip: '任務積壓、AI 佇列、告警與近 24 小時的發送產出。數字異常就往下看失敗任務。' },
+    { key: 'tasks', label: '失敗任務', title: '失敗任務',
+      tip: '只列需要人處理的 failed 與 uncertain。重跑＝打回待處理，由 Connector 重新認領送出。' },
+    { key: 'config', label: '重試參數', title: '重試參數',
+      tip: '存在資料庫、改了立即生效（不需重啟）。重試次數與退避也會被新建立的人工回覆沿用。' },
+    { key: 'alerts', label: '告警', title: '告警',
+      tip: 'Connector 上報的異常與系統自動偵測（大量失敗）。確認後就不再重複寄信。' },
+    { key: 'audit', label: '審計', title: '審計日誌',
+      tip: '運維身分只看得到運維相關操作；管理員可切換看全部。' }
+  ];
+
+  var state = {
+    tab: 'dash', csrf: '', me: null,
+    dash: null, mail: null,
+    taskStatus: '', taskPlat: '', taskKw: '',
+    tasks: [], total: 0, offset: 0, limit: 50,
+    picked: {}, attempts: {},
+    config: [], configFlat: {},
+    alerts: [], alertsOpenOnly: true,
+    audit: [], auditAll: false,
+    openTaskId: null, mailReady: false
+  };
+
+  // -------------------------------------------------- 工具
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function infotip(text) { return '<span class="infotip" data-tip="' + esc(text) + '">i</span>'; }
+  function $(id) { return document.getElementById(id); }
+
+  function mdImages(s) {
+    var out = esc(s || '');
+    out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, url) {
+      if (!/^(\/media\/|\/files\/|https?:\/\/)/.test(url)) return m;
+      return '<img class="mdimg" src="' + url + '" alt="' + alt + '">';
+    });
+    return out.replace(/\n/g, '<br>');
+  }
+
+  var toastTimer = null;
+  function toast(msg, bad) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.className = bad ? 'show bad' : 'show';
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = ''; }, 2600);
+  }
+
+  function api(path, method, body) {
+    method = method || 'GET';
+    var opt = { method: method, credentials: 'same-origin', headers: {} };
+    if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+    if (method !== 'GET') { opt.headers['X-CSRF-Token'] = state.csrf; }
+    return fetch(path, opt).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        return { status: r.status, data: d || {} };
+      });
+    });
+  }
+
+  function guard(res) {
+    if (res.status === 401) { window.location.href = '/login'; return false; }
+    if (res.status === 403) { toast(res.data.error || '沒有權限', true); return false; }
+    if (res.status === 502) { toast(res.data.error || '連不上 Connector', true); return false; }
+    if (!res.data.ok) { toast(res.data.error || '操作失敗', true); return false; }
+    return true;
+  }
+
+  function fmtTime(s) {
+    if (!s) return '—';
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return String(s);
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+      + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function msgText(mc) {
+    if (!mc) return '';
+    if (typeof mc === 'string') return mc;
+    if (typeof mc !== 'object') return String(mc);
+    var parts = [];
+    if (mc.text) parts.push(mc.text);
+    var assets = mc.assets || [];
+    if (assets.length) parts.push('（附件 ×' + assets.length + '）');
+    return parts.join(' ');
+  }
+
+  // -------------------------------------------------- 「i」圓標定位
+  var tipEl = document.createElement('div');
+  tipEl.className = 'tipbox';
+  document.body.appendChild(tipEl);
+  document.addEventListener('mouseover', function (e) {
+    var t = e.target && e.target.closest ? e.target.closest('.infotip') : null;
+    if (!t) return;
+    tipEl.textContent = t.getAttribute('data-tip') || '';
+    tipEl.style.display = 'block';
+    var r = t.getBoundingClientRect();
+    var x = r.left + r.width / 2 - tipEl.offsetWidth / 2;
+    var y = r.bottom + 8;
+    if (y + tipEl.offsetHeight > window.innerHeight - 8) y = r.top - tipEl.offsetHeight - 8;
+    if (y < 8) y = 8;
+    x = Math.max(8, Math.min(x, window.innerWidth - tipEl.offsetWidth - 8));
+    tipEl.style.left = x + 'px';
+    tipEl.style.top = y + 'px';
+  });
+  document.addEventListener('mouseout', function (e) {
+    if (e.target && e.target.closest && e.target.closest('.infotip')) tipEl.style.display = 'none';
+  });
+
+  // -------------------------------------------------- 彈窗
+  function openOv(id) { $(id).classList.add('show'); }
+  function closeOv(id) { $(id).classList.remove('show'); }
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (t && t.hasAttribute && t.hasAttribute('data-close')) {
+      var ov = t.closest('.ov');
+      if (ov) ov.classList.remove('show');
+    }
+    if (t && t.classList && t.classList.contains('ov')) t.classList.remove('show');
+  });
+  function ovErr(id, msg) {
+    var el = $(id);
+    if (!msg) { el.classList.remove('show'); el.textContent = ''; return; }
+    el.textContent = msg; el.classList.add('show');
+  }
+
+  // -------------------------------------------------- 側邊欄 / 頁首
+  function renderNav() {
+    var nav = $('nav');
+    nav.innerHTML = '';
+    TABS.forEach(function (t) {
+      var b = document.createElement('button');
+      var extra = '';
+      if (t.key === 'tasks' && state.dash) {
+        var n = (state.dash.tasks.failed || 0) + (state.dash.tasks.uncertain || 0);
+        if (n > 0) extra = '<span class="badge">' + n + '</span>';
+      }
+      if (t.key === 'alerts' && state.dash && state.dash.alerts && state.dash.alerts.total > 0) {
+        extra += '<span class="badge">' + state.dash.alerts.total + '</span>';
+      }
+      b.innerHTML = esc(t.label) + extra;
+      if (state.tab === t.key) b.className = 'active';
+      b.onclick = function () { state.tab = t.key; render(); };
+      nav.appendChild(b);
+    });
+    var cur = TABS.filter(function (t) { return t.key === state.tab; })[0] || TABS[0];
+    $('pageTitle').textContent = cur.title;
+    $('pageTip').innerHTML = infotip(cur.tip);
+  }
+
+  function renderActs(items) {
+    var box = $('pageActs');
+    box.innerHTML = '';
+    (items || []).forEach(function (it) {
+      var b = document.createElement('button');
+      b.className = it.cls || 'primary';
+      b.textContent = it.label;
+      b.onclick = it.onClick;
+      box.appendChild(b);
+    });
+  }
+
+  // -------------------------------------------------- 分頁：概覽
+  function viewDash() {
+    $('pageCtl').innerHTML = '';
+    renderActs([{ label: '重新整理', cls: 'ghost', onClick: loadDash }]);
+    var d = state.dash;
+    if (!d) { $('view').innerHTML = '<div class="empty">載入中…</div>'; return; }
+    var t = d.tasks || {}, q = d.ai_queue || {}, h = d.last24h || {}, a = d.alerts || {};
+    function kpi(lbl, val, cls) {
+      return '<div class="kpi ' + (cls || '') + '"><div class="lbl">' + esc(lbl) + '</div>'
+        + '<div class="val">' + esc(val) + '</div></div>';
+    }
+    var html = '<div class="kpis">'
+      + kpi('待處理任務', t.pending || 0, (t.pending > 0 ? 'warn' : ''))
+      + kpi('處理中', t.processing || 0)
+      + kpi('失敗', t.failed || 0, (t.failed > 0 ? 'bad' : 'good'))
+      + kpi('待確認', t.uncertain || 0, (t.uncertain > 0 ? 'warn' : ''))
+      + kpi('近 24h 已送出', h.sent || 0, 'good')
+      + kpi('近 24h 失敗', h.failed || 0, (h.failed > 0 ? 'bad' : ''))
+      + kpi('未確認告警', a.total || 0, (a.total > 0 ? 'bad' : 'good'))
+      + '</div>';
+
+    html += '<div class="card"><h3>AI 入站佇列' + infotip('來訊先進佇列，由 CRM 背景 worker 單一序列消費。pending 長期不降＝worker 沒在跑。') + '</h3>'
+      + '<div class="grid">'
+      + '<span class="pill">待處理 ' + esc(q.pending || 0) + '</span>'
+      + '<span class="pill info">處理中 ' + esc(q.processing || 0) + '</span>'
+      + '<span class="pill ok">完成 ' + esc(q.done || 0) + '</span>'
+      + '<span class="pill ' + ((q.failed || 0) > 0 ? 'off' : '') + '">失敗 ' + esc(q.failed || 0) + '</span>'
+      + '</div></div>';
+
+    html += '<div class="card"><h3>告警分佈</h3><div class="grid">'
+      + '<span class="pill info">提醒 ' + esc(a.info || 0) + '</span>'
+      + '<span class="pill warn">警告 ' + esc(a.warning || 0) + '</span>'
+      + '<span class="pill off">嚴重 ' + esc(a.critical || 0) + '</span></div></div>';
+
+    var m = d.mail || {};
+    html += '<div class="card"><h3>郵件告警' + infotip('未配置 = 只記 log 不寄信，不影響任何業務流程。收件人每次讀資料庫，改參數不需重啟。') + '</h3>'
+      + '<div class="kv">'
+      + '<div class="k">狀態</div><div>' + (m.ready ? '<span class="pill ok">可用</span>'
+        : '<span class="pill off">未配置</span>') + '</div>'
+      + '<div class="k">啟用開關</div><div>' + (m.enabled ? '開' : '關（ALERT_EMAIL_ENABLED）') + '</div>'
+      + '<div class="k">SMTP</div><div class="mono">' + esc(m.smtp_host || '—')
+      + (m.smtp_host ? ':' + esc(m.smtp_port) : '') + '</div>'
+      + '<div class="k">寄件人</div><div class="mono">' + esc(m.smtp_from || '—') + '</div>'
+      + '<div class="k">收件人</div><div class="mono">'
+      + ((m.recipients || []).length ? esc((m.recipients || []).join(', ')) : '—') + '</div>'
+      + '</div></div>';
+    $('view').innerHTML = html;
+  }
+
+  function loadDash() {
+    return api('/console/ops/dashboard').then(function (res) {
+      if (!guard(res)) return;
+      state.dash = res.data;
+      state.mail = res.data.mail || null;
+      if (state.tab === 'dash') viewDash();
+      renderNav();
+    });
+  }
+
+  // -------------------------------------------------- 分頁：失敗任務
+  function taskFilterCtl() {
+    $('pageCtl').innerHTML =
+      '<select id="fStatus">'
+      + '<option value="">失敗 + 待確認</option>'
+      + '<option value="failed">只看失敗</option>'
+      + '<option value="uncertain">只看待確認</option>'
+      + '<option value="pending">待處理</option>'
+      + '<option value="all">全部狀態</option>'
+      + '</select>'
+      + '<select id="fPlat"><option value="">全部平台</option>'
+      + Object.keys(PLATFORM_LABEL).map(function (p) {
+        return '<option value="' + p + '">' + PLATFORM_LABEL[p] + '</option>'; }).join('')
+      + '</select>'
+      + '<input type="text" id="fKw" placeholder="商家 / 收訊人 / 失敗原因" style="width:210px">';
+    $('fStatus').value = state.taskStatus;
+    $('fPlat').value = state.taskPlat;
+    $('fKw').value = state.taskKw;
+    $('fStatus').onchange = function () { state.taskStatus = this.value; state.offset = 0; loadTasks(); };
+    $('fPlat').onchange = function () { state.taskPlat = this.value; state.offset = 0; loadTasks(); };
+    $('fKw').onkeydown = function (e) {
+      if (e.key === 'Enter') { state.taskKw = this.value.trim(); state.offset = 0; loadTasks(); }
+    };
+  }
+
+  function viewTasks() {
+    taskFilterCtl();
+    renderActs([
+      { label: '重新整理', cls: 'ghost', onClick: loadTasks },
+      { label: '已勾選重跑', cls: 'primary', onClick: function () {
+        var ids = pickedIds();
+        if (!ids.length) { toast('先勾幾筆要重跑的任務', true); return; }
+        doRetry(ids);
+      } }
+    ]);
+    if (!state.tasks.length) {
+      $('view').innerHTML = '<div class="empty">沒有符合條件的任務。</div>';
+      return;
+    }
+    var rows = state.tasks.map(function (t) {
+      return '<tr>'
+        + '<td><input type="checkbox" class="pk" value="' + t.id + '"'
+        + (state.picked[t.id] ? ' checked' : '') + '></td>'
+        + '<td class="num">' + t.id + '</td>'
+        + '<td class="num" style="white-space:nowrap">' + esc(fmtTime(t.created_at)) + '</td>'
+        + '<td>' + esc(t.business_name || ('#' + t.business_id)) + '</td>'
+        + '<td>' + esc(PLATFORM_LABEL[t.platform] || t.platform) + '</td>'
+        + '<td class="muted mono wrap">' + esc(t.account_name || t.account_native_id || '—') + '</td>'
+        + '<td class="muted mono wrap">' + esc(t.end_user_sender_id) + '</td>'
+        + '<td>' + (t.source === 'ai' ? '<span class="tag">AI</span>' : '<span class="tag">人工</span>') + '</td>'
+        + '<td class="num">' + esc(t.retry_count || 0) + '/' + esc(t.max_retry || 0) + '</td>'
+        + '<td><span class="pill ' + (STATUS_CLASS[t.status] || '') + '">'
+        + esc(STATUS_LABEL[t.status] || t.status) + '</span></td>'
+        + '<td class="muted" style="font-size:12px;max-width:260px">' + esc(t.fail_reason || '') + '</td>'
+        + '<td><div class="acts">'
+        + '<button class="ghost tiny" data-task="' + t.id + '">明細</button>'
+        + '<button class="ghost tiny" data-retry="' + t.id + '">重跑</button>'
+        + '</div></td></tr>';
+    }).join('');
+    var page = Math.floor(state.offset / state.limit) + 1;
+    var pages = Math.max(1, Math.ceil(state.total / state.limit));
+    $('view').innerHTML =
+      '<table><thead><tr><th></th><th>ID</th><th>時間</th><th>商家</th><th>平台</th><th>帳號</th>'
+      + '<th>收訊人</th><th>來源</th><th>重試</th><th>狀態</th><th>失敗原因</th><th>操作</th></tr></thead>'
+      + '<tbody>' + rows + '</tbody></table>'
+      + '<div class="bar" style="margin-top:12px;justify-content:flex-end">'
+      + '<span class="muted">共 ' + state.total + ' 筆 · 第 ' + page + '/' + pages + ' 頁</span>'
+      + '<button class="ghost tiny" id="pgPrev"' + (state.offset <= 0 ? ' disabled' : '') + '>上一頁</button>'
+      + '<button class="ghost tiny" id="pgNext"' + (state.offset + state.limit >= state.total ? ' disabled' : '')
+      + '>下一頁</button></div>';
+    var prev = $('pgPrev'), next = $('pgNext');
+    if (prev) prev.onclick = function () {
+      state.offset = Math.max(0, state.offset - state.limit); loadTasks(); };
+    if (next) next.onclick = function () { state.offset += state.limit; loadTasks(); };
+  }
+
+  function loadTasks() {
+    var qs = '/console/ops/tasks?status=' + encodeURIComponent(state.taskStatus)
+      + '&platform=' + encodeURIComponent(state.taskPlat)
+      + '&keyword=' + encodeURIComponent(state.taskKw)
+      + '&limit=' + state.limit + '&offset=' + state.offset;
+    return api(qs).then(function (res) {
+      if (!guard(res)) return;
+      state.tasks = res.data.items || [];
+      state.total = res.data.total || 0;
+      if (state.tab === 'tasks') viewTasks();
+    });
+  }
+
+  function pickedIds() {
+    var out = [];
+    Object.keys(state.picked).forEach(function (k) { if (state.picked[k]) out.push(parseInt(k, 10)); });
+    return out;
+  }
+
+  function openTask(id) {
+    state.openTaskId = id;
+    $('ovTaskTitle').textContent = '任務明細 #' + id;
+    ovErr('ovTaskErr', '');
+    $('ovTaskBody').innerHTML = '<div class="muted">載入中…</div>';
+    openOv('ovTask');
+    api('/console/ops/task?id=' + id).then(function (res) {
+      if (!guard(res)) { closeOv('ovTask'); return; }
+      renderTaskDetail(res.data.item, res.data.attempts, res.data.attempts_reachable);
+    });
+  }
+
+  function renderTaskDetail(t, attempts, reachable) {
+    if (!t) { $('ovTaskBody').innerHTML = '<div class="muted">找不到任務</div>'; return; }
+    var mc = t.message_content;
+    var html = '<div class="kv">'
+      + '<div class="k">狀態</div><div><span class="pill ' + (STATUS_CLASS[t.status] || '') + '">'
+      + esc(STATUS_LABEL[t.status] || t.status) + '</span></div>'
+      + '<div class="k">商家</div><div>' + esc(t.business_name || ('#' + t.business_id)) + '</div>'
+      + '<div class="k">平台</div><div>' + esc(PLATFORM_LABEL[t.platform] || t.platform) + '</div>'
+      + '<div class="k">帳號</div><div class="mono">' + esc(t.account_name || t.account_native_id || '—') + '</div>'
+      + '<div class="k">收訊人</div><div class="mono wrap">' + esc(t.end_user_sender_id) + '</div>'
+      + '<div class="k">來源</div><div>' + esc(t.source) + '</div>'
+      + '<div class="k">重試</div><div>' + esc(t.retry_count || 0) + ' / ' + esc(t.max_retry || 0)
+      + '（退避 ' + esc(t.backoff_seconds || 0) + 's）</div>'
+      + '<div class="k">失敗原因</div><div>' + esc(t.fail_reason || '—') + '</div>'
+      + '<div class="k">建立時間</div><div>' + esc(fmtTime(t.created_at)) + '</div>'
+      + '</div>';
+    html += '<div class="fld" style="margin-top:14px"><label>要送出的內容</label>'
+      + '<div style="padding:9px 11px;border:1px solid var(--border);border-radius:8px;background:#fafbfc">'
+      + mdImages(msgText(mc)) + '</div></div>';
+    html += '<div class="fld"><label>發送嘗試紀錄'
+      + infotip('紀錄在 Connector 庫。取不到（Connector 掛掉）時，逾時清理會保守地標成「待確認」，不會冒重複發送的風險。')
+      + '</label>';
+    if (reachable === false || attempts === null) {
+      html += '<div class="muted">連不上 Connector，暫時取不到發送紀錄。</div>';
+    } else if (!attempts || !attempts.length) {
+      html += '<div class="muted">尚無發送紀錄 —— 這筆應該還沒被送出。</div>';
+    } else {
+      html += attempts.map(function (a) {
+        return '<div class="attempt">'
+          + '<span class="pill ' + (a.status === 'sent' ? 'ok' : (a.status === 'failed' ? 'off' : 'warn')) + '">'
+          + esc(a.status) + '</span>'
+          + '<span class="mono">子項 ' + esc(a.sub_seq) + '</span>'
+          + '<span class="mono">' + esc(a.platform) + '</span>'
+          + '<span class="mono wrap">' + esc(a.platform_msg_id || a.target_id || '') + '</span>'
+          + '<span class="muted" style="font-size:12px">' + esc(a.error || '') + '</span>'
+          + '<span class="muted" style="margin-left:auto;font-size:12px">' + esc(fmtTime(a.attempted_at)) + '</span>'
+          + '</div>';
+      }).join('');
+    }
+    html += '</div>';
+    $('ovTaskBody').innerHTML = html;
+    var canRetry = t.status === 'failed' || t.status === 'uncertain';
+    var btn = $('btnTaskRetry');
+    btn.disabled = !canRetry;
+    btn.textContent = canRetry ? '重跑這筆' : '此狀態不可重跑';
+  }
+
+  function doRetry(ids) {
+    api('/console/ops/retry', 'POST', { ids: ids }).then(function (res) {
+      if (!guard(res)) return;
+      var okN = (res.data.retried || []).length;
+      var bad = res.data.skipped || [];
+      toast('已重跑 ' + okN + ' 筆' + (bad.length ? '，略過 ' + bad.length + ' 筆' : ''));
+      if (bad.length) ovErr('ovTaskErr', bad.map(function (b) {
+        return '#' + b.id + '：' + b.reason; }).join('；'));
+      state.picked = {};
+      closeOv('ovTask');
+      loadTasks(); loadDash();
+    });
+  }
+
+  // -------------------------------------------------- 分頁：重試參數
+  function viewConfig() {
+    $('pageCtl').innerHTML = '';
+    renderActs([{ label: '重新整理', cls: 'ghost', onClick: loadConfig }]);
+    if (!state.config.length) { $('view').innerHTML = '<div class="empty">載入中…</div>'; return; }
+    var groups = {};
+    state.config.forEach(function (c) {
+      var head = c.key.split('.')[0];
+      (groups[head] = groups[head] || []).push(c);
+    });
+    var html = Object.keys(groups).map(function (g) {
+      var rows = groups[g].map(function (c) {
+        var input;
+        if (c.type === 'bool') {
+          input = '<button class="switch ' + (c.value ? 'on' : 'off') + '" data-cfgbool="'
+            + esc(c.key) + '"><span class="dot2"></span>' + (c.value ? '開' : '關') + '</button>';
+        } else if (c.type === 'int' || c.type === 'float') {
+          input = '<input type="number" step="' + (c.type === 'float' ? '0.1' : '1')
+            + '" style="width:130px" data-cfgval="' + esc(c.key) + '" value="'
+            + esc(Array.isArray(c.value) ? c.value.join(',') : c.value) + '">';
+        } else if (c.type === 'list') {
+          input = '<input type="text" style="width:280px" data-cfgval="' + esc(c.key) + '" value="'
+            + esc((c.value || []).join(', ')) + '" placeholder="逗號分隔">';
+        } else {
+          input = '<input type="text" style="width:280px" data-cfgval="' + esc(c.key) + '" value="'
+            + esc(c.value) + '">';
+        }
+        return '<tr>'
+          + '<td class="mono">' + esc(c.key) + (c.is_default ? '' : ' <span class="pill warn">已改</span>') + '</td>'
+          + '<td>' + input + '</td>'
+          + '<td>' + esc(c.type) + '</td>'
+          + '<td><button class="ghost tiny" data-cfgsave="' + esc(c.key) + '">儲存</button></td>'
+          + '</tr>';
+      }).join('');
+      return '<div class="card"><h3>' + esc(CONFIG_GROUP[g] || g) + '</h3>'
+        + '<table><thead><tr><th>參數</th><th>值</th><th>型別</th><th></th></tr></thead>'
+        + '<tbody>' + rows + '</tbody></table></div>';
+    }).join('');
+    $('view').innerHTML = html;
+  }
+
+  function loadConfig() {
+    return api('/console/ops/config').then(function (res) {
+      if (!guard(res)) return;
+      state.config = res.data.items || [];
+      state.configFlat = res.data.flat || {};
+      if (state.tab === 'config') viewConfig();
+    });
+  }
+
+  function readCfgValue(key) {
+    var el = document.querySelector('[data-cfgval="' + key + '"]');
+    if (!el) return undefined;
+    return el.value;
+  }
+
+  function saveCfg(key, value) {
+    api('/console/ops/config', 'POST', { key: key, value: value }).then(function (res) {
+      if (!guard(res)) return;
+      toast('已更新 ' + key + ' = ' + JSON.stringify(res.data.value));
+      loadConfig();
+    });
+  }
+
+  // -------------------------------------------------- 分頁：告警
+  function viewAlerts() {
+    $('pageCtl').innerHTML = '';
+    renderActs([
+      { label: state.alertsOpenOnly ? '顯示全部' : '只看未確認', cls: 'ghost', onClick: function () {
+        state.alertsOpenOnly = !state.alertsOpenOnly; loadAlerts(); } },
+      { label: '全部確認', cls: 'ghost', onClick: function () {
+        api('/console/ops/alert/ack', 'POST', { all: true }).then(function (res) {
+          if (!guard(res)) return;
+          toast('已確認 ' + res.data.acked + ' 條');
+          loadAlerts(); loadDash();
+        });
+      } },
+      { label: '寄測試信', cls: 'primary', onClick: function () {
+        ovErr('ovMailErr', ''); openOv('ovMail'); } }
+    ]);
+    if (!state.alerts.length) {
+      $('view').innerHTML = '<div class="empty">' + (state.alertsOpenOnly ? '沒有未確認的告警。' : '沒有告警紀錄。') + '</div>';
+      return;
+    }
+    var rows = state.alerts.map(function (a) {
+      var detail = a.detail ? JSON.stringify(a.detail) : '';
+      return '<tr>'
+        + '<td class="num" style="white-space:nowrap">' + esc(fmtTime(a.last_seen_at)) + '</td>'
+        + '<td><span class="pill ' + (SEV_CLASS[a.severity] || '') + '">'
+        + esc(SEV_LABEL[a.severity] || a.severity) + '</span></td>'
+        + '<td class="mono">' + esc(a.alert_type) + '</td>'
+        + '<td>' + esc(a.title) + '</td>'
+        + '<td class="num">' + esc(a.count || 1) + '</td>'
+        + '<td><span class="pill ' + (a.acknowledged ? 'ok' : 'warn') + '">'
+        + (a.acknowledged ? '已確認' : '未確認') + '</span>'
+        + (a.notified_at ? ' <span class="muted" style="font-size:11px">已寄信</span>' : '') + '</td>'
+        + '<td class="muted mono" style="font-size:11.5px;max-width:240px;word-break:break-all">'
+        + esc(detail) + '</td>'
+        + '<td>' + (a.acknowledged ? '<span class="muted">—</span>'
+          : '<button class="ghost tiny" data-ack="' + a.id + '">確認</button>') + '</td>'
+        + '</tr>';
+    }).join('');
+    $('view').innerHTML =
+      '<table><thead><tr><th>最後出現</th><th>級別</th><th>類型</th><th>標題</th><th>次數</th>'
+      + '<th>狀態</th><th>明細</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  function loadAlerts() {
+    return api('/console/ops/alerts?only_open=' + (state.alertsOpenOnly ? 'true' : 'false') + '&limit=200')
+      .then(function (res) {
+        if (!guard(res)) return;
+        state.alerts = res.data.items || [];
+        if (state.tab === 'alerts') viewAlerts();
+      });
+  }
+
+  // -------------------------------------------------- 分頁：審計
+  function viewAudit() {
+    $('pageCtl').innerHTML = '';
+    renderActs([
+      { label: '重新整理', cls: 'ghost', onClick: loadAudit },
+      { label: state.auditAll ? '只看運維相關' : '顯示全部', cls: 'ghost', onClick: function () {
+        state.auditAll = !state.auditAll; loadAudit(); } }
+    ]);
+    if (!state.audit.length) { $('view').innerHTML = '<div class="empty">暫無紀錄。</div>'; return; }
+    var rows = state.audit.map(function (a) {
+      return '<tr>'
+        + '<td class="num" style="white-space:nowrap">' + esc(fmtTime(a.operate_at)) + '</td>'
+        + '<td>' + esc(a.staff_name || '—') + '</td>'
+        + '<td><span class="tag">' + esc(a.operate_type) + '</span></td>'
+        + '<td class="num">' + (a.business_id === null || a.business_id === undefined ? '—' : a.business_id) + '</td>'
+        + '<td class="muted" style="font-size:12px;word-break:break-all">'
+        + esc(a.payload ? JSON.stringify(a.payload) : '') + '</td></tr>';
+    }).join('');
+    $('view').innerHTML =
+      '<table><thead><tr><th>時間</th><th>操作人</th><th>類型</th><th>商家</th><th>明細</th></tr></thead>'
+      + '<tbody>' + rows + '</tbody></table>'
+      + '<div class="muted" style="font-size:12.5px;margin-top:10px">'
+      + (state.auditAll ? '顯示全部操作類型。' : '只顯示運維相關類型（重跑 / 參數變更 / 告警處置）。')
+      + '</div>';
+  }
+
+  function loadAudit() {
+    return api('/console/ops/audit?limit=200' + (state.auditAll ? '&all=true' : ''))
+      .then(function (res) {
+        if (!guard(res)) return;
+        state.audit = res.data.items || [];
+        if (state.tab === 'audit') viewAudit();
+      });
+  }
+
+  // -------------------------------------------------- 渲染 / 載入
+  function render() {
+    renderNav();
+    renderActs([]);
+    if (state.tab === 'dash') { viewDash(); }
+    else if (state.tab === 'tasks') { viewTasks(); loadTasks(); }
+    else if (state.tab === 'config') { viewConfig(); loadConfig(); }
+    else if (state.tab === 'alerts') { viewAlerts(); loadAlerts(); }
+    else { viewAudit(); loadAudit(); }
+  }
+
+  function loadMe() {
+    return api('/api/auth/me').then(function (res) {
+      if (res.status !== 200 || !res.data.ok) { window.location.href = '/login'; return false; }
+      state.me = res.data.staff;
+      state.csrf = res.data.csrf_token || '';
+      var nm = state.me.staff_name || '';
+      $('ava').textContent = nm ? nm.slice(0, 1) : '–';
+      $('meName').textContent = nm;
+      $('meRole').textContent = (state.me.roles || []).map(function (r) {
+        return ROLE_LABEL[r] || r; }).join(' · ');
+      if (window.TopUser) {
+        window.TopUser.init({ me: state.me, onError: function (m) { toast(m, true); } });
+      }
+      return true;
+    });
+  }
+
+  // -------------------------------------------------- 事件委派
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (t && t.classList && t.classList.contains('pk')) {
+      var id = parseInt(t.value, 10);
+      state.picked[id] = t.checked;
+    }
+  });
+
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !t.getAttribute) return;
+
+    var taskId = t.getAttribute('data-task');
+    if (taskId) { openTask(parseInt(taskId, 10)); return; }
+    var rid = t.getAttribute('data-retry');
+    if (rid) { doRetry([parseInt(rid, 10)]); return; }
+    var ackId = t.getAttribute('data-ack');
+    if (ackId) {
+      api('/console/ops/alert/ack', 'POST', { id: parseInt(ackId, 10) }).then(function (res) {
+        if (!guard(res)) return;
+        toast('已確認'); loadAlerts(); loadDash();
+      });
+      return;
+    }
+    var cfgBool = t.getAttribute('data-cfgbool');
+    if (cfgBool) {
+      var cur = state.config.filter(function (c) { return c.key === cfgBool; })[0];
+      saveCfg(cfgBool, !(cur && cur.value));
+      return;
+    }
+    var cfgSave = t.getAttribute('data-cfgsave');
+    if (cfgSave) { saveCfg(cfgSave, readCfgValue(cfgSave)); return; }
+  });
+
+  $('btnTaskRetry').onclick = function () {
+    if (state.openTaskId) doRetry([state.openTaskId]);
+  };
+
+  $('mailSend').onclick = function () {
+    var raw = $('mailTo').value.trim();
+    var to = raw ? raw.split(',').map(function (s) { return s.trim(); }).filter(Boolean) : null;
+    api('/console/ops/mail/test', 'POST', to ? { to: to } : {}).then(function (res) {
+      if (!guard(res)) { ovErr('ovMailErr', res.data.error || '寄送失敗'); return; }
+      closeOv('ovMail');
+      toast('測試信已寄給 ' + (res.data.to || []).join(', '));
+    });
+  };
+
+  $('btnLogout').onclick = function () {
+    api('/api/auth/logout', 'POST', {}).then(function () { window.location.href = '/login'; });
+  };
+
+  // -------------------------------------------------- 啟動
+  loadMe().then(function (ok) {
+    if (!ok) return;
+    return loadDash().then(render);
+  });
+})();
+</script>
+</body>
+</html>

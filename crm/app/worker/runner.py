@@ -1,11 +1,12 @@
-"""CRM 背景迴圈 —— AI 入站佇列消費 + 逾時清理 + session 清理。
+"""CRM 背景迴圈 —— AI 入站佇列消費 + 逾時清理 + session 清理 + 告警巡檢。
 
 在 FastAPI lifespan 啟動；`config.WORKER_ENABLED=false` 可關掉（自檢時避免干擾）。
 
-兩條迴圈各自獨立、互不阻塞：
+三條迴圈各自獨立、互不阻塞：
 * `_ai_loop()`    —— 每 `AI_WORKER_POLL_SECONDS`（預設 1s）消費一輪 `crm_ai_inbound_queue`
 * `_sweep_loop()` —— 每 `TIMEOUT_SWEEP_SECONDS`（預設 60s）逾時清理 + session 清理
                      + 回收卡住的 AI 佇列項
+* `_alert_loop()` —— 每 `ALERT_SWEEP_SECONDS`（預設 300s）大量失敗偵測 + 告警郵件
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import asyncio
 import logging
 
 from app.core import config
+from app.ops import alerting
 from app.worker import ai_queue
 from app.worker import sweep
 
@@ -20,6 +22,7 @@ log = logging.getLogger("crm")
 
 _ai_task: asyncio.Task | None = None
 _sweep_task: asyncio.Task | None = None
+_alert_task: asyncio.Task | None = None
 
 
 async def _ai_loop() -> None:
@@ -51,8 +54,26 @@ async def _sweep_loop() -> None:
         await asyncio.sleep(interval)
 
 
+async def _alert_loop() -> None:
+    """告警巡檢 —— 偵測大量失敗 + 寄未確認告警的 digest。
+
+    ★ 週期刻意比其他迴圈長（預設 5 分鐘）：這是「通知」，不是即時路徑。
+    """
+    interval = float(config.ALERT_SWEEP_SECONDS or 300)
+    while True:
+        try:
+            stats = await asyncio.to_thread(alerting.sweep_once)
+            if stats.get("mass_failure") or stats.get("notified"):
+                log.info("告警巡檢：%s", stats)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 —— 單輪失敗不能弄死迴圈
+            log.warning("告警巡檢回合失敗: %s", e)
+        await asyncio.sleep(interval)
+
+
 def start() -> None:
-    global _ai_task, _sweep_task
+    global _ai_task, _sweep_task, _alert_task
     if not config.WORKER_ENABLED:
         log.info("背景 worker 已停用（WORKER_ENABLED=false）")
         return
@@ -62,11 +83,14 @@ def start() -> None:
     if not (_sweep_task and not _sweep_task.done()):
         _sweep_task = asyncio.create_task(_sweep_loop())
         log.info("背景清理啟動：每 %.0fs 一輪", float(config.TIMEOUT_SWEEP_SECONDS or 60))
+    if not (_alert_task and not _alert_task.done()):
+        _alert_task = asyncio.create_task(_alert_loop())
+        log.info("告警巡檢啟動：每 %.0fs 一輪", float(config.ALERT_SWEEP_SECONDS or 300))
 
 
 async def stop() -> None:
-    global _ai_task, _sweep_task
-    for task in (_ai_task, _sweep_task):
+    global _ai_task, _sweep_task, _alert_task
+    for task in (_ai_task, _sweep_task, _alert_task):
         if task and not task.done():
             task.cancel()
             try:
@@ -75,3 +99,4 @@ async def stop() -> None:
                 pass
     _ai_task = None
     _sweep_task = None
+    _alert_task = None

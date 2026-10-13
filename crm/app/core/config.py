@@ -100,6 +100,18 @@ WORKER_ENABLED = _get("WORKER_ENABLED", "true").lower() in ("1", "true", "yes", 
 AI_WORKER_POLL_SECONDS = float(_get("AI_WORKER_POLL_SECONDS", "1") or 1)
 TIMEOUT_SWEEP_SECONDS = float(_get("TIMEOUT_SWEEP_SECONDS", "60") or 60)
 
+# ===== 告警郵件（設計案 §15.3；沒設 SMTP_HOST 就整組 no-op，只記 log）=====
+# ⚠️ 郵件是「通知」不是「保證」——寄不出去不能影響任何業務流程，所以全部包在
+#    `alerting.py` 的 try 裡，失敗只回 False。
+ALERT_EMAIL_ENABLED = _get("ALERT_EMAIL_ENABLED", "").lower() in ("1", "true", "yes", "on")
+SMTP_HOST = _get("SMTP_HOST", "")
+SMTP_PORT = int(_get("SMTP_PORT", "587") or 587)
+SMTP_USER = _get("SMTP_USER", "")
+SMTP_PASSWORD = _get("SMTP_PASSWORD", "")
+SMTP_FROM = _get("SMTP_FROM", "")
+SMTP_TLS = _get("SMTP_TLS", "true").lower() in ("1", "true", "yes", "on")
+ALERT_SWEEP_SECONDS = float(_get("ALERT_SWEEP_SECONDS", "300") or 300)
+
 # ===== Redis（第一版不裝：任務派發靠 Connector 輪詢 claim API，PG 行鎖保證不重派）=====
 REDIS_URL = _get("REDIS_URL", "")
 
