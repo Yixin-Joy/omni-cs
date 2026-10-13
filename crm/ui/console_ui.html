@@ -310,6 +310,13 @@
     });
     return out.replace(/\n/g, '<br>');
   }
+  // 清單／表格的預覽欄用：圖塞不進一行，但也**不能**把 `![題注](/media/x.png)`
+  // 原始字串露出來 —— 先換成「[圖]」再截斷。
+  function mdPreview(s, n) {
+    var t = String(s === null || s === undefined ? '' : s)
+      .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '[圖]');
+    return mdImages(t.slice(0, n));
+  }
 
   var toastTimer = null;
   function toast(msg, bad) {
@@ -490,7 +497,7 @@
           + '<span class="nm">' + esc(nm) + '</span>'
           + '<span class="tm">' + esc(fmtTime(c.last_ts)) + '</span></div>'
           + '<div class="l2">' + (c.direction === 'outbound' || c.direction === 'out' ? '我：' : '')
-          + esc((c.text || '').slice(0, 40)) + '</div></div>';
+          + mdPreview(c.text, 40) + '</div></div>';
       });
     }
     list += '</div>';
@@ -517,7 +524,7 @@
           return '<div class="row"><span class="pill ' + (TIER_CLASS[g.tier] || '') + '">'
             + esc(TIER_LABEL[g.tier] || g.tier) + '</span> '
             + (g.score !== null && g.score !== undefined ? '<span class="muted">分數 ' + esc(g.score) + '</span> ' : '')
-            + esc(g.detail || g.answer || '') + '</div>';
+            + mdImages(g.detail || g.answer || '') + '</div>';
         }).join('') + '</div>';
       }
       thread += '<div class="msgs" id="msgs">' + state.thread.map(function (m) {
@@ -993,7 +1000,7 @@
           + '<td>' + esc(PLATFORM_LABEL[g.platform] || g.platform || '') + '</td>'
           + '<td>' + esc((g.question || '').slice(0, 30)) + '</td>'
           + '<td class="muted">' + esc(g.score === null || g.score === undefined ? '' : g.score) + '</td>'
-          + '<td>' + esc((g.answer || '').slice(0, 40)) + '</td></tr>';
+          + '<td>' + mdPreview(g.answer, 40) + '</td></tr>';
       });
       h += '</tbody></table>';
     }

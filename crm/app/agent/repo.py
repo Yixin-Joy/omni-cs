@@ -117,10 +117,14 @@ def create_manual_reply(sess: dict, *, business_id: int, platform: str, bp_accou
 
 def conversation_logs(business_id: int, platform: str, sender_id: str,
                       limit: int = 20) -> list[dict]:
-    """該會話的自動回覆紀錄（工作台在對話旁顯示「這句 AI 怎麼處理的」）。"""
+    """該會話的自動回覆紀錄（工作台在對話旁顯示「這句 AI 怎麼處理的」）。
+
+    ⚠️ `score` 一定要選出來 —— 前端 `renderConv()` 的 AI 留痕會顯示它
+    （`前端渲染自檢` 抓到的：少了這一欄，那段判斷式永遠不成立，變成死碼）。
+    """
     with ro() as cur:
         cur.execute(
-            "SELECT id, tier, scope, question, answer, send_status, detail,"
+            "SELECT id, tier, scope, question, answer, score, send_status, detail,"
             "       has_matched_rows, created_at"
             "  FROM (SELECT *, (matched_rows IS NOT NULL) AS has_matched_rows"
             "          FROM autoreply_log"
