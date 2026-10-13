@@ -229,7 +229,8 @@ def main():
         r = c3.get("/api/admin/businesses")
         check(r.status_code == 403, f"ops 身分不能訪問管理端點（實得 {r.status_code}）")
         r = c3.get("/")
-        check(r.status_code == 200 and "正在開發中" in r.text, "ops 身分首頁是運維佔位頁")
+        check(r.status_code == 200 and 'id="ovTask"' in r.text,
+              "ops 身分首頁是運維頁（ops.html）")
         r = c3.get("/admin")
         check(r.status_code == 302 and r.headers.get("location") == "/", "ops 身分訪問 /admin → 302 回首頁")
 
@@ -284,7 +285,8 @@ def main():
         r = c5.get("/agent")
         check(r.status_code == 200, f"客服身分可進 /agent（實得 {r.status_code}）")
         r = c5.get("/")
-        check(r.status_code == 200 and "正在開發中" in r.text, "客服身分首頁顯示佔位頁")
+        check(r.status_code == 200 and 'id="ovPost"' in r.text,
+              "客服身分首頁顯示工作台（console_ui.html）")
         r = c5.get("/admin")
         check(r.status_code == 302 and r.headers.get("location") == "/",
               "客服身分訪問 /admin → 302 回首頁（切換後不再有管理權限）")
@@ -305,10 +307,10 @@ def main():
         r = c2.get("/api/admin/businesses")
         check(r.status_code == 403, f"agent 訪問管理端點 → 403（實得 {r.status_code}）")
 
-        # agent 應該拿到佔位頁，而不是管理員後台（admin.html 的特徵節點）
+        # agent 應該拿到客服工作台，而不是管理員後台（admin.html 的特徵節點）
         r = c2.get("/")
-        check(r.status_code == 200 and "正在開發中" in r.text and 'id="ovBiz"' not in r.text,
-              "agent 首頁是佔位頁，不是管理員後台")
+        check(r.status_code == 200 and 'id="ovPost"' in r.text and 'id="ovBiz"' not in r.text,
+              "agent 首頁是客服工作台，不是管理員後台")
 
         # ---------------- 權限即時生效 / 踢下線 ----------------
         print("\n[7] 角色即時生效與踢下線")
