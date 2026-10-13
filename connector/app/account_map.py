@@ -15,6 +15,23 @@ log = logging.getLogger("connector")
 
 _SYNC_KEY = "account_map"
 
+# 每個平台的業務憑證鍵（存進 `credential` JSONB 的欄位名）。
+# ★ 握手 token（WECHAT_TOKEN / *_VERIFY_TOKEN / META_APP_SECRET）**不進 DB** ——
+#   它們是「Connector 實例 vs 平台」的驗證身分，不是「商家 vs 平台」的業務憑證（見 MIGRATION_PLAN §3）。
+#   進 DB 的只有「真正按商家區分」的憑證（appsecret / access_token / aes_key / page id 等）。
+CREDENTIAL_KEYS = {
+    "wechat": ("appid", "appsecret", "encoding_aes_key"),
+    "whatsapp": ("access_token", "phone_number_id"),
+    "fb": ("page_id", "page_access_token"),
+    "ig": ("ig_user_id", "ig_access_token"),
+}
+
+
+def credential_of(platform: str, native_id: str) -> dict:
+    """回傳某帳號的業務憑證（可能為空 dict）。收發時用，取代讀 config。"""
+    acc = lookup(platform, native_id)
+    return (acc or {}).get("credential") or {}
+
 
 def lookup(platform: str, native_id: str) -> dict | None:
     """查單一帳號（收訊時用）。沒命中代表「未註冊」→ 呼叫端應丟棄訊息並上報告警。"""
@@ -22,7 +39,8 @@ def lookup(platform: str, native_id: str) -> dict | None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT platform, platform_business_account_id, business_id, bp_account_id, enabled"
+                "SELECT platform, platform_business_account_id, business_id, bp_account_id,"
+                "       enabled, credential"
                 "  FROM connector_account_map"
                 " WHERE platform = %s AND platform_business_account_id = %s",
                 (platform, native_id),
@@ -36,6 +54,7 @@ def lookup(platform: str, native_id: str) -> dict | None:
                 "business_id": row[2],
                 "bp_account_id": row[3],
                 "enabled": bool(row[4]),
+                "credential": row[5] or {},
             }
     finally:
         conn.close()
@@ -51,8 +70,10 @@ def upsert_many(items: list[dict]) -> int:
         native = (it.get("platform_business_account_id") or "").strip()
         if not plat or not native:
             continue
+        cred = it.get("credential")
         rows.append((plat, native, it.get("business_id"), it.get("bp_account_id"),
-                     bool(it.get("enabled", True))))
+                     bool(it.get("enabled", True)),
+                     json.dumps(cred, ensure_ascii=False) if cred else None))
     if not rows:
         return 0
     conn = db.connect()
@@ -61,11 +82,12 @@ def upsert_many(items: list[dict]) -> int:
             cur.executemany(
                 "INSERT INTO connector_account_map"
                 " (platform, platform_business_account_id, business_id, bp_account_id,"
-                "  enabled, synced_at)"
-                " VALUES (%s, %s, %s, %s, %s, now())"
+                "  enabled, credential, synced_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s::jsonb, now())"
                 " ON CONFLICT (platform, platform_business_account_id) DO UPDATE SET"
                 "  business_id = EXCLUDED.business_id, bp_account_id = EXCLUDED.bp_account_id,"
-                "  enabled = EXCLUDED.enabled, synced_at = now()",
+                "  enabled = EXCLUDED.enabled, credential = EXCLUDED.credential,"
+                "  synced_at = now()",
                 rows,
             )
         conn.commit()

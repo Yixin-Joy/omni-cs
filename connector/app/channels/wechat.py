@@ -23,22 +23,27 @@ _TEMP_CODES = {-1, 45009}
 # 這些代表「已發出但我們不知道結果」→ uncertain
 _UNCERTAIN_CODES: set[int] = set()
 
-_token_cache: dict = {"token": "", "expires_at": 0.0}
+_token_cache: dict = {"key": "", "token": "", "expires_at": 0.0}
 
 
-def _get_access_token() -> str:
-    if _token_cache["token"] and time.time() < _token_cache["expires_at"]:
+def _get_access_token(credential: dict) -> str:
+    """用商家的 appid/appsecret 換 access_token（多租戶：憑證從 DB 來，不讀 config）。"""
+    appid = (credential or {}).get("appid") or config.WECHAT_APPID
+    secret = (credential or {}).get("appsecret") or config.WECHAT_APPSECRET
+    cache_key = f"{appid}:{secret}"
+    if _token_cache.get("key") == cache_key and time.time() < _token_cache.get("expires_at", 0.0):
         return _token_cache["token"]
     resp = httpx.get(
         f"{API_BASE}/token",
         params={"grant_type": "client_credential",
-                "appid": config.WECHAT_APPID, "secret": config.WECHAT_APPSECRET},
+                "appid": appid, "secret": secret},
         timeout=15,
     )
     data = resp.json()
     token = data.get("access_token", "")
     if not token:
         raise RuntimeError(f"取得微信 access_token 失敗: {data}")
+    _token_cache["key"] = cache_key
     _token_cache["token"] = token
     _token_cache["expires_at"] = time.time() + data.get("expires_in", 7200) - 300
     return token
@@ -55,8 +60,8 @@ def _classify(status: int, errcode: int | None, body: str) -> SendResult:
     return SendResult(ok=False, error=f"微信拒絕（errcode={errcode}）: {body[:200]}")
 
 
-def _custom_send(payload: dict) -> SendResult:
-    token = _get_access_token()
+def _custom_send(payload: dict, credential: dict) -> SendResult:
+    token = _get_access_token(credential)
     resp = httpx.post(f"{API_BASE}/message/custom/send",
                       params={"access_token": token}, json=payload, timeout=15)
     try:
@@ -66,12 +71,12 @@ def _custom_send(payload: dict) -> SendResult:
     return _classify(resp.status_code, errcode, resp.text)
 
 
-def _do_send_text(openid: str, content: str) -> SendResult:
-    return _custom_send({"touser": openid, "msgtype": "text", "text": {"content": content}})
+def _do_send_text(openid: str, content: str, credential: dict) -> SendResult:
+    return _custom_send({"touser": openid, "msgtype": "text", "text": {"content": content}}, credential)
 
 
-def _do_send_image(openid: str, local_path: str) -> SendResult:
-    token = _get_access_token()
+def _do_send_image(openid: str, local_path: str, credential: dict) -> SendResult:
+    token = _get_access_token(credential)
     with open(local_path, "rb") as f:
         resp = httpx.post(
             f"{API_BASE}/media/upload",
@@ -88,12 +93,12 @@ def _do_send_image(openid: str, local_path: str) -> SendResult:
         media_id, errcode = "", -1
     if not media_id:
         return _classify(200, errcode, resp.text)
-    return _custom_send({"touser": openid, "msgtype": "image", "image": {"media_id": media_id}})
+    return _custom_send({"touser": openid, "msgtype": "image", "image": {"media_id": media_id}}, credential)
 
 
-async def send_text(target_id: str, text: str) -> SendResult:
+async def send_text(target_id: str, text: str, credential: dict | None = None) -> SendResult:
     try:
-        return await asyncio.to_thread(_do_send_text, target_id, text)
+        return await asyncio.to_thread(_do_send_text, target_id, text, credential or {})
     except httpx.TimeoutException:
         # 送出階段逾時 → 可能已發出
         return SendResult(ok=False, error="微信傳送逾時", uncertain=True)
@@ -102,10 +107,10 @@ async def send_text(target_id: str, text: str) -> SendResult:
 
 
 async def send_asset(target_id: str, media_path: str, caption: str = "",
-                     filename: str = "") -> SendResult:
+                     filename: str = "", credential: dict | None = None) -> SendResult:
     # 微信客服消息不支援圖片 caption（文字要另發一條）
     try:
-        return await asyncio.to_thread(_do_send_image, target_id, media_path)
+        return await asyncio.to_thread(_do_send_image, target_id, media_path, credential or {})
     except httpx.TimeoutException:
         return SendResult(ok=False, error="微信傳圖逾時", uncertain=True)
     except Exception as e:  # noqa: BLE001

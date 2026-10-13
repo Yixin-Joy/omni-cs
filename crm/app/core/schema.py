@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS crm_business_platform_account (
     display_name                  text,
     ai_auto_reply_enabled         boolean DEFAULT true,
     enabled                       boolean DEFAULT true,
+    -- 平台憑證（多租戶）—— admin 後台填，Connector 透過帳號映射同步取用。
+    -- JSONB：不同平台欄位不同，如 wechat={appid,appsecret,token,encoding_aes_key}、
+    -- whatsapp={access_token,phone_number_id,verify_token}、fb/ig={page_id,access_token,...}。
+    credential                    jsonb,
     created_at                    timestamptz DEFAULT now(),
     UNIQUE (platform, platform_business_account_id)
 );
@@ -384,6 +388,8 @@ MIGRATIONS = (
     "ALTER TABLE crm_session ADD COLUMN IF NOT EXISTS active_role text",
     # 帳號映射增量同步用（階段二；Connector 的 since 拉取靠這欄判斷變更）
     "ALTER TABLE crm_business_platform_account ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now()",
+    # 平台憑證進 DB（多租戶）：Connector 收發從帳號映射快取讀憑證，不再讀 .env
+    "ALTER TABLE crm_business_platform_account ADD COLUMN IF NOT EXISTS credential jsonb",
     # 既有 session 若沒有 active_role，回填為其角色清單的第一個
     "UPDATE crm_session SET active_role = roles[1]"
     " WHERE active_role IS NULL AND roles IS NOT NULL AND array_length(roles, 1) >= 1",

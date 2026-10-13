@@ -126,6 +126,31 @@ AUTOREPLY_SCOPES = (
 CHANNEL_LABELS = {"wechat": "微信", "whatsapp": "WhatsApp", "ig": "Instagram", "fb": "Facebook"}
 SCOPE_LABELS = {"dm": "私訊", "comment": "貼文留言"}
 
+# 平台憑證欄位（進 crm_business_platform_account.credential JSONB）。
+# ★ 握手 token（WECHAT_TOKEN / *_VERIFY_TOKEN / META_APP_SECRET）**不進 DB** ——
+#   它們是「Connector 實例 vs 平台」的驗證身分，不是「商家 vs 平台」的業務憑證。
+#   進 DB 的只有「真正按商家區分」的憑證。與 Connector 的 account_map.CREDENTIAL_KEYS 對齊。
+# 值 = [(鍵, 中文標籤, 是否敏感(用密碼框/不顯示明碼)), ...]
+CREDENTIAL_FIELDS = {
+    "wechat": [
+        ("appid", "AppID", False),
+        ("appsecret", "AppSecret", True),
+        ("encoding_aes_key", "EncodingAESKey（安全模式解密）", True),
+    ],
+    "whatsapp": [
+        ("access_token", "Access Token（永久）", True),
+        ("phone_number_id", "Phone Number ID", False),
+    ],
+    "fb": [
+        ("page_id", "粉專 Page ID", False),
+        ("page_access_token", "Page Access Token", True),
+    ],
+    "ig": [
+        ("ig_user_id", "IG 專業帳號 ID", False),
+        ("ig_access_token", "IG Access Token（IGAA…）", True),
+    ],
+}
+
 
 def scope_label(channel: str, scope: str) -> str:
     return f"{CHANNEL_LABELS.get(channel, channel)} {SCOPE_LABELS.get(scope, scope)}"

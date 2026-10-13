@@ -11,6 +11,7 @@ import logging
 import os
 
 from app import media
+from app import account_map
 from app.channels import base
 from app.core import db
 from app.worker import callback, client
@@ -81,9 +82,10 @@ def _record_attempt(task_id: int, sub_seq: int, platform: str, target: str,
 
 # ---------------------------------------------------------------- 發送
 
-async def _send_one(platform: str, target: str, item: dict) -> base.SendResult:
+async def _send_one(platform: str, target: str, item: dict,
+                    credential: dict | None = None) -> base.SendResult:
     if item["kind"] == "text":
-        return await base.send_text(platform, target, item["text"])
+        return await base.send_text(platform, target, item["text"], credential)
 
     key = item.get("media_key") or ""
     try:
@@ -92,7 +94,7 @@ async def _send_one(platform: str, target: str, item: dict) -> base.SendResult:
         # 媒體不存在 = 永久錯誤（不會因為重試而變好）
         return base.SendResult(ok=False, error=f"媒體不存在或不合法（{key}）: {e}")
     return await base.send_asset(platform, target, path, item.get("caption") or "",
-                                 filename=os.path.basename(path))
+                                 filename=os.path.basename(path), credential=credential)
 
 
 # ---------------------------------------------------------------- 出站訊息落地
@@ -165,6 +167,10 @@ async def process_task(task: dict) -> str:
     task_id = task["task_id"]
     platform = task.get("platform") or ""
     target = task.get("end_user_sender_id") or ""
+    native_id = task.get("platform_business_account_id") or ""
+
+    # ★ 多租戶：發送憑證從帳號映射快取讀（真相在 CRM），不再讀 config/.env
+    cred = account_map.credential_of(platform, native_id) if native_id else {}
 
     items = build_sub_items(task.get("message_content"))
     if not items:
@@ -177,7 +183,7 @@ async def process_task(task: dict) -> str:
     for item in items:
         if item["sub_seq"] in done:
             continue                      # ★ 冪等：已成功的不重發
-        res = await _send_one(platform, target, item)
+        res = await _send_one(platform, target, item, cred)
         _record_attempt(task_id, item["sub_seq"], platform, target, res)
         if not res.ok:
             failure = res

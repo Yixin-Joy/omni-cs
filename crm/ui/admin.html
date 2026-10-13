@@ -148,6 +148,11 @@
     width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
     background: #fafbfc; font-size: 13.5px; outline: none; color: var(--text); font-family: inherit; }
   .fld input:focus, .fld select:focus { border-color: var(--accent); background: #fff; }
+  .cred-box { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+  .cred-fld { margin-bottom: 10px; }
+  .cred-fld > label { font-size: 12px; font-weight: 600; color: var(--text-soft); display: block; margin-bottom: 4px; }
+  .cred-fld input { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+    background: #fafbfc; font-size: 13px; outline: none; color: var(--text); font-family: inherit; }
   .chk { display: inline-flex; align-items: center; gap: 7px; margin: 0 14px 8px 0; cursor: pointer;
     font-size: 13px; font-weight: 600; }
   .chk input { width: 15px; height: 15px; accent-color: var(--accent); }
@@ -234,10 +239,14 @@
       <div class="fld"><label>平台</label><select id="acctPlatform"></select></div>
       <div class="fld"><label>平台原生帳號 ID</label><input type="text" id="acctNative" placeholder="例：1362588056935295"></div>
       <div class="fld"><label>顯示名稱</label><input type="text" id="acctDisplay" placeholder="選填，例：客服主號"></div>
+      <div class="fld"><label>平台憑證
+        <span class="infotip" data-tip="按商家區分的業務憑證（AppSecret / Access Token 等）。憑證存 CRM 資料庫，Connector 收發時自動取用；握手 token（驗證用）仍留在 .env。留空＝先不填，之後可再補。">i</span></label>
+        <div id="acctCredBox" class="cred-box"></div>
+      </div>
       <div class="acts" style="justify-content:flex-start"><button class="primary" id="acctAdd">新增綁定</button></div>
     </div>
     <table>
-      <thead><tr><th>平台</th><th>原生 ID</th><th>顯示名稱</th><th>AI 回覆</th><th>狀態</th></tr></thead>
+      <thead><tr><th>平台</th><th>原生 ID</th><th>顯示名稱</th><th>憑證</th><th>AI 回覆</th><th>狀態</th><th></th></tr></thead>
       <tbody id="acctRows"></tbody>
     </table>
     <div class="acts"><button class="ghost" data-close>關閉</button></div>
@@ -305,6 +314,26 @@
   'use strict';
 
   var PLATFORM_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
+  // 平台憑證欄位（與後端 config.CREDENTIAL_FIELDS 對齊）：[鍵, 標籤, 是否敏感]
+  var CREDENTIAL_FIELDS = {
+    wechat: [
+      ['appid', 'AppID', false],
+      ['appsecret', 'AppSecret', true],
+      ['encoding_aes_key', 'EncodingAESKey（安全模式解密）', true]
+    ],
+    whatsapp: [
+      ['access_token', 'Access Token（永久）', true],
+      ['phone_number_id', 'Phone Number ID', false]
+    ],
+    fb: [
+      ['page_id', '粉專 Page ID', false],
+      ['page_access_token', 'Page Access Token', true]
+    ],
+    ig: [
+      ['ig_user_id', 'IG 專業帳號 ID', false],
+      ['ig_access_token', 'IG Access Token（IGAA…）', true]
+    ]
+  };
   var ROLE_LABEL = { admin: '管理員', agent: '客服坐席', ops: '運維' };
   var SCOPES = [
     { platform: 'wechat', scope: 'dm', label: '微信 私訊' },
@@ -795,6 +824,31 @@
   };
 
   // ---- 平台帳號彈窗
+  function renderCredFields(platform, existing) {
+    var fields = CREDENTIAL_FIELDS[platform] || [];
+    $('acctCredBox').innerHTML = fields.length
+      ? fields.map(function (f) {
+          var key = f[0], label = f[1], sensitive = f[2];
+          var val = (existing && existing[key]) ? existing[key] : '';
+          return '<div class="fld cred-fld">'
+            + '<label>' + esc(label) + '</label>'
+            + '<input type="' + (sensitive ? 'password' : 'text') + '" data-cred="' + key + '"'
+            + ' value="' + esc(val) + '" placeholder="' + (val ? '已填（留空＝不改）' : '選填') + '">'
+            + '</div>';
+        }).join('')
+      : '<div class="muted" style="font-size:12px">此平台無需額外憑證。</div>';
+  }
+
+  function collectCred() {
+    var out = {};
+    var anyFilled = false;
+    $('acctCredBox').querySelectorAll('input[data-cred]').forEach(function (inp) {
+      var v = inp.value.trim();
+      if (v) { out[inp.getAttribute('data-cred')] = v; anyFilled = true; }
+    });
+    return anyFilled ? out : null;
+  }
+
   function openAcct(bizId) {
     state.acctBizId = bizId;
     var b = findById(state.businesses, bizId);
@@ -804,9 +858,13 @@
     }).join('');
     $('acctNative').value = '';
     $('acctDisplay').value = '';
+    renderCredFields($('acctPlatform').value, null);
     ovErr('ovAcctErr', '');
     loadAcct().then(function () { openOv('ovAcct'); });
   }
+
+  // 切換平台 → 重渲染憑證欄位
+  $('acctPlatform').onchange = function () { renderCredFields(this.value, null); };
 
   function renderAcctRows(items) {
     $('acctRows').innerHTML = items.length ? items.map(function (a) {
@@ -814,12 +872,16 @@
         + '<td>' + esc(PLATFORM_LABEL[a.platform] || a.platform) + '</td>'
         + '<td class="muted" style="font-size:12px;word-break:break-all">' + esc(a.platform_business_account_id) + '</td>'
         + '<td>' + esc(a.display_name || '—') + '</td>'
+        + '<td>' + (a.has_credential
+            ? '<span class="pill ok">已填</span>'
+            : '<span class="pill">未填</span>') + '</td>'
         + '<td><button class="switch ' + (a.ai_auto_reply_enabled ? 'on' : 'off') + '" data-acct-ai="' + a.id + '">'
         + '<span class="dot2"></span>' + (a.ai_auto_reply_enabled ? '開' : '關') + '</button></td>'
         + '<td><button class="switch ' + (a.enabled ? 'on' : 'off') + '" data-acct-en="' + a.id + '">'
         + '<span class="dot2"></span>' + (a.enabled ? '啟用' : '停用') + '</button></td>'
+        + '<td><button class="ghost tiny" data-acct-cred="' + a.id + '">憑證</button></td>'
         + '</tr>';
-    }).join('') : '<tr><td colspan="5" class="muted">尚未綁定平台帳號。</td></tr>';
+    }).join('') : '<tr><td colspan="7" class="muted">尚未綁定平台帳號。</td></tr>';
   }
 
   function loadAcct() {
@@ -831,29 +893,77 @@
   }
 
   $('acctAdd').onclick = function () {
+    // 編輯憑證模式：走 update，只更新 credential
+    if ($('acctAdd').dataset.editCredId) {
+      var editId = $('acctAdd').dataset.editCredId;
+      var row = findAcct(parseInt(editId, 10));
+      if (!row) return;
+      api('/api/admin/accounts/update', 'POST', {
+        id: row.id, display_name: row.display_name,
+        ai_auto_reply_enabled: row.ai_auto_reply_enabled, enabled: row.enabled,
+        credential: collectCred()
+      }).then(function (res) {
+        if (!guard(res)) { ovErr('ovAcctErr', res.data.error || '儲存失敗'); return; }
+        resetAcctForm();
+        toast('憑證已儲存');
+        loadAcct();
+      });
+      return;
+    }
+
     var native = $('acctNative').value.trim();
     if (!native) { ovErr('ovAcctErr', '請填平台原生帳號 ID'); return; }
     api('/api/admin/accounts', 'POST', {
       business_id: state.acctBizId,
       platform: $('acctPlatform').value,
       platform_business_account_id: native,
-      display_name: $('acctDisplay').value.trim()
+      display_name: $('acctDisplay').value.trim(),
+      credential: collectCred()
     }).then(function (res) {
       if (!guard(res)) { ovErr('ovAcctErr', res.data.error || '新增失敗'); return; }
       ovErr('ovAcctErr', '');
-      $('acctNative').value = '';
-      $('acctDisplay').value = '';
+      resetAcctForm();
       toast('已綁定');
       loadAcct().then(function () { loadBiz().then(function () { if (state.tab === 'biz') viewBiz(); }); });
     });
   };
+
+  function resetAcctForm() {
+    delete $('acctAdd').dataset.editCredId;
+    $('acctAdd').textContent = '新增綁定';
+    $('acctNative').disabled = false;
+    $('acctNative').value = '';
+    $('acctPlatform').disabled = false;
+    $('acctDisplay').disabled = false;
+    $('acctDisplay').value = '';
+    renderCredFields($('acctPlatform').value, null);
+  }
+
+  // 編輯憑證：彈出小框，重新輸入（不顯示舊明碼，留空＝不變）
+  function editCred(id) {
+    var row = findAcct(parseInt(id, 10));
+    if (!row) return;
+    renderCredFields(row.platform, null);
+    $('acctNative').value = row.platform_business_account_id;
+    $('acctNative').disabled = true;
+    $('acctPlatform').value = row.platform;
+    $('acctPlatform').disabled = true;
+    $('acctDisplay').value = row.display_name || '';
+    $('acctDisplay').disabled = true;
+    $('acctAdd').textContent = '儲存憑證';
+    $('acctAdd').dataset.editCredId = id;
+    ovErr('ovAcctErr', '');
+  }
 
   document.addEventListener('click', function (e) {
     var t = e.target;
     if (!t || !t.getAttribute) return;
     var aiId = t.getAttribute('data-acct-ai');
     var enId = t.getAttribute('data-acct-en');
-    if (aiId) {
+    var credId = t.getAttribute('data-acct-cred');
+    if (credId) {
+      editCred(credId);
+    } else if (aiId) {
       var row = findAcct(parseInt(aiId, 10));
       if (!row) return;
       api('/api/admin/accounts/update', 'POST', {

@@ -53,12 +53,14 @@ def normalize_mime(mime_type: str, filename: str = "") -> str:
     return mime
 
 
-def _auth_headers() -> dict:
-    return {"Authorization": f"Bearer {config.WHATSAPP_ACCESS_TOKEN}"}
+def _auth_headers(credential: dict) -> dict:
+    token = (credential or {}).get("access_token") or config.WHATSAPP_ACCESS_TOKEN
+    return {"Authorization": f"Bearer {token}"}
 
 
-def _messages_url() -> str:
-    return f"{GRAPH_BASE}/{config.GRAPH_API_VERSION}/{config.WHATSAPP_PHONE_NUMBER_ID}/messages"
+def _messages_url(credential: dict) -> str:
+    phone_id = (credential or {}).get("phone_number_id") or config.WHATSAPP_PHONE_NUMBER_ID
+    return f"{GRAPH_BASE}/{config.GRAPH_API_VERSION}/{phone_id}/messages"
 
 
 def _classify(status: int, body: str) -> SendResult:
@@ -75,17 +77,18 @@ def _classify(status: int, body: str) -> SendResult:
     return SendResult(ok=False, error=f"WhatsApp 拒絕（{status}）: {body[:200]}")
 
 
-async def _post(url: str, **kw) -> tuple[int, str]:
+async def _post(url: str, credential: dict, **kw) -> tuple[int, str]:
     async with httpx.AsyncClient(timeout=kw.pop("timeout", 20)) as client:
-        resp = await client.post(url, headers=_auth_headers(), **kw)
+        resp = await client.post(url, headers=_auth_headers(credential), **kw)
         return resp.status_code, resp.text
 
 
-async def send_text(target_id: str, text: str) -> SendResult:
+async def send_text(target_id: str, text: str, credential: dict | None = None) -> SendResult:
+    cred = credential or {}
     payload = {"messaging_product": "whatsapp", "to": target_id, "type": "text",
                "text": {"body": text}}
     try:
-        status, body = await _post(_messages_url(), json=payload)
+        status, body = await _post(_messages_url(cred), cred, json=payload)
     except httpx.TimeoutException:
         return SendResult(ok=False, error="WhatsApp 傳送逾時", uncertain=True)
     except Exception as e:  # noqa: BLE001
@@ -93,14 +96,16 @@ async def send_text(target_id: str, text: str) -> SendResult:
     return _classify(status, body)
 
 
-async def _upload_media(file_path: str, mime_type: str, filename: str) -> str:
+async def _upload_media(file_path: str, mime_type: str, filename: str,
+                        credential: dict) -> str:
+    cred = credential or {}
     send_mime = normalize_mime(mime_type, filename or file_path)
-    url = f"{GRAPH_BASE}/{config.GRAPH_API_VERSION}/{config.WHATSAPP_PHONE_NUMBER_ID}/media"
+    url = f"{GRAPH_BASE}/{config.GRAPH_API_VERSION}/{(cred.get('phone_number_id') or config.WHATSAPP_PHONE_NUMBER_ID)}/media"
     data = {"messaging_product": "whatsapp", "type": send_mime}
     async with httpx.AsyncClient(timeout=40) as client:
         with open(file_path, "rb") as f:
             files = {"file": (os.path.basename(filename or file_path), f, send_mime)}
-            resp = await client.post(url, headers=_auth_headers(), files=files, data=data)
+            resp = await client.post(url, headers=_auth_headers(cred), files=files, data=data)
         if resp.status_code != 200:
             raise RuntimeError(f"上傳媒體失敗 ({resp.status_code}): {resp.text[:200]}")
         media_id = resp.json().get("id", "")
@@ -110,10 +115,11 @@ async def _upload_media(file_path: str, mime_type: str, filename: str) -> str:
 
 
 async def send_asset(target_id: str, media_path: str, caption: str = "",
-                     filename: str = "") -> SendResult:
+                     filename: str = "", credential: dict | None = None) -> SendResult:
+    cred = credential or {}
     name = filename or os.path.basename(media_path)
     try:
-        media_id = await _upload_media(media_path, "", name)
+        media_id = await _upload_media(media_path, "", name, cred)
     except httpx.TimeoutException:
         return SendResult(ok=False, error="WhatsApp 上傳媒體逾時", temp_error=True)
     except Exception as e:  # noqa: BLE001
@@ -133,7 +139,7 @@ async def send_asset(target_id: str, media_path: str, caption: str = "",
                    "type": "document", "document": node}
 
     try:
-        status, body = await _post(_messages_url(), json=payload)
+        status, body = await _post(_messages_url(cred), cred, json=payload)
     except httpx.TimeoutException:
         return SendResult(ok=False, error="WhatsApp 傳送媒體逾時", uncertain=True)
     except Exception as e:  # noqa: BLE001

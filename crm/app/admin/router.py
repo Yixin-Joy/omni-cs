@@ -40,6 +40,16 @@ def _clean_roles(roles) -> list[str] | None:
     return sorted(set(rs)) if rs else None
 
 
+def _clean_credential(platform: str, credential: dict | None) -> dict | None:
+    """只保留該平台合法的憑證欄位，清掉空值。全部為空 → None（不寫入）。"""
+    if not credential:
+        return None
+    keys = {k for k, _, _ in config.CREDENTIAL_FIELDS.get(platform, [])}
+    out = {k: str(v).strip() for k, v in credential.items()
+           if k in keys and v is not None and str(v).strip() != ""}
+    return out or None
+
+
 # ================================================================ 商家
 
 @router.get("/businesses")
@@ -99,6 +109,7 @@ class AccountIn(BaseModel):
     platform: str = ""
     platform_business_account_id: str = ""
     display_name: str | None = None
+    credential: dict | None = None
 
 
 @router.post("/accounts")
@@ -109,15 +120,17 @@ def create_account(payload: AccountIn, sess: dict = Depends(deps.require_admin))
         return _err(400, f"平台不合法（可選：{'/'.join(PLATFORMS)}）")
     if not native:
         return _err(400, "平台原生帳號 ID 不能為空（這是兩庫對齊鍵）")
+    cred = _clean_credential(platform, payload.credential)
     try:
         with repo.tx() as (_, cur):
             if not repo.business_exists(cur, payload.business_id):
                 return _err(404, "商家不存在")
             aid = repo.create_account(cur, payload.business_id, platform, native,
-                                      (payload.display_name or "").strip() or None)
+                                      (payload.display_name or "").strip() or None, cred)
             audit.log(cur, sess, "platform_account_bind", business_id=payload.business_id,
                       platform=platform, bp_account_id=aid,
-                      payload={"platform_business_account_id": native})
+                      payload={"platform_business_account_id": native,
+                               "has_credential": bool(cred)})
     except psycopg2.errors.UniqueViolation:
         return _err(409, "該平台帳號已被綁定（同一平台的一個帳號只能屬於一個商家）")
     _push_account_map()
@@ -129,6 +142,7 @@ class AccountUpdateIn(BaseModel):
     display_name: str | None = None
     ai_auto_reply_enabled: bool = True
     enabled: bool = True
+    credential: dict | None = None
 
 
 @router.post("/accounts/update")
@@ -141,12 +155,13 @@ def update_account(payload: AccountUpdateIn, sess: dict = Depends(deps.require_a
         row = cur.fetchone()
         if not row:
             return _err(404, "平台帳號不存在")
+        cred = _clean_credential(row["platform"], payload.credential)
         repo.update_account(cur, payload.id, (payload.display_name or "").strip() or None,
-                            payload.ai_auto_reply_enabled, payload.enabled)
+                            payload.ai_auto_reply_enabled, payload.enabled, cred)
         audit.log(cur, sess, "platform_account_unbind" if not payload.enabled else "platform_account_bind",
                   business_id=row["business_id"], platform=row["platform"], bp_account_id=payload.id,
                   payload={"ai_auto_reply_enabled": payload.ai_auto_reply_enabled,
-                           "enabled": payload.enabled})
+                           "enabled": payload.enabled, "credential_updated": cred is not None})
     _push_account_map()
     return {"ok": True}
 

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS connector_account_map (
     business_id                   bigint,
     bp_account_id                 bigint,
     enabled                       boolean NOT NULL DEFAULT true,
+    credential                    jsonb,
     synced_at                     timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (platform, platform_business_account_id)
 );
@@ -80,6 +81,9 @@ def _init_sync() -> None:
     try:
         with conn.cursor() as cur:
             cur.execute(_DDL)
+            # 既有庫補欄位（冪等）
+            cur.execute("ALTER TABLE connector_account_map"
+                        " ADD COLUMN IF NOT EXISTS credential jsonb")
             for tbl in _MSG_TABLES:
                 for col, typ in _NEW_COLUMNS:
                     cur.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS {col} {typ}")

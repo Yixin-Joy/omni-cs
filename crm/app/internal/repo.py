@@ -80,7 +80,7 @@ def account_map(since=None) -> list[dict]:
     """對齊鍵 = (platform, platform_business_account_id)。真相在 CRM（MIGRATION_PLAN §1）。"""
     sql = (
         "SELECT a.platform, a.platform_business_account_id, a.business_id,"
-        "       a.id AS bp_account_id, a.display_name,"
+        "       a.id AS bp_account_id, a.display_name, a.credential,"
         "       (COALESCE(a.enabled, true) AND COALESCE(b.enabled, true)) AS enabled,"
         "       COALESCE(a.updated_at, a.created_at) AS updated_at"
         "  FROM crm_business_platform_account a"

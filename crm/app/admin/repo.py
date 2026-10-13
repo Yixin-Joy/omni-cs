@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 
 import psycopg2.extras
@@ -86,7 +87,8 @@ def business_exists(cur, bid: int) -> bool:
 def list_accounts(business_id: int | None = None) -> list[dict]:
     sql = (
         "SELECT a.id, a.business_id, a.platform, a.platform_business_account_id, a.display_name,"
-        "       a.ai_auto_reply_enabled, a.enabled, a.created_at, b.business_name"
+        "       a.ai_auto_reply_enabled, a.enabled, a.created_at, b.business_name,"
+        "       (a.credential IS NOT NULL) AS has_credential"
         "  FROM crm_business_platform_account a"
         "  LEFT JOIN crm_business b ON b.id = a.business_id"
     )
@@ -100,23 +102,35 @@ def list_accounts(business_id: int | None = None) -> list[dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
-def create_account(cur, business_id: int, platform: str, native_id: str, display_name: str | None) -> int:
+def create_account(cur, business_id: int, platform: str, native_id: str, display_name: str | None,
+                   credential: dict | None = None) -> int:
     cur.execute(
         "INSERT INTO crm_business_platform_account"
-        " (business_id, platform, platform_business_account_id, display_name)"
-        " VALUES (%s, %s, %s, %s) RETURNING id",
-        (business_id, platform, native_id, display_name),
+        " (business_id, platform, platform_business_account_id, display_name, credential)"
+        " VALUES (%s, %s, %s, %s, %s::jsonb) RETURNING id",
+        (business_id, platform, native_id, display_name,
+         json.dumps(credential, ensure_ascii=False) if credential else None),
     )
     return cur.fetchone()["id"]
 
 
-def update_account(cur, aid: int, display_name: str | None, ai_enabled: bool, enabled: bool) -> None:
+def update_account(cur, aid: int, display_name: str | None, ai_enabled: bool, enabled: bool,
+                   credential: dict | None = None) -> None:
     # updated_at 供 Connector 的帳號映射增量同步判斷變更（階段二）
-    cur.execute(
-        "UPDATE crm_business_platform_account SET display_name = %s, ai_auto_reply_enabled = %s,"
-        " enabled = %s, updated_at = now() WHERE id = %s",
-        (display_name, ai_enabled, enabled, aid),
-    )
+    # credential 傳 None = 不變動（避免誤清空）；傳 dict = 覆蓋
+    if credential is None:
+        cur.execute(
+            "UPDATE crm_business_platform_account SET display_name = %s, ai_auto_reply_enabled = %s,"
+            " enabled = %s, updated_at = now() WHERE id = %s",
+            (display_name, ai_enabled, enabled, aid),
+        )
+    else:
+        cur.execute(
+            "UPDATE crm_business_platform_account SET display_name = %s, ai_auto_reply_enabled = %s,"
+            " enabled = %s, credential = %s::jsonb, updated_at = now() WHERE id = %s",
+            (display_name, ai_enabled, enabled,
+             json.dumps(credential, ensure_ascii=False), aid),
+        )
 
 
 # ---------------------------------------------------------------- 員工
