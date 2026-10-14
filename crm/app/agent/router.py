@@ -323,6 +323,41 @@ def merchant_stats(sess: dict = Depends(deps.require_agent)):
     return {"ok": True, "items": out}
 
 
+@router.get("/pending-counts")
+def pending_counts(business_id: int = Query(...), scope: str = Query(default="dm"),
+                   sess: dict = Depends(deps.require_agent)):
+    """工作台側欄用：該商家在**每個平台**的未處理筆數（二級 tab 紅點 + 一級彙總）。
+
+    ★ 為什麼要有這支：二級平台 tab（微信 / WhatsApp / IG / FB）的紅點必須
+      **在還沒點進該平台前就顯示**，而 `/conversations` 一次只回一個平台 → 前端
+      算不出其他平台的數字。這裡走 Connector 的 `/pending-count`（最輕量的 count）。
+
+    回 `{counts: {wechat: n, ...}, total: N, unreachable: bool}`；
+    `unreachable=true` 代表有帳號取不到（前端要區分「0 筆」與「連不上」）。
+    """
+    bad = _guard(sess, business_id)
+    if bad:
+        return bad
+    if scope not in SCOPES:
+        return _err(400, f"不支援的 scope: {scope}")
+
+    accounts_ = repo.list_accounts(int(business_id), "")
+    counts: dict[str, int] = {}
+    unreachable = False
+    total = 0
+    for a in accounts_:
+        plat = a["platform"]
+        if scope == "comment" and plat not in ("ig", "fb"):
+            continue
+        n = connector_client.fetch_pending_count(plat, a["id"], scope=scope)
+        if n is None:
+            unreachable = True
+            continue
+        counts[plat] = counts.get(plat, 0) + int(n)
+        total += int(n)
+    return {"ok": True, "counts": counts, "total": total, "unreachable": unreachable}
+
+
 class ReadIn(BaseModel):
     business_id: int
     platform: str

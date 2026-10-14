@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from app import account_map, media
+from app.channels import igfb_store
 from app.core import config
 from app.core import db
 from app.internal.auth import require_internal
@@ -774,6 +775,30 @@ def merchant_stats(payload: MerchantStatsIn):
     finally:
         conn.close()
     return {"ok": True, "items": out}
+
+
+@router.get("/pending-count")
+def pending_count(
+    platform: str = Query(...),
+    platform_business_account_id: str = Query(...),
+    scope: str = Query(default="dm"),
+):
+    """某帳號在該平台的「未處理」筆數（工作台二級平台 tab 的紅點）。
+
+    ★ 為什麼需要這支：二級 tab 的紅點必須**在不點進去該平台前就能顯示**，
+      而 `/conversations` 只回某一平台的清單 → 前端無法得知其他平台的未處理數。
+      這裡用最輕量的 count 查詢一次算完。
+    - `scope='dm'`：wechat / whatsapp 讀 `forward_log`；ig / fb 讀 `igfb_dm`。
+    - `scope='comment'`：ig / fb 讀 `igfb_comment`（頂層 + 未回 + 未忽略 + 非我方）。
+    """
+    if platform not in ("wechat", "whatsapp", "ig", "fb"):
+        return _err(400, f"不支援的平台: {platform}")
+    if scope not in ("dm", "comment"):
+        return _err(400, f"不支援的 scope: {scope}")
+    if scope == "comment" and platform not in ("ig", "fb"):
+        return _err(400, "comment 只支援 ig / fb")
+    n = igfb_store.count_pending(platform, platform_business_account_id, scope)
+    return {"ok": True, "count": n, "platform": platform, "scope": scope}
 
 
 @router.get("/ping")

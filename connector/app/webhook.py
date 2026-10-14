@@ -29,6 +29,7 @@ from app.core import config
 from app.channels import wechat_recv
 from app.channels import whatsapp_recv
 from app.channels import igfb_recv
+from app.channels import igfb_store
 from app import account_map
 from app import forwarder
 from app.worker import client as crm_client
@@ -344,22 +345,25 @@ async def _resolve_whatsapp_files(payload: dict, account: dict | None = None):
 
 
 async def _handle_igfb_event(ev: dict) -> None:
-    """落地一則 IG/FB webhook 事件，並非同步通知 CRM。"""
+    """落地一則 IG/FB webhook 事件，並非同步通知 CRM。
+
+    ★★ 落地表＝**`igfb_dm`（私訊）/ `igfb_comment`（留言）**，不是 `forward_log`
+      —— 工作台讀 IG/FB 就是讀這兩張表（`internal/router.py` 的
+      `_conv_dm_igfb_sql` / `_conv_comment_sql` / `/posts`）。走 `igfb_store` 統一處理。
+    """
     t = ev["type"]
     platform = ev["platform"]
     native_id = ev.get("account_native_id", "")
     account = account_map.lookup(platform, native_id) if native_id else None
+    me = igfb_store.self_id(platform, account)
 
     if t in ("fb_dm", "ig_dm"):
-        # 私訊：落地本機（簡化 payload，含關鍵欄位供工作台顯示）
-        _land_local(platform, {
-            "id": ev["message_id"],
-            "conversationId": ev["sender_id"],
-            "messageType": ev["message_type"],
-            "messageContent": ev["text"],
-            "webClientSender": {"webClientUUID": ev["sender_id"], "name": ev["sender_name"]},
-            "updatedAt": ev["created_at"].isoformat() if ev["created_at"] else "",
-        }, json.dumps(ev, ensure_ascii=False, default=str), account)
+        try:
+            atts = await igfb_store.download_attachments(ev.get("attachments") or [])
+        except Exception as e:  # noqa: BLE001
+            log.warning("IG/FB 私訊附件處理失敗（帶原 url 繼續）: %s", e)
+            atts = ev.get("attachments") or []
+        await asyncio.to_thread(igfb_store.land_dm, platform, ev, account, atts)
 
         _notify_inbound(
             platform, account,
@@ -370,17 +374,10 @@ async def _handle_igfb_event(ev: dict) -> None:
                            "sender_name": ev.get("sender_name") or ""},
         )
     elif t in ("fb_comment", "ig_comment"):
-        _land_local(platform, {
-            "id": ev["comment_id"],
-            "conversationId": ev["comment_id"],
-            "messageType": "text",
-            "messageContent": ev["text"],
-            "webClientSender": {"webClientUUID": ev["from_id"], "name": ev["from_name"]},
-            "updatedAt": ev["created_at"].isoformat() if ev["created_at"] else "",
-        }, json.dumps(ev, ensure_ascii=False, default=str), account)
+        await asyncio.to_thread(igfb_store.land_comment, platform, ev, account)
 
         # 我方自己發的留言不觸發自動回復（避免回覆自己，形成循環）
-        if not igfb_recv.is_self(platform, ev.get("from_id")):
+        if not (me and str(ev.get("from_id") or "") == str(me)):
             _notify_inbound(
                 platform, account,
                 message_id=ev["comment_id"],

@@ -909,6 +909,7 @@ var state = {
   section: 'dm',                            // dm | posts
   platform: 'whatsapp',
   scope: 'dm',
+  counts: { dm: {}, comment: {} },          // 各平台未處理數（紅點；由 loadCounts 拉）
   convs: [], convsTotal: 0,
   posts: [], postsHasMore: false,
   activeKey: null, activeAcc: null, thread: [], logs: [],
@@ -1167,7 +1168,9 @@ function pickBiz(bid) {
   state.activePost = null; state.convs = []; state.posts = [];
   renderMerchantBar();
   resetChat();
+  renderBadges();
   if (state.section === 'posts') loadPosts(); else loadConversations();
+  loadAllCounts();
   loadAutoSettings();
 }
 
@@ -1178,11 +1181,15 @@ function platformsForSection() {
 
 function renderTabs() {
   var el = $('tabs');
+  // ★ 每個平台 tab 自帶紅點（id=badge-<platform>）—— 未處理數由 loadCounts() 拉，
+  //   不依賴「先點進該平台才載入該平台會話」。
   el.innerHTML = platformsForSection().map(function (p) {
     return '<div class="tab' + (state.platform === p ? ' active' : '') + '"'
       + ' data-platform="' + p + '" onclick="switchPlatform(\'' + p + '\')">'
-      + esc(PLATFORM_LABEL[p]) + '</div>';
+      + esc(PLATFORM_LABEL[p])
+      + '<span class="badge" id="badge-' + p + '" style="display:none"></span></div>';
   }).join('');
+  renderBadges();
 }
 
 function switchSection(section) {
@@ -1345,6 +1352,7 @@ function markRead() {
     if (!guard(res)) return;
     showToast('已標記為處理（' + (res.data.updated || 0) + ' 筆）');
     loadConversations();
+    loadAllCounts();
     openConversation(state.activeKey);
   });
 }
@@ -1518,6 +1526,7 @@ function sendCommentReply(commentId, btn) {
       return;
     }
     showToast('已建立外送任務 #' + res.data.task_id);
+    loadAllCounts();
     setTimeout(function () { openPost(state.activePost.post_id, acc); loadPosts(); }, 600);
   });
 }
@@ -1529,6 +1538,7 @@ function markCommentHandled(commentId) {
   }).then(function (res) {
     if (!guard(res)) return;
     showToast('已標記為已處理');
+    loadAllCounts();
     openPost(state.activePost.post_id, acc);
     loadPosts();
   });
@@ -1585,6 +1595,7 @@ function sendReply() {
     if (ta) ta.value = '';
     clearPendingFile();
     setTimeout(function () { openConversation(state.activeKey); loadConversations(); }, 700);
+    loadAllCounts();
   }).catch(function (e) {
     showToast(e.message || '送出失敗');
   }).then(function () {
@@ -1636,15 +1647,31 @@ function toggleAutoReply() {
 }
 
 /* ---------------------------------------------------------------- 紅點 */
+function loadCounts(scope) {
+  if (!state.bizId) return Promise.resolve();
+  return api(qs('/console/agent/pending-counts',
+    [['business_id', state.bizId], ['scope', scope]])).then(function (res) {
+      if (!res.data || !res.data.ok) return;
+      state.counts[scope] = res.data.counts || {};
+      renderBadges();
+    }).catch(function () { /* 輪詢/載入失敗不影響畫面 */ });
+}
+
+function loadAllCounts() {
+  return Promise.all([loadCounts('dm'), loadCounts('comment')]);
+}
+
 function renderBadges() {
-  var dm = 0;
-  if (state.section === 'dm') {
-    dm = state.convs.reduce(function (n, c) { return n + (parseInt(c.pending, 10) || 0); }, 0);
-  }
-  var posts = 0;
-  if (state.section === 'posts') {
-    posts = state.posts.reduce(function (n, p) { return n + (parseInt(p.new_comments, 10) || 0); }, 0);
-  }
+  // 二級平台 tab：只餵「當前欄目」的數字（私訊頁餵未讀私訊、貼文留言頁餵待處理留言），
+  // 否則兩個欄目的 tab 共用同一組 id 會互相污染。
+  var cur = state.counts[state.section === 'posts' ? 'comment' : 'dm'] || {};
+  platformsForSection().forEach(function (p) {
+    setBadge('badge-' + p, parseInt(cur[p], 10) || 0);
+  });
+  // 一級導覽：該欄目下全部平台的未處理總和
+  var dm = 0, posts = 0;
+  Object.keys(state.counts.dm || {}).forEach(function (p) { dm += parseInt(state.counts.dm[p], 10) || 0; });
+  Object.keys(state.counts.comment || {}).forEach(function (p) { posts += parseInt(state.counts.comment[p], 10) || 0; });
   setBadge('nav-badge-dm', dm);
   setBadge('nav-badge-posts', posts);
 }
@@ -2272,6 +2299,7 @@ function boot() {
       renderTabs();
       renderMerchantBar();
       loadConversations();
+      loadAllCounts();
     }).catch(function (e) {
       $('arBtn').textContent = '啟動失敗';
       console.error(e);

@@ -90,6 +90,10 @@ def cleanup() -> None:
     db("DELETE FROM forward_log WHERE platform_business_account_id LIKE %s", (MARK + "%",))
     # 未註冊帳號落地時 platform_business_account_id 是 NULL，LIKE 抓不到，要另外清
     db("DELETE FROM forward_log WHERE message_id IN ('999888777') AND platform_business_account_id IS NULL")
+    # ★ IG/FB 落在 igfb_dm / igfb_comment（工作台讀的就是這兩張表）
+    db("DELETE FROM igfb_dm WHERE platform_business_account_id LIKE %s", (MARK + "%",))
+    db("DELETE FROM igfb_comment WHERE platform_business_account_id LIKE %s", (MARK + "%",))
+    db("DELETE FROM igfb_post WHERE platform_business_account_id LIKE %s", (MARK + "%",))
     db("DELETE FROM connector_account_map WHERE platform_business_account_id LIKE %s", (MARK + "%",))
 
 
@@ -288,7 +292,7 @@ def main() -> int:
                 "field": "feed",
                 "value": {
                     "item": "comment", "verb": "add",
-                    "comment_id": "c1", "post_id": "post_1",
+                    "comment_id": "zz_wh_c1", "post_id": "zz_wh_post_1",
                     "from": {"id": "psid_789", "name": "路人"},
                     "message": "這篇貼文很棒",
                 },
@@ -297,7 +301,7 @@ def main() -> int:
     }
     evs = igfb_recv.extract_events(fb_comment)
     check(len(evs) == 1 and evs[0]["type"] == "fb_comment", "FB 留言解析 1 則 fb_comment")
-    check(evs[0]["post_id"] == "post_1", "post_id 正確")
+    check(evs[0]["post_id"] == "zz_wh_post_1", "post_id 正確")
     check(evs[0]["parent_id"] is None, "頂層留言 parent_id 正規化為 None", str(evs[0]["parent_id"]))
 
     # IG 留言
@@ -309,7 +313,7 @@ def main() -> int:
             "changes": [{
                 "field": "comments",
                 "value": {
-                    "id": "ic1", "media": {"id": "media_1"},
+                    "id": "zz_wh_ic1", "media": {"id": "zz_wh_media_1"},
                     "from": {"id": "igsid_1", "username": "ig_user"},
                     "text": "IG 留言",
                 },
@@ -402,6 +406,96 @@ def main() -> int:
               "發送側 send_text 接受 credential 參數（mock 模式）")
     finally:
         _cfg.OUTBOUND_SEND_MODE = "live"
+
+    # ------------------------------------------------------------ [11]
+    print("\n[11] IG/FB 私訊/留言 → 落地 igfb_dm / igfb_comment（工作台讀的就是這兩張表）")
+    from app.channels import igfb_store
+
+    # FB 私訊
+    before = len(crm_calls)
+    r = client.post("/webhook", json=fb_body)
+    check(r.status_code == 200 and r.text == "EVENT_RECEIVED", "FB 私訊 webhook → EVENT_RECEIVED", r.text)
+    rows = db("SELECT * FROM igfb_dm WHERE platform='fb' AND message_id=%s", ("mid_fb_1",), fetch=True)
+    check(len(rows) == 1, "FB 私訊落入 igfb_dm")
+    if rows:
+        check(rows[0]["direction"] == "inbound", "igfb_dm.direction=inbound")
+        check(rows[0]["platform_business_account_id"] == FB_NATIVE, "igfb_dm 帶平台原生 ID")
+        check(rows[0]["business_id"] == 990003, "igfb_dm 帶 business_id")
+        check(rows[0]["bp_account_id"] == 880003, "igfb_dm 帶 bp_account_id")
+    check(len(db("SELECT 1 FROM forward_log WHERE platform='fb' AND platform_business_account_id=%s",
+                 (FB_NATIVE,), fetch=True)) == 0, "FB 私訊**不再**寫 forward_log")
+    check(len(crm_calls) == before + 1, "FB 私訊 notify CRM 一次")
+
+    # IG 私訊
+    ig_body = {
+        "object": "instagram",
+        "entry": [{
+            "id": IG_NATIVE,
+            "time": 1700000000,
+            "messaging": [{
+                "sender": {"id": "igsid_abc"},
+                "message": {"mid": "mid_ig_1", "text": "IG 私訊問題"},
+            }],
+        }],
+    }
+    before = len(crm_calls)
+    r = client.post("/webhook", json=ig_body)
+    check(r.status_code == 200, "IG 私訊 webhook → 200", f"got {r.status_code}")
+    rows = db("SELECT * FROM igfb_dm WHERE platform='ig' AND message_id=%s", ("mid_ig_1",), fetch=True)
+    check(len(rows) == 1, "IG 私訊落入 igfb_dm")
+    if rows:
+        check(rows[0]["platform_business_account_id"] == IG_NATIVE, "IG igfb_dm 帶平台原生 ID")
+        check(rows[0]["business_id"] == 990004, "IG igfb_dm 帶 business_id")
+    check(len(crm_calls) == before + 1, "IG 私訊 notify CRM 一次")
+
+    # FB 留言（送出我方自己發的 → 不 notify，且不計入待處理）
+    before = len(crm_calls)
+    r = client.post("/webhook", json=fb_comment)
+    check(r.status_code == 200, "FB 留言 webhook → 200", f"got {r.status_code}")
+    rows = db("SELECT * FROM igfb_comment WHERE platform='fb' AND comment_id=%s", ("zz_wh_c1",), fetch=True)
+    check(len(rows) == 1, "FB 留言落入 igfb_comment")
+    if rows:
+        check(rows[0]["post_id"] == "zz_wh_post_1", "igfb_comment.post_id 正確")
+        check(rows[0]["parent_id"] is None, "頂層留言 parent_id 為 NULL")
+        check(rows[0]["replied"] is False, "客戶留言 replied=false（亮紅點）")
+        check(rows[0]["platform_business_account_id"] == FB_NATIVE, "igfb_comment 帶平台原生 ID")
+    check(len(db("SELECT 1 FROM igfb_post WHERE platform='fb' AND post_id=%s", ("zz_wh_post_1",), fetch=True)) == 1,
+          "留言所屬貼文自動補佔位 igfb_post")
+    check(len(crm_calls) == before + 1, "FB 留言 notify CRM 一次")
+
+    # IG 留言
+    r = client.post("/webhook", json=ig_comment)
+    check(r.status_code == 200, "IG 留言 webhook → 200", f"got {r.status_code}")
+    check(len(db("SELECT 1 FROM igfb_comment WHERE platform='ig' AND comment_id=%s", ("zz_wh_ic1",), fetch=True)) == 1,
+          "IG 留言落入 igfb_comment")
+
+    # 我方自己的留言 → replied=true → 不計入待處理
+    fb_own = {
+        "object": "page",
+        "entry": [{
+            "id": FB_NATIVE, "time": 1700000005,
+            "changes": [{
+                "field": "feed",
+                "value": {"item": "comment", "verb": "add", "comment_id": "zz_wh_c_own",
+                          "post_id": "zz_wh_post_1", "from": {"id": FB_NATIVE, "name": "粉專"},
+                          "message": "我們回覆你了"},
+            }],
+        }],
+    }
+    before = len(crm_calls)
+    r = client.post("/webhook", json=fb_own)
+    check(r.status_code == 200, "我方留言 webhook → 200")
+    check(len(crm_calls) == before, "我方自己的留言不 notify CRM（不自我回復循環）")
+
+    # ------------------------------------------------------------ [12]
+    print("\n[12] 未處理計數（平台 tab 紅點）")
+    check(igfb_store.count_pending("fb", FB_NATIVE, "dm") == 1, "count_pending(fb, dm)=1",
+          str(igfb_store.count_pending("fb", FB_NATIVE, "dm")))
+    check(igfb_store.count_pending("ig", IG_NATIVE, "dm") == 1, "count_pending(ig, dm)=1")
+    check(igfb_store.count_pending("fb", FB_NATIVE, "comment") == 1,
+          "count_pending(fb, comment)=1（我方留言不計）",
+          str(igfb_store.count_pending("fb", FB_NATIVE, "comment")))
+    check(igfb_store.count_pending("ig", IG_NATIVE, "comment") == 1, "count_pending(ig, comment)=1")
 
     # ------------------------------------------------------------ 收尾
     crm_client.set_transport(None)

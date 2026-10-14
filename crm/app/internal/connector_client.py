@@ -153,6 +153,28 @@ def fetch_conversations(platform: str, platform_account_id=0, *, scope: str = "d
         return None
 
 
+def fetch_pending_count(platform: str, platform_account_id=0, *, scope: str = "dm") -> int | None:
+    """某帳號的未處理筆數（工作台平台 tab 紅點）。
+
+    `platform_account_id` 是 CRM 的 `crm_business_platform_account.id`；
+    連不上 / 非 200 回 **None**（呼叫端要區分「0 筆」與「拿不到」）。
+    """
+    try:
+        native = _native_account_id(platform, platform_account_id)
+        if not native:
+            return 0
+        with _client() as c:
+            r = c.get("/internal/api/pending-count", params={
+                "platform": platform, "platform_business_account_id": native, "scope": scope})
+            if r.status_code != 200:
+                log.warning("取未處理數失敗 status=%s", r.status_code)
+                return None
+            return int((r.json() or {}).get("count") or 0)
+    except Exception as e:  # noqa: BLE001
+        log.warning("取未處理數異常: %s", e)
+        return None
+
+
 def upload_media(data: bytes, filename: str, *, scope: str = "outbound") -> dict | None:
     """把二進制推給 Connector 存檔，回 `{media_key, sha256, size}`；失敗回 None。"""
     try:

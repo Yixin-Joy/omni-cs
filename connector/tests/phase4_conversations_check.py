@@ -192,6 +192,36 @@ def main() -> int:
     check(c1 is not None and c1["sender_name"] == "小明", "帶出留言者名稱")
     check(bk.get(FB_C2, {}).get("pending") == 0, "已回覆留言 pending=0")
 
+    print("\n[4b] 未處理計數 /pending-count（二級平台 tab 紅點）")
+    r = c.get("/internal/api/pending-count",
+              params={"platform": "whatsapp", "platform_business_account_id": ACC, "scope": "dm"},
+              headers=hdr())
+    check(r.status_code == 200 and r.json().get("count") == 1,
+          f"whatsapp dm 未處理=1（實得 {r.json().get('count') if r.status_code == 200 else r.status_code}）")
+    r = c.get("/internal/api/pending-count",
+              params={"platform": "ig", "platform_business_account_id": ACC, "scope": "dm"},
+              headers=hdr())
+    check(r.json().get("count") == 1, f"ig dm 未處理=1（實得 {r.json().get('count')}）")
+    r = c.get("/internal/api/pending-count",
+              params={"platform": "fb", "platform_business_account_id": ACC, "scope": "comment"},
+              headers=hdr())
+    check(r.json().get("count") == 1, f"fb comment 未處理=1（實得 {r.json().get('count')}）")
+    r = c.get("/internal/api/pending-count",
+              params={"platform": "fb", "platform_business_account_id": ACC, "scope": "dm"}, headers=hdr())
+    check(r.json().get("count") == 0, "fb 無私訊 → 0")
+    r = c.get("/internal/api/pending-count",
+              params={"platform": "wechat", "platform_business_account_id": ACC, "scope": "comment"},
+              headers=hdr())
+    check(r.status_code == 400, "wechat 不支援 comment → 400")
+    r = c.get("/internal/api/pending-count",
+              params={"platform": "line", "platform_business_account_id": ACC, "scope": "dm"},
+              headers=hdr())
+    check(r.status_code == 400, "不支援平台 → 400")
+    r = c.get("/internal/api/pending-count",
+              params={"platform": "whatsapp", "platform_business_account_id": ACC, "scope": "bogus"},
+              headers=hdr())
+    check(r.status_code == 400, "不支援 scope → 400")
+
     print("\n[5] 參數校驗")
     r = c.get("/internal/api/conversations",
               params={"platform": "line", "platform_business_account_id": ACC}, headers=hdr())

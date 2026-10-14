@@ -168,6 +168,23 @@ def check_md_images(html: str, js: str) -> None:
           f"可疑 {len(leak)} 處" if leak else "")
 
 
+def check_platform_badges(html: str, js: str) -> None:
+    """工作台二級平台 tab 紅點（迴歸閘門）。
+
+    ★ 曾發生的 bug：紅點只有在「先點進該平台」後才出現（一級導覽的數字靠
+      當前平台的會話算出來），二級 tab 本身根本沒有紅點。修法＝每個 tab 自帶
+      `badge-<platform>` 節點，數字由 `/console/agent/pending-counts` 拉。
+    """
+    if "id=\"tabs\"" not in html:
+        return
+    check("badge-" in js and "class=\"badge\" id=\"badge-" in js,
+          "renderTabs() 為每個平台 tab 產生 badge-<platform> 紅點節點")
+    check("/console/agent/pending-counts" in js,
+          "打 /console/agent/pending-counts 取得各平台未處理數")
+    check("state.convs.reduce" not in js,
+          "一級紅點不再只靠當前平台會話算（renderBadges 不用 state.convs）")
+
+
 def main():
     pages = sorted(UI_DIR.glob("*.html"))
     js_files = sorted(UI_DIR.glob("*.js"))
@@ -212,6 +229,9 @@ def main():
 
         # [7] markdown 圖片渲染
         check_md_images(html, js_all)
+
+        # [8] 二級平台 tab 紅點
+        check_platform_badges(html, js_all)
 
         # [5] 身分切換元件有載入
         has_switch_ui = 'id="roleMenu"' in html or 'id="whoBox"' in html
