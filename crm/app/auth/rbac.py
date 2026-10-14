@@ -17,19 +17,24 @@ ALL_ROLES = (ROLE_ADMIN, ROLE_AGENT, ROLE_OPS)
 
 
 def expand_roles(roles: list[str] | None) -> list[str]:
-    """★ 展開「實際可選身分」。
+    """回傳帳號的「可選身分」—— ★ 不再有「admin 是超集」的特權（2026-10-14 改）。
 
-    **admin 是超集**：只要具備 admin 角色，就同時可切換 agent / ops
-    —— 管理員本來就看得到全部頁面，登入後可在頁面內自由切換。
+    **可選身分 = `crm_staff.roles` 欄位本身**（管理員在「員工與權限」勾選的）。
 
-    其他帳號 = 管理員在「員工與權限」裡勾選的角色（沒有特權展開）。
+    為什麼改：原設計讓「凡具備 admin 角色者自動取得 agent / ops」，
+    這在多管理員情境下不對 —— 新加的管理員會憑空獲得客服台 / 運維台。
+    現在改成：
+
+    - **系統第一個管理員**（`init_crm_db.py` 建立的那個）roles 直接給
+      `[admin, agent, ops]`，也就是「預設擁有全部身分」。
+    - **後續新增的管理員**預設只有 `[admin]`；要有客服 / 運維介面，
+      **必須由既有管理員在員工編輯裡授權**（勾選角色）。
+
+    其他帳號 = 管理員勾選的角色（本來就是）。
 
     展開後順序固定 admin → agent → ops，**第一個即登入時的預設身分**。
     """
-    roles = list(roles or [])
-    if ROLE_ADMIN in roles:
-        return list(ALL_ROLES)
-    return roles
+    return [r for r in ALL_ROLES if r in set(roles or [])]
 
 
 def roles_all(sess: dict | None) -> list[str]:

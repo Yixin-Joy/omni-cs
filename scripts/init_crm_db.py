@@ -97,10 +97,13 @@ def main() -> None:
             # 4) 種子：可選 admin
             if args.admin_account and args.admin_password:
                 ph = security.hash_password(args.admin_password)
+                # ★ 這是「系統第一個管理員」→ roles 直接給全部身分（admin/agent/ops），
+                #   預設就擁有全部介面。後續新增的管理員由 admin 後台建立，
+                #   預設只有 admin，要有其他身分必須由既有管理員授權（勾角色）。
                 cur.execute(
                     "INSERT INTO crm_staff (login_account, password_hash, staff_name, roles, is_super_agent, is_kb_editor) "
                     "VALUES (%s, %s, %s, %s, true, true) ON CONFLICT (login_account) DO NOTHING",
-                    (args.admin_account, ph, args.admin_name, ["admin"]),
+                    (args.admin_account, ph, args.admin_name, ["admin", "agent", "ops"]),
                 )
                 lines.append(f"admin 帳號 {args.admin_account} 已就緒")
         conn.commit()
