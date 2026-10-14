@@ -233,29 +233,36 @@ def messages_query(
     CRM 端不必再自己解析各家格式。
     """
     n = max(1, min(int(limit or 50), 200))
+    # ★ 排序鍵一律用 COALESCE(訊息時間, 入庫時間)。
+    #   forward_log 的**我方回覆**（舊單體寫入）`message_time` 是 NULL，
+    #   而 Postgres 的 `ORDER BY x DESC` 預設是 **NULLS FIRST** ——
+    #   直接排會讓所有回覆跑到最前面，反轉後變成「客戶訊息一串、我方回覆一串」。
+    #   與舊單體一致：舊端點就是用 `ORDER BY created_at ASC`。
     if platform in ("wechat", "whatsapp"):
+        _ts = "COALESCE(message_time, created_at)"
         sql = (
             "SELECT id, platform, direction, message_id, sender_id, message_type,"
-            "       raw_content, forwarded_payload, message_time AS ts,"
+            f"       raw_content, forwarded_payload, {_ts} AS ts,"
             "       COALESCE(is_handled, false), auto_reply_state, auto_reply_tier,"
             "       auto_reply_detail, NULL::jsonb AS attachments, NULL::text AS sender_name"
             "  FROM forward_log"
             " WHERE platform = %s AND platform_business_account_id = %s AND sender_id = %s"
-            "   AND (%s IS NULL OR message_time < %s::timestamptz)"
-            " ORDER BY message_time DESC LIMIT %s"
+            f"   AND (%s IS NULL OR {_ts} < %s::timestamptz)"
+            f" ORDER BY {_ts} DESC NULLS LAST LIMIT %s"
         )
         args = (platform, platform_business_account_id, end_user_sender_id, before, before, n)
     elif platform in ("ig", "fb"):
+        _ts = "COALESCE(created_at, inserted_at)"
         sql = (
             "SELECT id, platform, direction, message_id, sender_id, message_type,"
-            "       COALESCE(text, '') AS raw_content, NULL AS forwarded_payload, created_at AS ts,"
+            f"       COALESCE(text, '') AS raw_content, NULL AS forwarded_payload, {_ts} AS ts,"
             "       COALESCE(is_handled, false), auto_reply_state, auto_reply_tier,"
             "       auto_reply_detail, attachments, COALESCE(sender_name, '')"
             "  FROM igfb_dm"
             " WHERE platform = %s AND platform_business_account_id = %s"
             "   AND (sender_id = %s OR conversation_key = %s)"
-            "   AND (%s IS NULL OR created_at < %s::timestamptz)"
-            " ORDER BY created_at DESC LIMIT %s"
+            f"   AND (%s IS NULL OR {_ts} < %s::timestamptz)"
+            f" ORDER BY {_ts} DESC NULLS LAST LIMIT %s"
         )
         args = (platform, platform_business_account_id, end_user_sender_id,
                 end_user_sender_id, before, before, n)
@@ -372,64 +379,81 @@ _CONV_LIMIT_MAX = 200
 
 def _conv_dm_forward_sql(before: str | None) -> str:
     """wechat / whatsapp 私訊：`forward_log` 依 sender_id 聚合。"""
+    # ★ 排序鍵用 COALESCE(message_time, created_at)：舊資料的我方回覆
+    #   `message_time` 是 NULL（舊單體沒寫），只按 message_time 排會 NULLS FIRST
+    #   → 回覆全被擠到最後（工作台看起來「客戶訊息一串、我方回覆一串」）。
+    _ts = "COALESCE(message_time, created_at)"
     return (
         "SELECT sender_id AS ckey,"
-        "       max(message_time) AS last_ts,"
+        f"       max({_ts}) AS last_ts,"
         "       count(*) FILTER (WHERE direction = 'inbound'"
         "                          AND COALESCE(is_handled, false) = false) AS pending,"
         "       count(*) AS total,"
-        "       (array_agg(direction ORDER BY message_time DESC NULLS LAST))[1] AS last_dir,"
-        "       (array_agg(message_type ORDER BY message_time DESC NULLS LAST))[1] AS last_type,"
-        "       (array_agg(raw_content ORDER BY message_time DESC NULLS LAST))[1] AS last_raw,"
-        "       (array_agg(forwarded_payload ORDER BY message_time DESC NULLS LAST))[1] AS last_payload,"
+        f"       (array_agg(direction ORDER BY {_ts} DESC NULLS LAST))[1] AS last_dir,"
+        f"       (array_agg(message_type ORDER BY {_ts} DESC NULLS LAST))[1] AS last_type,"
+        f"       (array_agg(raw_content ORDER BY {_ts} DESC NULLS LAST))[1] AS last_raw,"
+        f"       (array_agg(forwarded_payload ORDER BY {_ts} DESC NULLS LAST))[1] AS last_payload,"
         "       NULL::text AS last_name, NULL::text AS post_id"
         "  FROM forward_log"
         " WHERE platform = %s AND platform_business_account_id = %s"
         "   AND sender_id IS NOT NULL AND sender_id <> ''"
-        "   AND (%s IS NULL OR message_time < %s::timestamptz)"
+        f"   AND (%s IS NULL OR {_ts} < %s::timestamptz)"
         " GROUP BY sender_id ORDER BY last_ts DESC NULLS LAST LIMIT %s"
     )
 
 
 def _conv_dm_igfb_sql() -> str:
     """ig / fb 私訊：`igfb_dm` 依 sender_id（退回 conversation_key）聚合。"""
+    _ts = "COALESCE(created_at, inserted_at)"
     return (
         "SELECT COALESCE(NULLIF(sender_id, ''), conversation_key) AS ckey,"
-        "       max(created_at) AS last_ts,"
+        f"       max({_ts}) AS last_ts,"
         "       count(*) FILTER (WHERE direction = 'inbound'"
         "                          AND COALESCE(is_handled, false) = false) AS pending,"
         "       count(*) AS total,"
-        "       (array_agg(direction ORDER BY created_at DESC NULLS LAST))[1] AS last_dir,"
-        "       (array_agg(message_type ORDER BY created_at DESC NULLS LAST))[1] AS last_type,"
-        "       (array_agg(text ORDER BY created_at DESC NULLS LAST))[1] AS last_raw,"
+        f"       (array_agg(direction ORDER BY {_ts} DESC NULLS LAST))[1] AS last_dir,"
+        f"       (array_agg(message_type ORDER BY {_ts} DESC NULLS LAST))[1] AS last_type,"
+        f"       (array_agg(text ORDER BY {_ts} DESC NULLS LAST))[1] AS last_raw,"
         "       NULL::jsonb AS last_payload,"
-        "       (array_agg(COALESCE(sender_name, '') ORDER BY created_at DESC NULLS LAST))[1] AS last_name,"
+        f"       (array_agg(COALESCE(sender_name, '') ORDER BY {_ts} DESC NULLS LAST))[1] AS last_name,"
         "       NULL::text AS post_id"
         "  FROM igfb_dm"
         " WHERE platform = %s AND platform_business_account_id = %s"
         "   AND COALESCE(NULLIF(sender_id, ''), conversation_key) IS NOT NULL"
-        "   AND (%s IS NULL OR created_at < %s::timestamptz)"
+        f"   AND (%s IS NULL OR {_ts} < %s::timestamptz)"
         " GROUP BY 1 ORDER BY last_ts DESC NULLS LAST LIMIT %s"
     )
 
 
 def _conv_comment_sql() -> str:
-    """ig / fb 留言：`igfb_comment` 每則留言一條會話（key = comment_id）。"""
+    """ig / fb 留言：`igfb_comment` 每則留言一條會話（key = comment_id）。
+
+    ★ `pending`（未處理）＝**頂層留言 && 未回 && 未忽略 && 非我方自己發的**。
+    不能只寫 `is_handled = false` —— 我方回覆與他人接續的**子留言**也常常是
+    `is_handled = false`，會被算成待處理（實測：35 筆子留言全被誤算，
+    導致明明沒有待處理、紅點卻顯示 35）。
+    條件與 `igfb_db.pending_comment_counts()` 一致。
+    """
+    _ts = "COALESCE(created_at, inserted_at)"
     return (
         "SELECT comment_id AS ckey,"
-        "       max(created_at) AS last_ts,"
-        "       count(*) FILTER (WHERE COALESCE(is_handled, false) = false) AS pending,"
+        f"       max({_ts}) AS last_ts,"
+        "       count(*) FILTER (WHERE parent_id IS NULL"
+        "                          AND COALESCE(replied, false) = false"
+        "                          AND COALESCE(is_handled, false) = false"
+        "                          AND (from_id IS NULL OR from_id = ''"
+        "                               OR from_id <> %s)) AS pending,"
         "       count(*) AS total,"
         "       'inbound'::text AS last_dir,"
         "       'comment'::text AS last_type,"
-        "       (array_agg(text ORDER BY created_at DESC NULLS LAST))[1] AS last_raw,"
+        f"       (array_agg(text ORDER BY {_ts} DESC NULLS LAST))[1] AS last_raw,"
         "       NULL::jsonb AS last_payload,"
-        "       (array_agg(COALESCE(from_name, '') ORDER BY created_at DESC NULLS LAST))[1] AS last_name,"
-        "       (array_agg(post_id ORDER BY created_at DESC NULLS LAST))[1] AS post_id"
+        f"       (array_agg(COALESCE(from_name, '') ORDER BY {_ts} DESC NULLS LAST))[1] AS last_name,"
+        f"       (array_agg(post_id ORDER BY {_ts} DESC NULLS LAST))[1] AS post_id"
         "  FROM igfb_comment"
         " WHERE platform = %s AND platform_business_account_id = %s"
         "   AND comment_id IS NOT NULL AND comment_id <> ''"
-        "   AND (%s IS NULL OR created_at < %s::timestamptz)"
+        f"   AND (%s IS NULL OR {_ts} < %s::timestamptz)"
         " GROUP BY comment_id ORDER BY last_ts DESC NULLS LAST LIMIT %s"
     )
 
@@ -462,9 +486,12 @@ def conversations(
     elif platform in ("ig", "fb"):
         if scope == "comment":
             sql = _conv_comment_sql()
+            # comment 的 pending 要把「我方自己發的」排除 → 多帶一次原生 ID 當 self
+            args = (platform_business_account_id, platform, platform_business_account_id,
+                    before, before, n)
         else:
             sql = _conv_dm_igfb_sql()
-        args = (platform, platform_business_account_id, before, before, n)
+            args = (platform, platform_business_account_id, before, before, n)
     else:
         return _err(400, f"不支援的平台: {platform}")
 
@@ -704,10 +731,12 @@ def merchant_stats(payload: MerchantStatsIn):
                             cur.execute(
                                 "SELECT count(*) FILTER (WHERE direction = 'inbound'"
                                 "                          AND COALESCE(is_handled, false) = false),"
-                                "       max(message_time) FROM forward_log"
+                                "       max(COALESCE(message_time, created_at)) FROM forward_log"
                                 " WHERE platform = %s AND platform_business_account_id = %s",
                                 (plat, acc))
                         else:
+                            # ★ 留言的「待處理」＝**頂層 + 未回 + 未忽略 + 非我方**
+                            #   （只寫 is_handled=false 會把我方回覆的子留言也算進來）
                             cur.execute(
                                 "SELECT (SELECT count(*) FROM igfb_dm"
                                 "         WHERE platform = %s AND platform_business_account_id = %s"
@@ -715,13 +744,17 @@ def merchant_stats(payload: MerchantStatsIn):
                                 "           AND COALESCE(is_handled, false) = false)"
                                 "     + (SELECT count(*) FROM igfb_comment"
                                 "         WHERE platform = %s AND platform_business_account_id = %s"
-                                "           AND COALESCE(is_handled, false) = false),"
+                                "           AND parent_id IS NULL"
+                                "           AND COALESCE(replied, false) = false"
+                                "           AND COALESCE(is_handled, false) = false"
+                                "           AND (from_id IS NULL OR from_id = ''"
+                                "                OR from_id <> %s)),"
                                 "       GREATEST("
-                                "         (SELECT max(created_at) FROM igfb_dm"
+                                "         (SELECT max(COALESCE(created_at, inserted_at)) FROM igfb_dm"
                                 "           WHERE platform = %s AND platform_business_account_id = %s),"
-                                "         (SELECT max(created_at) FROM igfb_comment"
+                                "         (SELECT max(COALESCE(created_at, inserted_at)) FROM igfb_comment"
                                 "           WHERE platform = %s AND platform_business_account_id = %s))",
-                                (plat, acc, plat, acc, plat, acc, plat, acc))
+                                (plat, acc, plat, acc, acc, plat, acc, plat, acc))
                         row = cur.fetchone()
                     item["pending"] = int(row[0] or 0)
                     item["last_ts"] = _iso(row[1])
