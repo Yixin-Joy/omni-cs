@@ -933,11 +933,21 @@ function esc(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/* 媒體網址正規化。
+   ⚠️ 舊訊息裡存的 `/files/...` 是**寫死的絕對網址**，host 是當時的隧道
+   （natapp / ngrok 換過好幾次）→ 隧道一關，歷史圖片全部連不上。
+   一律改寫成相對路徑，走當前站的 `/files`（CRM 會代理到 Connector）。 */
+function fixFileUrl(u) {
+  var s = String(u === null || u === undefined ? '' : u);
+  return s.replace(/^https?:\/\/[^/]+\/files\//i, '/files/');
+}
+
 /* 把文字裡的 markdown 圖片標記 ![題注](url) 轉成 <img>
    （與 ops.html 同一份實作；只放行 /media/、/files/ 與 http(s)://，先 escape 再處理） */
 function mdImages(s) {
   var out = esc(s || '');
   out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, url) {
+    url = fixFileUrl(url);
     if (!/^(\/media\/|\/files\/|https?:\/\/)/.test(url)) return m;
     return '<img class="mdimg" src="' + url + '" alt="' + alt + '">';
   });
@@ -1300,9 +1310,10 @@ function msgHtml(m) {
       if (f.sticker) {
         return '<div class="img-broken">[貼圖' + (f.sticker_id ? ' ' + esc(f.sticker_id) : '') + ']</div>';
       }
+      var furl = fixFileUrl(f.url);   // 舊隧道域名 → 相對 /files
       if (f.isImage) {
-        if (f.url) {
-          return '<img class="img-thumb" src="' + esc(f.url) + '"'
+        if (furl) {
+          return '<img class="img-thumb" src="' + esc(furl) + '"'
             + ' onerror="this.outerHTML=\'<div class=img-broken>圖片無法載入</div>\'"'
             + ' onclick="window.open(this.src)">';
         }
@@ -1312,7 +1323,7 @@ function msgHtml(m) {
       return '<div class="file-card"><div class="file-icon">📄</div><div class="file-info">'
         + '<div class="fname">' + esc(f.filename || '檔案') + '</div>'
         + (size ? '<div class="fsize">' + size + '</div>' : '')
-        + (f.url ? '<a href="' + esc(f.url) + '" target="_blank">下載 / 開啟</a>' : '')
+        + (furl ? '<a href="' + esc(furl) + '" target="_blank">下載 / 開啟</a>' : '')
         + '</div></div>';
     }).join('');
   }

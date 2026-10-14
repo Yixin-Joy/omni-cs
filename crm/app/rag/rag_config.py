@@ -14,6 +14,7 @@
     → 因為 8192 token 上限，塊長可放心到 1200 字，不會被無聲截斷。
 """
 import os
+from pathlib import Path
 
 from app.core import config  # noqa: F401  確保 .env 已載入（config 模組頂層會 load_dotenv）
 
@@ -21,6 +22,18 @@ from app.core import config  # noqa: F401  確保 .env 已載入（config 模組
 def _get(key: str, default: str) -> str:
     v = os.getenv(key)
     return v if v not in (None, "") else default
+
+
+def _path(key: str, default: str) -> str:
+    """路徑型設定：**相對路徑一律相對於 CRM 根（`_here`）解析，不受 cwd 影響**。
+
+    ⚠️ 這很重要：先前 `RAG_MEDIA_DIR` 直接吃 `.env` 的值（相對路徑），
+    於是「從哪裡啟動服務」決定了它指向哪 —— 從 `crm/` 啟動等於 `crm/media`，
+    但圖檔實際在 `crm/media/kb_assets/`，`/media/xxx.png` 就整批 404。
+    """
+    v = _get(key, default) or default
+    p = Path(v)
+    return str(p if p.is_absolute() else (Path(_here) / p))
 
 
 # ---------- 模型 ----------
@@ -38,10 +51,10 @@ RAG_RERANK_MODEL = _get("RAG_RERANK_MODEL", "BAAI/bge-reranker-v2-m3-int8")
 RAG_HF_ENDPOINT = _get("RAG_HF_ENDPOINT", "https://hf-mirror.com")
 # 專案根（app/rag/rag_config.py → 上三層）；models/ 與 media/ 都在根目錄
 _here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-RAG_MODEL_DIR = _get("RAG_MODEL_DIR", os.path.join(_here, "models", "fastembed"))
+RAG_MODEL_DIR = _path("RAG_MODEL_DIR", "models/fastembed")
 
 # 上傳檔案落地目錄（media/kb/<uuid>/<原始檔>）—— **不對外公開**
-RAG_KB_DIR = _get("RAG_KB_DIR", os.path.join(_here, "media", "kb"))
+RAG_KB_DIR = _path("RAG_KB_DIR", "media/kb")
 
 # ★ 圖片公開目錄（2026-10-12）—— 抽出來／上傳的圖一律存這裡，掛在 `/media` 之下。
 #   為什麼另開一個目錄而不是直接用 media/：
@@ -49,7 +62,7 @@ RAG_KB_DIR = _get("RAG_KB_DIR", os.path.join(_here, "media", "kb"))
 #     ② 但 `media/` 底下還有客戶來訊的檔案與上傳的來源文件，**不能**一起公開。
 #   落地檔名 = `<sha256 前 16 碼>.<ext>`（天然去重、無中文檔名問題），
 #   對外 URL = `/media/<檔名>`（見 `public_url()`）。
-RAG_MEDIA_DIR = _get("RAG_MEDIA_DIR", os.path.join(_here, "media", "kb_assets"))
+RAG_MEDIA_DIR = _path("RAG_MEDIA_DIR", "media/kb_assets")
 
 # 圖片對外網址的前綴（相對路徑 —— 換域名不用改資料）
 RAG_MEDIA_URL_PREFIX = _get("RAG_MEDIA_URL_PREFIX", "/media")

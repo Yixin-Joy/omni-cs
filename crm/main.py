@@ -23,6 +23,7 @@ from app.auth import deps, rbac
 from app.auth.router import router as auth_router
 from app.core import config
 from app.core import db
+from app.internal import connector_client
 from app.internal.router import router as internal_router
 from app.ops.router import router as ops_router
 from app.worker import runner as worker_runner
@@ -57,6 +58,23 @@ from app.rag import rag_config as _rag_config  # noqa: E402
 Path(_rag_config.RAG_MEDIA_DIR).mkdir(parents=True, exist_ok=True)
 app.mount(_rag_config.RAG_MEDIA_URL_PREFIX.rstrip("/") or "/media",
           StaticFiles(directory=_rag_config.RAG_MEDIA_DIR), name="kb-media")
+
+
+# ★ 客戶來訊媒體的代理端點。
+#   職責上 `/files` 屬於 Connector（8010），但**工作台頁面跑在 CRM（8020）**，
+#   瀏覽器只會對 CRM 發請求 —— 所以在這裡代拿，不讓前端跨埠。
+#   ⚠️ 舊訊息裡存的是**當時的隧道域名**（natapp / ngrok 換過好幾次），
+#   前端會把任何 `http(s)://<host>/files/xxx` 重寫成相對的 `/files/xxx`，
+#   所以換隧道之後，歷史圖片仍然打得開。
+@app.get("/files/{name:path}")
+def page_file(name: str):
+    got = connector_client.fetch_media(name)
+    if not got:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "not found"})
+    body, ctype = got
+    # 媒體檔內容不會變（檔名是 sha）→ 讓瀏覽器快取，少打幾次內網
+    return Response(content=body, media_type=ctype,
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/health")

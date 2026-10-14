@@ -19,10 +19,15 @@ def _get(key: str, default: str = "") -> str:
 
 
 def _path(key: str, default: str) -> str:
-    """路徑型設定：相對路徑一律解析成 <connector 根>/<value>。"""
+    """路徑型設定：相對路徑一律解析成 <connector 根>/<value>（並正規化）。
+
+    ★ 用 `.resolve()` 正規化：`MEDIA_DIR=../media`（指向 monorepo 根的 media/，
+    那裡放著舊單體寫入、還沒搬過來的客戶來訊媒體）會被正規化成絕對路徑，
+    免得 `connector/../media` 這種帶 `..` 的字串在別處（StaticFiles 檢查）出怪。
+    """
     v = _get(key, default) or default
     p = Path(v)
-    return str(p if p.is_absolute() else (_ROOT / p))
+    return str(p if p.is_absolute() else (_ROOT / p).resolve())
 
 
 SERVICE_NAME = "connector"

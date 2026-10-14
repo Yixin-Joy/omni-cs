@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 
 import httpx
 
@@ -251,6 +252,30 @@ def fetch_merchant_stats(accounts: list[dict]) -> list[dict] | None:
             return (r.json() or {}).get("items") or []
     except Exception as e:  # noqa: BLE001
         log.warning("取商家統計異常: %s", e)
+        return None
+
+
+def fetch_media(media_key: str) -> tuple[bytes, str] | None:
+    """取客戶來訊媒體（走 Connector `GET /internal/api/media/fetch`）。
+
+    `media_key` 是相對 `MEDIA_DIR` 的檔名（可含子目錄）。回 `(bytes, content_type)`；
+    找不到 / 連不上回 None。
+
+    ★ 為什麼要代理：`/files` 掛在 Connector(8010)，但工作台頁面在 CRM(8020) ——
+    瀏覽器只會對 CRM 發請求，所以由 CRM 代拿。舊訊息裡的網址還可能是**當時的隧道域名**
+    （natapp / ngrok 換過好幾次），前端會把它們重寫成相對的 `/files/...`。
+    """
+    try:
+        with _client() as c:
+            r = c.get("/internal/api/media/fetch", params={"media_key": media_key})
+            if r.status_code != 200:
+                return None
+            ctype = r.headers.get("content-type") or ""
+            if not ctype or ctype.startswith("application/json"):
+                ctype = mimetypes.guess_type(media_key)[0] or "application/octet-stream"
+            return r.content, ctype
+    except Exception as e:  # noqa: BLE001
+        log.warning("取媒體異常: %s", e)
         return None
 
 
