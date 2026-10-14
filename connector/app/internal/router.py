@@ -244,7 +244,8 @@ def messages_query(
             "SELECT id, platform, direction, message_id, sender_id, message_type,"
             f"       raw_content, forwarded_payload, {_ts} AS ts,"
             "       COALESCE(is_handled, false), auto_reply_state, auto_reply_tier,"
-            "       auto_reply_detail, NULL::jsonb AS attachments, NULL::text AS sender_name"
+            "       auto_reply_detail, NULL::jsonb AS attachments,"
+            "       NULLIF(forwarded_payload->'webClientSender'->>'name', '') AS sender_name"
             "  FROM forward_log"
             " WHERE platform = %s AND platform_business_account_id = %s AND sender_id = %s"
             f"   AND (%s IS NULL OR {_ts} < %s::timestamptz)"
@@ -393,7 +394,16 @@ def _conv_dm_forward_sql(before: str | None) -> str:
         f"       (array_agg(message_type ORDER BY {_ts} DESC NULLS LAST))[1] AS last_type,"
         f"       (array_agg(raw_content ORDER BY {_ts} DESC NULLS LAST))[1] AS last_raw,"
         f"       (array_agg(forwarded_payload ORDER BY {_ts} DESC NULLS LAST))[1] AS last_payload,"
-        "       NULL::text AS last_name, NULL::text AS post_id"
+        # ★ 顯示名字：收訊時存在 `forwarded_payload.webClientSender.name`
+        #   （WhatsApp webhook 的 contacts[].profile.name；舊單體也是寫在這）。
+        #   ⚠️ 用 `FILTER (WHERE ... <> '')` 而不是 NULLIF —— **array_agg 不會忽略 NULL**
+        #   （跟 string_agg 不一樣）：我方的 outbound payload 沒有這個欄位，
+        #   排序後 [1] 就會拿到那個 NULL，名字永遠是空的。
+        f"       (array_agg(forwarded_payload->'webClientSender'->>'name'"
+        f"                  ORDER BY {_ts} DESC NULLS LAST)"
+        "        FILTER (WHERE COALESCE(forwarded_payload->'webClientSender'->>'name', '') <> ''"
+        "        ))[1] AS last_name,"
+        "       NULL::text AS post_id"
         "  FROM forward_log"
         " WHERE platform = %s AND platform_business_account_id = %s"
         "   AND sender_id IS NOT NULL AND sender_id <> ''"
