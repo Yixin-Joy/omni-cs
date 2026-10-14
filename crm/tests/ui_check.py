@@ -168,6 +168,23 @@ def check_md_images(html: str, js: str) -> None:
           f"可疑 {len(leak)} 處" if leak else "")
 
 
+def check_refresh_button(html: str, js: str) -> None:
+    """「重新整理」（補拉歷史）按鈕閘門。
+
+    ★ 需求：客服工作台旁一顆刷新鍵，點下去由 CRM 驅動 Connector 補拉歷史，
+      處理「公網中斷沒推送到、訊息沒入庫」。
+    """
+    if "btnRefresh" not in html:
+        return
+    # 按鈕必須是靜態節點（在 script 之前），否則輪詢重繪會弄丟
+    first_script = html.find("<script")
+    check(html.rfind('id="btnRefresh"') < first_script, "刷新按鈕是靜態節點（在 script 之前）")
+    check("function refreshHistory(" in js, "有 refreshHistory() 實作")
+    check("/console/agent/sync-history" in js, "刷新打 /console/agent/sync-history")
+    check("state.refreshing" in js, "有防重入（refreshing）旗標")
+    check("dm_pending" in js and "dm_handled" in js, "結果會區分「補紅點」與「已回覆不補」")
+
+
 def check_platform_badges(html: str, js: str) -> None:
     """工作台二級平台 tab 紅點（迴歸閘門）。
 
@@ -232,6 +249,9 @@ def main():
 
         # [8] 二級平台 tab 紅點
         check_platform_badges(html, js_all)
+
+        # [9] 重新整理（補拉歷史）按鈕
+        check_refresh_button(html, js_all)
 
         # [5] 身分切換元件有載入
         has_switch_ui = 'id="roleMenu"' in html or 'id="whoBox"' in html

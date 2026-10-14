@@ -358,6 +358,44 @@ def pending_counts(business_id: int = Query(...), scope: str = Query(default="dm
     return {"ok": True, "counts": counts, "total": total, "unreachable": unreachable}
 
 
+@router.post("/sync-history")
+def sync_history(sess: dict = Depends(deps.require_csrf)):
+    """★ 工作台「重新整理」：驅動 Connector 主動補拉歷史，避免公網中斷漏訊息。
+
+    對象＝**這次登入者可訪問的全部商家**（管理員/超級坐席→全部；一般客服→
+    只列被授權的商家，不會越權）。逐帳號補拉並計數。
+
+    Connector 只對 `fb` / `ig` 有歷史端點；`wechat` / `whatsapp` 會回
+    `supported=false` 與原因（平台沒有可回溯的 API），這裡原樣帶回讓前端顯示。
+
+    回：`{ok, totals, items}`；Connector 連不上 → 502。
+    """
+    if not rbac.can_view_conversation(sess):
+        return _err(403, "需要客服坐席權限")
+
+    items = repo.list_businesses()
+    if not rbac.is_super_agent(sess):
+        allowed = set(rbac.allowed_business_ids(sess))
+        items = [b for b in items if b["id"] in allowed]
+
+    accounts: list[dict] = []
+    for b in items:
+        for a in repo.list_accounts(b["id"], ""):
+            accounts.append({"platform": a["platform"],
+                             "platform_business_account_id": a["platform_business_account_id"]})
+
+    res = connector_client.sync_history(accounts)
+    if res is None:
+        return _err(502, "連不上 Connector，無法補拉歷史")
+    totals = res.get("totals") or {}
+    audit.log_standalone(sess, "sync_history", payload={
+        "accounts": len(accounts),
+        "businesses": [b["id"] for b in items],
+        "totals": totals,
+    })
+    return {"ok": True, "totals": totals, "items": res.get("items") or []}
+
+
 class ReadIn(BaseModel):
     business_id: int
     platform: str

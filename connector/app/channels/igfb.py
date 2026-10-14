@@ -39,6 +39,21 @@ async def _post(url: str, token: str, payload: dict, timeout: float = 25):
         return r.status_code, r.text
 
 
+async def _get_json(url: str, token: str, params: dict | None = None,
+                    timeout: float = 20) -> tuple[int, dict]:
+    """唯讀 GET，回 `(status, json)`（解析失敗回 `{}`）。"""
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            r = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+            try:
+                return r.status_code, r.json()
+            except Exception:  # noqa: BLE001
+                return r.status_code, {}
+    except Exception as e:  # noqa: BLE001 —— 網路層失敗當 0，呼叫端據此跳過
+        log.warning("Graph GET 失敗 %s: %s", url, e)
+        return 0, {}
+
+
 def _classify(status: int, body: str) -> "_base.SendResult":
     """把 Graph API 回應轉成 SendResult（沿用其他通道的分類語義）。"""
     if status == 200:
@@ -147,3 +162,149 @@ async def reply_comment(platform: str, comment_id: str, text: str,
     except Exception as e:  # noqa: BLE001
         return _base.SendResult(ok=False, error=f"Meta 連線失敗: {e}", temp_error=True)
     return _classify(status, body)
+
+
+# ================================================================
+# 只讀拉取（歷史補拉用）—— 憑證由呼叫端傳入（多租戶）
+#
+# ★ 為什麼需要：公網隧道中斷時 webhook 推不進來 → 訊息沒入庫 → 工作台看不到。
+#   「重新整理」按鈕靠這些函式主動把最近的會話/訊息/貼文/留言拉回來補齊。
+# ================================================================
+
+def _fb_creds(cred: dict) -> tuple[str, str]:
+    return cred.get("page_id") or "", cred.get("page_access_token") or ""
+
+
+def _ig_creds(cred: dict) -> tuple[str, str]:
+    """IG 私訊：`me` + IGAA token（graph.instagram.com）。"""
+    return cred.get("ig_user_id") or "", cred.get("ig_access_token") or ""
+
+
+def _next_cursor(data: dict) -> str:
+    try:
+        return ((data or {}).get("paging") or {}).get("cursors", {}).get("after", "") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+# ---------------------------------------------------------------- FB 私訊
+
+async def fb_conversations(page_id: str, token: str, limit: int = 25) -> list[dict]:
+    """粉專的 Messenger 會話清單（participants / updated_time / snippet）。"""
+    if not page_id or not token:
+        return []
+    url = f"{FB_BASE}/{_ver()}/{page_id}/conversations"
+    status, data = await _get_json(url, token,
+                                   {"fields": "participants,updated_time,snippet", "limit": limit})
+    if status != 200:
+        log.warning("fb_conversations 失敗 %s: %s", status, data)
+        return []
+    return data.get("data") or []
+
+
+async def fb_thread_messages(thread_id: str, token: str, limit: int = 30) -> list[dict]:
+    """某 Messenger 會話的訊息（**回傳順序＝API 給的，通常是新→舊**）。"""
+    if not thread_id or not token:
+        return []
+    url = f"{FB_BASE}/{_ver()}/{thread_id}/messages"
+    status, data = await _get_json(
+        url, token,
+        {"fields": "message,from,created_time,attachments{type,payload},sticker", "limit": limit})
+    if status != 200:
+        log.warning("fb_thread_messages 失敗 %s: %s", status, data)
+        return []
+    return data.get("data") or []
+
+
+# ---------------------------------------------------------------- IG 私訊
+
+async def ig_conversations(token: str, limit: int = 25) -> list[dict]:
+    """IG 專業帳號的會話清單（Instagram 登入路徑：graph.instagram.com/me）。"""
+    if not token:
+        return []
+    url = f"{IG_BASE}/{_ver()}/me/conversations"
+    status, data = await _get_json(url, token,
+                                   {"fields": "participants,updated_time,snippet", "limit": limit})
+    if status != 200:
+        log.warning("ig_conversations 失敗 %s: %s", status, data)
+        return []
+    return data.get("data") or []
+
+
+async def ig_thread_messages(thread_id: str, token: str, limit: int = 30) -> list[dict]:
+    if not thread_id or not token:
+        return []
+    url = f"{IG_BASE}/{_ver()}/{thread_id}/messages"
+    status, data = await _get_json(
+        url, token,
+        {"fields": "message,from,created_time,attachments{type,payload}", "limit": limit})
+    if status != 200:
+        log.warning("ig_thread_messages 失敗 %s: %s", status, data)
+        return []
+    return data.get("data") or []
+
+
+# ---------------------------------------------------------------- 貼文 / 留言
+
+async def fb_posts(page_id: str, token: str, limit: int = 10) -> list[dict]:
+    """粉專貼文（不可加 `type` 參數 —— 已棄用，一加整個 /feed 回 400）。"""
+    if not page_id or not token:
+        return []
+    url = f"{FB_BASE}/{_ver()}/{page_id}/feed"
+    status, data = await _get_json(
+        url, token,
+        {"fields": "id,message,created_time,permalink_url,full_picture,"
+                   "attachments{media{image{src}}}", "limit": limit})
+    if status != 200:
+        log.warning("fb_posts 失敗 %s: %s", status, data)
+        return []
+    posts = data.get("data") or []
+    for p in posts:
+        if not (p.get("full_picture") or p.get("media_url")):
+            for a in (p.get("attachments") or {}).get("data") or []:
+                src = ((a.get("media") or {}).get("image") or {}).get("src")
+                if src:
+                    p["media_url"] = src
+                    break
+    return posts
+
+
+async def fb_comments(post_id: str, token: str, limit: int = 50) -> list[dict]:
+    if not post_id or not token:
+        return []
+    url = f"{FB_BASE}/{_ver()}/{post_id}/comments"
+    fields = ("id,message,from{name,id},created_time,like_count,"
+              "comments{id,message,from{name,id},created_time,like_count}")
+    status, data = await _get_json(url, token, {"fields": fields, "limit": limit})
+    if status != 200:
+        log.warning("fb_comments 失敗 %s: %s", status, data)
+        return []
+    return data.get("data") or []
+
+
+async def ig_posts(ig_user_id: str, page_token: str, limit: int = 10) -> list[dict]:
+    """IG 貼文：走 **FB 登入路徑**（graph.facebook.com + 粉專 token + IG business id）。"""
+    if not ig_user_id or not page_token:
+        return []
+    url = f"{FB_BASE}/{_ver()}/{ig_user_id}/media"
+    status, data = await _get_json(
+        url, page_token,
+        {"fields": "id,caption,media_type,media_url,permalink,timestamp,like_count,comments_count",
+         "limit": limit})
+    if status != 200:
+        log.warning("ig_posts 失敗 %s: %s", status, data)
+        return []
+    return data.get("data") or []
+
+
+async def ig_comments(media_id: str, page_token: str, limit: int = 50) -> list[dict]:
+    if not media_id or not page_token:
+        return []
+    url = f"{FB_BASE}/{_ver()}/{media_id}/comments"
+    fields = ("id,text,timestamp,like_count,from{username,id},"
+              "replies{id,text,timestamp,like_count,from{username,id}}")
+    status, data = await _get_json(url, page_token, {"fields": fields, "limit": limit})
+    if status != 200:
+        log.warning("ig_comments 失敗 %s: %s", status, data)
+        return []
+    return data.get("data") or []

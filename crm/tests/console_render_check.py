@@ -267,9 +267,11 @@ def check_ui_structure(txt: str) -> None:
 
     for ep in ("/console/agent/conversations", "/console/agent/posts", "/console/agent/post",
                "/console/agent/comment/reply", "/console/agent/merchant-stats",
-               "/console/agent/pending-counts",
+               "/console/agent/pending-counts", "/console/agent/sync-history",
                "/console/agent/post-config", "/console/agent/faq", "/console/agent/table"):
         check(ep in txt, "前端接上端點：%s" % ep)
+
+    check("btnRefresh" in txt, "客服工作台旁有「重新整理」按鈕（補拉歷史）")
 
     # 二級平台 tab 紅點：每個 tab 自帶 badge-<platform>，數字來自 pending-counts
     check('class="badge" id="badge-' in txt,

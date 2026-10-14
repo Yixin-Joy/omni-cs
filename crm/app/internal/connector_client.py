@@ -24,13 +24,13 @@ def set_transport(t: httpx.BaseTransport | None) -> None:
     _transport = t
 
 
-def _client() -> httpx.Client:
+def _client(timeout: float = 5.0) -> httpx.Client:
     kw = {}
     if _transport is not None:
         kw["transport"] = _transport
     return httpx.Client(
         base_url=config.CONNECTOR_INTERNAL_BASE,
-        timeout=5.0,
+        timeout=timeout,
         headers={"X-Internal-Token": config.INTERNAL_API_TOKEN or ""},
         **kw,
     )
@@ -150,6 +150,27 @@ def fetch_conversations(platform: str, platform_account_id=0, *, scope: str = "d
             return (r.json() or {}).get("items") or []
     except Exception as e:  # noqa: BLE001
         log.warning("取會話列表異常: %s", e)
+        return None
+
+
+def sync_history(items: list[dict], *, timeout: float = 300.0) -> dict | None:
+    """★ 驅動 Connector 主動補拉歷史（工作台「重新整理」按鈕）。
+
+    `items` = `[{platform, platform_business_account_id}]`（CRM 依登入者權限挑帳號）。
+    這支會**真的打平台 API**，整個過程可能數十秒 → timeout 放寬到 300s。
+    連不上 / 非 200 回 **None**（呼叫端要能區分「沒拉到」與「拉完了」）。
+    """
+    if not items:
+        return {"ok": True, "items": [], "totals": {}}
+    try:
+        with _client(timeout=timeout) as c:
+            r = c.post("/internal/api/sync-history", json={"items": items})
+            if r.status_code != 200:
+                log.warning("補拉歷史失敗 status=%s", r.status_code)
+                return None
+            return r.json()
+    except Exception as e:  # noqa: BLE001
+        log.warning("補拉歷史異常: %s", e)
         return None
 
 

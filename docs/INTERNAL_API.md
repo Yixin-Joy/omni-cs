@@ -325,6 +325,62 @@ CRM 自己也會產生告警（不必等 Connector 上報）：
 > （行數對得上、介面卻是空的）。回填工具：`scripts/backfill_connector_accounts.py`
 > （`--apply` 寫入 / `--verify` 對帳；預設 dry-run）。
 
+### 2.11 `GET /internal/api/pending-count` — 單帳號未處理數
+
+工作台**二級平台 tab 的紅點**要靠它：`/conversations` 一次只回一個平台，
+前端算不出其他平台的數字，所以另開一支最輕量的 count。
+
+| 參數 | 必填 | 說明 |
+|---|---|---|
+| `platform` | ✔ | `wechat` / `whatsapp` / `ig` / `fb` |
+| `platform_business_account_id` | ✔ | 平台原生 ID |
+| `scope` | | `dm`（預設）/ `comment`（只支援 ig / fb，其他 → 400） |
+
+回 `{"ok": true, "count": n, "platform": ..., "scope": ...}`。
+
+- `scope=dm`：`wechat`/`whatsapp` → `forward_log`；`ig`/`fb` → `igfb_dm`。
+  條件＝`direction='inbound' AND is_handled=false`。
+- `scope=comment`：`igfb_comment`，條件＝**頂層 + 未回 + 未忽略 + 非我方**
+  （只寫 `is_handled=false` 會把我方回覆的子留言也算進來）。
+
+### 2.12 `POST /internal/api/sync-history` — 主動補拉歷史（工作台「重新整理」）
+
+★ 公網隧道斷掉時 webhook 推不進來 → 訊息沒入庫。這支讓 CRM 主動驅動 Connector
+打平台 API 把最近的訊息撈回來補齊。
+
+```json
+{ "items": [ { "platform": "fb", "platform_business_account_id": "1297214806810643" } ],
+  "max_conversations": 15, "max_messages": 30, "max_posts": 5, "max_comments": 50 }
+```
+
+憑證**一律取自本機 `connector_account_map` 快取**，呼叫端不需要（也不應該）傳 credential。
+
+回：
+
+```json
+{ "ok": true,
+  "items": [ { "platform": "fb", "platform_business_account_id": "…",
+               "supported": true, "failed": false,
+               "conversations": 3, "dm_new": 4, "dm_out": 1,
+               "dm_handled": 1, "dm_pending": 3,
+               "posts": 1, "comments_new": 2, "errors": [] } ],
+  "totals": { "accounts": 1, "accounts_synced": 1, "accounts_unsupported": 0,
+              "accounts_failed": 0, "dm_new": 4, "dm_out": 1,
+              "dm_handled": 1, "dm_pending": 3, "posts": 1, "comments_new": 2,
+              "errors": [] } }
+```
+
+- `supported`：**平台有沒有歷史 API**。只有 `fb` / `ig` 為 true；
+  `whatsapp`（Cloud API 無此端點）與 `wechat` 為 false，並附 `reason`。
+- `failed`：這次跑有沒有炸（與 `supported` 無關）。
+- **紅點規則**：新入庫的入站私訊，其後（同會話、時間更晚）已有我方回覆
+  → `is_handled=true`（不補紅點），否則 `false`（補紅點）。
+  只對**這次新插入**的列套用，不重算整個會話（否則會覆蓋客服手動標的「已處理」）。
+- 留言：補拉後重算討論串「最後一則是我方發的嗎」→ `replied`/`is_handled`。
+  不逐則推進（Graph 回的是新→舊，順序會算錯）。
+- 批次冪等：已存在的訊息 `ON CONFLICT DO NOTHING`，重按不會產生重複列。
+- 逐帳號容錯 + 每帳號時間上限，單一壞帳號不會拖垮整批。
+
 ---
 
 ## 3. 任務狀態機與逾時清理

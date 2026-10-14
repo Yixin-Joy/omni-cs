@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from app import account_map, media
+from app import account_map, history_sync, media
 from app.channels import igfb_store
 from app.core import config
 from app.core import db
@@ -775,6 +775,37 @@ def merchant_stats(payload: MerchantStatsIn):
     finally:
         conn.close()
     return {"ok": True, "items": out}
+
+
+# ---------------------------------------------------------------- 歷史補拉
+
+class SyncHistoryIn(BaseModel):
+    items: list[dict] = []
+    max_conversations: int = history_sync.DEFAULT_MAX_CONVERSATIONS
+    max_messages: int = history_sync.DEFAULT_MAX_MESSAGES
+    max_posts: int = history_sync.DEFAULT_MAX_POSTS
+    max_comments: int = history_sync.DEFAULT_MAX_COMMENTS
+
+
+@router.post("/sync-history")
+async def sync_history(payload: SyncHistoryIn):
+    """★ 主動補拉歷史（工作台「重新整理」按鈕）—— 公網中斷時的補救路徑。
+
+    `items` = `[{platform, platform_business_account_id}]`（CRM 依登入者權限挑帳號）。
+    憑證一律取自本機 `connector_account_map` 快取，呼叫端**不需要**傳 credential。
+
+    只支援 fb / ig（Graph API 有歷史端點）；wechat / whatsapp 回
+    `supported=false` 並附原因 —— 不是漏做，是平台沒有可回溯的 API。
+
+    ⚠️ 逐帳號容錯，且每個帳號有時間上限，不會讓一個壞帳號拖垮整批。
+    """
+    return await history_sync.sync_many(
+        payload.items,
+        max_conversations=max(1, min(int(payload.max_conversations or 0), 50)),
+        max_messages=max(1, min(int(payload.max_messages or 0), 100)),
+        max_posts=max(1, min(int(payload.max_posts or 0), 30)),
+        max_comments=max(1, min(int(payload.max_comments or 0), 200)),
+    )
 
 
 @router.get("/pending-count")

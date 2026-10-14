@@ -48,8 +48,9 @@
 | Facebook | 私訊 | ✅ | ✅ | ✅ 私訊 |
 | Facebook | 貼文留言 | ✅ | ✅ | ✅ 留言 |
 
-工作台另提供：**未讀紅點**（分平台 + 分會話）、**標為已處理**、**貼文留言「已回 / 已忽略」**、
-**檔案與圖片傳輸**、**貼文特殊配置**（單一貼文覆寫自動回覆設定），以及 **AI 四層自動回覆**。
+工作台另提供：**未讀紅點**（分平台 + 分會話 + 分商家）、**標為已處理**、**貼文留言「已回 / 已忽略」**、
+**檔案與圖片傳輸**、**貼文特殊配置**（單一貼文覆寫自動回覆設定）、**手動重新整理（補拉歷史）**，
+以及 **AI 四層自動回覆**。
 
 ---
 
@@ -207,6 +208,20 @@ C:\Users\its-admin\AppData\Local\Python\pythoncore-3.14-64\python.exe -m uvicorn
 
 貼文留言另有**貼文特殊配置**：對單一貼文覆寫自動回覆開關（全開 / 全關 / 自訂勾選層級）。
 
+### 重新整理（補拉歷史）
+
+「客服工作台」標題旁有一顆 **⟳** 按鈕。公網隧道（ngrok）斷掉時 webhook 推不進來，
+那段時間的訊息不會入庫 —— 按一下這顆按鈕，CRM 會驅動 Connector 主動打平台 API，
+把最近的會話 / 訊息 / 貼文 / 留言撈回來補齊。
+
+- **只支援 Instagram / Facebook**：WhatsApp Cloud API 與微信客服消息都沒有可回溯
+  的歷史端點，按鈕會回報「N 個帳號不支援補拉」（不是壞掉，是平台沒有）。
+- **紅點規則**：補進來的**新**入站私訊，若它之後（同一會話、時間更晚）已有我方回覆
+  → 記為已處理（**不補紅點**）；之後沒有任何回覆 → **補紅點**。
+  只對這次新插入的訊息套用，不會覆蓋客服手動標的「已處理」。
+- 回覆後自動重載商家列紅點、會話列表與平台未處理數。
+- 每次按鈕都會寫一筆審計（`operate_type = sync_history`，含帳號數與統計）。
+
 ---
 
 ## 六、對外接入（ngrok + 各渠道後台設定）
@@ -283,6 +298,8 @@ PUBLIC_BASE_URL=https://<你的域名>.ngrok-free.dev
 | POST | `/internal/api/account-map/sync` | Connector | CRM 推送平台帳號映射 |
 | POST | `/internal/api/media/upload` | Connector | CRM 上傳媒體 |
 | GET | `/internal/api/conversations` | Connector | CRM 查會話列表（工作台） |
+| GET | `/internal/api/pending-count` | Connector | 單帳號未處理數（平台 tab 紅點） |
+| POST | `/internal/api/sync-history` | Connector | 主動補拉歷史（工作台「重新整理」） |
 
 ---
 

@@ -44,6 +44,22 @@
   }
   .brand h1 { font-size: 17px; font-weight: 700; }
   .brand span { font-size: 12px; color: var(--text-soft); }
+  .brand .brand-txt { min-width: 0; flex: 1; }
+  /* 「重新整理」：主動向平台補拉歷史（公網中斷漏掉的訊息） */
+  .brand .brand-ref {
+    margin-left: auto; flex-shrink: 0; width: 30px; height: 30px; border-radius: 8px;
+    border: 1px solid var(--border); background: #fff; color: var(--text-soft);
+    cursor: pointer; font-size: 15px; font-weight: 700; line-height: 1;
+    display: flex; align-items: center; justify-content: center; transition: all .15s;
+  }
+  .brand .brand-ref:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .brand .brand-ref[disabled] { cursor: default; opacity: .65; }
+  .brand .brand-ref .spinner {
+    width: 13px; height: 13px; border-radius: 50%;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    animation: brand-spin .7s linear infinite;
+  }
+  @keyframes brand-spin { to { transform: rotate(360deg); } }
 
   /* 一級導覽：私訊 / 貼文留言 */
   .nav-main { display: flex; gap: 8px; margin-bottom: 10px; }
@@ -805,7 +821,9 @@
     <div class="sidebar-head">
       <div class="brand">
         <div class="logo">客</div>
-        <div><h1>客服工作台</h1><span>WeChat · WhatsApp · IG · FB</span></div>
+        <div class="brand-txt"><h1>客服工作台</h1><span>WeChat · WhatsApp · IG · FB</span></div>
+        <button class="brand-ref" id="btnRefresh" onclick="refreshHistory()"
+                title="重新整理：向平台補拉一次歷史訊息（公網中斷時漏掉的訊息會補進來）">⟳</button>
       </div>
       <div class="nav-main">
         <div class="nav active" id="nav-dm" onclick="switchSection('dm')">私訊<span class="nav-badge" id="nav-badge-dm" style="display:none"></span></div>
@@ -910,6 +928,7 @@ var state = {
   platform: 'whatsapp',
   scope: 'dm',
   counts: { dm: {}, comment: {} },          // 各平台未處理數（紅點；由 loadCounts 拉）
+  refreshing: false,                        // 「重新整理」（補拉歷史）進行中
   convs: [], convsTotal: 0,
   posts: [], postsHasMore: false,
   activeKey: null, activeAcc: null, thread: [], logs: [],
@@ -1659,6 +1678,45 @@ function loadCounts(scope) {
 
 function loadAllCounts() {
   return Promise.all([loadCounts('dm'), loadCounts('comment')]);
+}
+
+/* ---------------------------------------------------------------- 重新整理（補拉歷史） */
+/* ★ 公網隧道中斷時 webhook 推不進來 → 訊息沒入庫。這顆按鈕驅動 CRM → Connector
+     主動打平台 API 把最近的消息撈回來，並依「後面有沒有我方回覆」決定要不要補紅點。 */
+function refreshHistory() {
+  var btn = $('btnRefresh');
+  if (!btn || state.refreshing) return;
+  state.refreshing = true;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  showToast('正在向平台補拉歷史訊息…（WhatsApp / 微信沒有可回溯的 API，只補 IG / FB）', 300000);
+
+  apiJson('/console/agent/sync-history', {}).then(function (res) {
+    if (!guard(res)) return;
+    var t = res.data.totals || {};
+    var parts = ['新增私訊 ' + (t.dm_new || 0) + ' 則',
+                 '補紅點 ' + (t.dm_pending || 0) + ' 則',
+                 '已回覆不補 ' + (t.dm_handled || 0) + ' 則'];
+    if (t.posts) parts.push('貼文 ' + t.posts + ' 篇');
+    if (t.comments_new) parts.push('新留言 ' + t.comments_new + ' 則');
+    var msg = '補拉完成：' + parts.join('、');
+    if (t.accounts_unsupported) msg += '（' + t.accounts_unsupported + ' 個帳號不支援補拉）';
+    var errs = t.errors || [];
+    if (errs.length) msg += '；' + errs.length + ' 項警告（見 console）';
+    showToast(msg, 8000);
+    if (errs.length) console.warn('[sync-history]', errs);
+    return loadBusinesses().then(function () {
+      if (state.section === 'posts') loadPosts(); else loadConversations();
+      loadAllCounts();
+      loadAutoSettings();
+    });
+  }).catch(function (e) {
+    showToast('補拉失敗：' + ((e && e.message) || e), 6000);
+  }).then(function () {
+    state.refreshing = false;
+    btn.disabled = false;
+    btn.innerHTML = '⟳';
+  });
 }
 
 function renderBadges() {
