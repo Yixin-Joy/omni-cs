@@ -73,12 +73,13 @@ RELEVANT = ["藍牙耳機多少錢", "B 款耳機價格", "不想要了可以退
 IRRELEVANT = ["你們有賣冰箱嗎", "如何申請房屋貸款", "台北捷運末班車時間"]
 
 
-def restore_global(saved: dict) -> None:
+def restore_global(saved: dict, business_id=None) -> None:
     """把我動過的檢索參數還原：saved 裡沒有 → 傳 None 讓 set_params 刪掉覆寫。
 
-    檢索參數一律落在「全域」（collection_id IS NULL），所以還原也是寫 None。
+    檢索參數落在「該商家的全域」（collection_id IS NULL），所以還原也寫 None。
+    ★ 必須帶 business_id —— 少了它會寫到「無主」那批，真實商家的值就還不回來。
     """
-    kb_db.set_params(None, {k: saved.get(k) for k in TOUCHED})
+    kb_db.set_params(None, {k: saved.get(k) for k in TOUCHED}, business_id=business_id)
 
 
 # ======================================================================
@@ -92,9 +93,12 @@ def section1(cids: list[int]) -> None:
         sanity(False, "沒有可檢索的塊，跳過")
         return
     note("可檢索的庫", str([c for c in dict.fromkeys(r["collection_id"] for r in rows)]))
-    saved = kb_db.get_global_param_overrides()
+    # ★ 檢索參數按商家隔離 → 存/還原都必須指定**同一個商家**，
+    #   否則（寫 A 商家、還原 B 商家）會把真實商家的參數改壞。
+    _biz0 = kb_db.business_of_collection(cids[0]) if cids else None
+    saved = kb_db.get_global_param_overrides(_biz0)
     try:
-        kb_db.set_params(None, {"top_k": 3, "min_score": 0.42})
+        kb_db.set_params(None, {"top_k": 3, "min_score": 0.42}, business_id=_biz0)
         kb_search.invalidate()
         r = kb_search.search("藍牙耳機多少錢")
         note("設「全域」top_k=3 / min_score=0.42 → 檢索回報",
@@ -109,6 +113,8 @@ def section1(cids: list[int]) -> None:
         if cids:
             c0 = cids[0]
             kb_db.set_params(c0, {"top_k": 9, "min_score": 0.77})
+            # ⚠️ 上面這行會寫到 c0 所屬商家的全域（檢索參數不分庫、只分商家），
+            #    所以 finally 的還原一定要針對**同一個商家**（見下一段的 restore）。
             kb_search.invalidate()
             r2 = kb_search.search("藍牙耳機多少錢")
             own = kb_db.get_param_overrides(c0)
@@ -117,11 +123,12 @@ def section1(cids: list[int]) -> None:
                     f"→ 實測 top_k={r2.params.get('top_k')}，該庫的 kb_param key={sorted(own)}"
                     "（空 = 檢索參數沒落進這個庫）")
     finally:
-        restore_global(saved)
+        restore_global(saved, _biz0)
         kb_search.invalidate()
-    after = kb_db.get_global_param_overrides()
+    after = kb_db.get_global_param_overrides(_biz0)
     sanity(all(after.get(k) == saved.get(k) for k in TOUCHED),
-           "已還原全域參數", f"top_k={after.get('top_k')} min_score={after.get('min_score')}")
+           "已還原該商家的檢索參數",
+           f"biz={_biz0} top_k={after.get('top_k')} min_score={after.get('min_score')}")
 
     mixed = set()
     for q in RELEVANT:

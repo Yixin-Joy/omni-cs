@@ -195,7 +195,9 @@ def main() -> int:
 
         from app.llm import deepseek_client as _ds
 
-        _saved_gate = kb_db.get_global_param_overrides().get("rag_answer_gate")
+        # ★ 參數按商家隔離 → 存/還原都針對自檢商家（否則寫的是「無主」那批，
+        #   引擎根本讀不到，這條斷言會變成空轉）。
+        _saved_gate = kb_db.get_global_param_overrides(BIZ).get("rag_answer_gate")
         _orig_search = kb_search.search_multi
         _orig_rag = _ds.DeepSeekClient.answer_with_rag
         _calls = {"n": 0}
@@ -217,7 +219,7 @@ def main() -> int:
         # ⚠️ 必須是**同步**函式：`_rag_try` 是用 `asyncio.to_thread(search_multi, …)`
         #    呼叫的，async 的話會回一個 coroutine（踩過）。
         def _fake_search(queries, **kw):
-            gate = str(kb_db.get_global_param_overrides().get("rag_answer_gate")
+            gate = str(kb_db.get_global_param_overrides(BIZ).get("rag_answer_gate")
                        or "image")
             return _fake_result(gate)
 
@@ -235,7 +237,7 @@ def main() -> int:
         _ds.DeepSeekClient.answer_with_rag = _fake_rag
         try:
             for gate, want_hit in (("image", True), ("on", True), ("off", False)):
-                kb_db.set_params(None, {"rag_answer_gate": gate})
+                kb_db.set_params(None, {"rag_answer_gate": gate}, business_id=BIZ)
                 kb_search.invalidate()
                 a = ask("服務端日誌長什麼樣？", layers=["rag"])
                 if want_hit:
@@ -254,7 +256,7 @@ def main() -> int:
 
             # 最硬的保險：模型**兩次**都拒絕，但命中的就是圖 → 用題注組回覆，不准不回
             _calls["stubborn"] = True
-            kb_db.set_params(None, {"rag_answer_gate": "image"})
+            kb_db.set_params(None, {"rag_answer_gate": "image"}, business_id=BIZ)
             kb_search.invalidate()
             a = ask("服務端日誌長什麼樣？", layers=["rag"])
             check(a.tier == "rag" and "![" in (a.text or ""),
@@ -267,11 +269,11 @@ def main() -> int:
         finally:
             kb_search.search_multi = _orig_search
             _ds.DeepSeekClient.answer_with_rag = _orig_rag
-            kb_db.set_params(None, {"rag_answer_gate": _saved_gate})
+            kb_db.set_params(None, {"rag_answer_gate": _saved_gate}, business_id=BIZ)
             kb_search.invalidate()
-        check(kb_db.get_global_param_overrides().get("rag_answer_gate") == _saved_gate,
+        check(kb_db.get_global_param_overrides(BIZ).get("rag_answer_gate") == _saved_gate,
               "自檢沒有改動正式的 rag_answer_gate 設定",
-              f"{kb_db.get_global_param_overrides().get('rag_answer_gate')}")
+              f"{kb_db.get_global_param_overrides(BIZ).get('rag_answer_gate')}")
 
         print("\n[5] 不相關問題 → 降級人工（不硬掰）…")
         a = ask("請問你們有賣冰箱嗎？", layers=["rag"])

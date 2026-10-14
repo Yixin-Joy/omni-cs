@@ -279,6 +279,127 @@ def check_badge_consistency(html: str, js: str) -> None:
     check("visibilitychange" in js, "切回前景立刻補一次")
 
 
+def check_port_completeness(html: str, js: str) -> None:
+    """移植完整性：舊版 console 的設定分頁整包搬過來，**用到的全域識別字必須都存在**。
+
+    ★ 為什麼需要這條：整包移植是機械替換（`arState.`→`stState.`、URL 改名…），
+      最容易漏掉的不是邏輯，而是**區塊外的全域宣告**。
+      實例（2026-10-14 小jo 回報的三個問題，全部由這一類疏漏造成）：
+        · `KB_STATUS` / `KB_RUN_LABEL` 定義在舊檔 KB 區塊**之前** → 沒搬過來，
+          `kbDocTag()` 一呼叫就 ReferenceError → **知識庫文件列表整頁空白**
+          （統計有數字、列表看不到，看起來像後端壞了）。
+        · FAQ／表格的「匯入 Excel/CSV／下載範本／匯出」按鈕與 `import_*` 端點整批沒搬。
+        · 紀錄頁的卡片式展示（層級標籤／可展開檢索明細）被換成了簡易表格。
+    """
+    # [a] 用了但沒宣告的「常數型」識別字（ALL_CAPS）—— 這正是上述第一類漏搬。
+    declared = set(re.findall(r"^\s*(?:function|var|let|const)\s+([A-Za-z_$][\w$]*)",
+                              js, re.M))
+    # 已知的瀏覽器／語言內建（大寫）
+    builtin = {
+        "JSON", "Math", "Date", "Number", "String", "Boolean", "Array", "Object", "Promise",
+        "Set", "Map", "RegExp", "Error", "TypeError", "NaN", "Infinity", "URLSearchParams",
+        "FormData", "FileReader", "Blob", "URL", "Image", "Event", "Node", "Element", "CSS",
+        "HTMLElement", "XHR", "XMLHttpRequest", "DOMException", "Intl", "Symbol", "BigInt",
+        "WeakMap", "WeakSet", "Proxy", "Reflect", "AbortController", "TextEncoder",
+    }
+    used = set(re.findall(r"\b([A-Z][A-Z0-9_]{2,})\b", js))
+    missing = sorted(
+        n for n in used - declared - builtin
+        if not n.startswith(("TODO", "XXX", "FIXME"))
+        # 排除 HTML 標籤名與常見縮寫
+        and n not in {"TMP", "API", "URLS", "ID", "UUID", "CSRF", "XLSX", "CSV", "PDF", "LLM"}
+        # 排除在字串裡出現的（例如 'mode 必須是 replace'）——用引號包住的就不算引用
+        and not re.search(r"['\"`][^'\"`]*\b" + re.escape(n) + r"\b[^'\"`]*['\"`]", js)
+    )
+    check(not missing,
+          "★ 沒有「用了卻沒宣告」的全域常數（漏搬的典型症狀：整頁渲染失敗）",
+          "缺：" + "、".join(missing) if missing else "")
+
+    # [b] 設定頁四分頁（FAQ／表格／知識庫／紀錄）的入口都必須存在
+    for fn in ("renderSettingsFaq", "renderSettingsTable", "renderSettingsKb",
+               "renderSettingsHittest", "renderSettingsLogs"):
+        check(("function " + fn) in js, f"設定分頁入口存在：{fn}()")
+
+    # [c] 舊版有的功能按鈕（整批沒搬過一次，所以逐項釘住）
+    if "function faqTabHtml" in js:
+        for marker, why in (
+            ("匯入 Excel / CSV", "FAQ 匯入按鈕"),
+            ("faq-import", "FAQ 匯入端點"),
+            ("faq-template?fmt=xlsx", "FAQ 範本 xlsx"),
+            ("faq-template?fmt=csv", "FAQ 範本 csv"),
+            ("faq-export", "FAQ 匯出"),
+            ("儲存全部修改", "FAQ 批次儲存"),
+            ("onFaqSearchInput", "FAQ 即時搜尋"),
+        ):
+            check(marker in js, f"FAQ 具備：{why}")
+    if "function tableTabHtml" in js:
+        for marker, why in (
+            ("上傳 Excel / CSV 建新表", "表格匯入建新表按鈕"),
+            ("table-import", "表格匯入端點"),
+            ("table-template?fmt=xlsx", "表格範本 xlsx"),
+            ("table-export?table_id=", "單表匯出"),
+            ("editColumns", "欄位編輯"),
+            ("addRow", "新增資料列"),
+        ):
+            check(marker in js, f"業務表格具備：{why}")
+
+    # [d] 紀錄頁：卡片式展示 + 可展開檢索明細（不是簡易表格）
+    if "function logsTabHtml" in js:
+        for marker, why in (
+            ("log-item", "紀錄用卡片式（.log-item）呈現"),
+            ("toggleLogDetail", "可展開單筆檢索明細"),
+            ("renderMatchedRows", "召回明細渲染"),
+            ("kbHitHtml", "候選塊分數/入選標示"),
+            ("命中情況統計", "命中情況統計子頁"),
+            ("openLogsStats", "開啟統計子頁"),
+        ):
+            check(marker in js, f"紀錄頁具備：{why}")
+
+    # [e] 命中測試：勾層 + 試跑 + 結果（含召回明細）
+    if "function hittestTabHtml" in js:
+        for marker, why in (
+            ("ktLayers", "分層勾選"),
+            ("runHitTest", "開始測試"),
+            ("ktResultHtml", "結果渲染"),
+            ("ktNoHistory", "可關掉帶入對話"),
+            ("ktRewrite", "可切換查詢改寫"),
+        ):
+            check(marker in js, f"命中測試具備：{why}")
+
+    # [f] 移植過來的那幾塊：全部走 stApi/stApiJson/stUpload/stDownload（自動帶
+    #     business_id 與 CSRF）。⚠️ 只看移植區 —— CRM 原本就有的對話頁附件上傳
+    #     (`/console/agent/upload`) 不屬於這批，它自己帶了 CSRF 也不需要 business_id。
+    region = js
+    for start_marker in ("知識庫（RAG 第三層）—— 塊C：從舊版 console 整包移植",
+                         "FAQ／業務表格／命中測試／紀錄 —— 從舊版 console 整包移植"):
+        if start_marker in region:
+            region = region[region.index(start_marker):]
+    end_marker = "尾端靜態節點用到的函式"
+    if end_marker in region:
+        region = region[:region.index(end_marker)]
+
+    raw_calls = re.findall(r"fetch\(\s*['\"`](/console/agent/[^'\"`]*)['\"`]", region)
+    check(not raw_calls,
+          "★ 移植區沒有裸 fetch() 打 /console/agent/*（會漏帶 business_id 與 CSRF）",
+          "裸呼叫：" + "、".join(raw_calls[:3]) if raw_calls else "")
+
+    # 下載連結也必須帶 business_id（stDownload 會自動補）
+    bad_dl = re.findall(r"location\.href\s*=\s*['\"`](/console/agent/[^'\"`]*)['\"`]", region)
+    check(not bad_dl, "★ 下載連結沒有裸 location.href（要用 stDownload 補 business_id）",
+          "裸連結：" + "、".join(bad_dl[:3]) if bad_dl else "")
+
+    # 舊 URL 前綴一個都不能留
+    for bad in ("/console/autoreply/",):
+        check(bad not in region, f"移植區沒有殘留舊端點前綴 {bad}")
+
+    # [g] 專案約定：不用瀏覽器原生彈窗（只看移植區，避免誤判其他既有程式）
+    for name, pat in (("confirm", r"(?<![\w.])confirm\("),
+                      ("alert", r"(?<![\w.])alert\("),
+                      ("prompt", r"(?<![\w.])prompt\(")):
+        check(not re.search(pat, region),
+              f"移植區沒有原生 {name}()（二選一用 stChoose、確定用 askConfirm、輸入用 stPrompt）")
+
+
 def main():
     pages = sorted(UI_DIR.glob("*.html"))
     js_files = sorted(UI_DIR.glob("*.js"))
@@ -338,6 +459,14 @@ def main():
 
         # [12] 後台平台帳號彈窗（單頁展示）
         check_acct_modal(html)
+
+        # [13] 移植完整性（漏搬全域宣告 → 整頁渲染失敗）
+        #     ⚠️ 只對「有設定分頁」的頁面跑 —— admin/ops 沒有 FAQ/表格/知識庫分頁，
+        #        對它們檢查「分頁入口存在」只會產生假失敗。
+        if 'id="spBody"' in html and "function faqTabHtml" in js_all:
+            check_port_completeness(html, js_all)
+        else:
+            check(True, "此頁沒有客服設定分頁，跳過移植完整性檢查")
 
         # [5] 身分切換元件有載入
         has_switch_ui = 'id="roleMenu"' in html or 'id="whoBox"' in html

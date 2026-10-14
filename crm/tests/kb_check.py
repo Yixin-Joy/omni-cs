@@ -299,7 +299,9 @@ check(bool(cid), f"知識庫就緒 #{cid}")
 # 參數覆寫（★ 檢索參數與提示詞全庫共用；分塊參數才按知識庫）
 # ⚠️ 全域的兩組（檢索參數、提示詞）寫下去會蓋到正式設定 → 先整批存原值、後面還原。
 #    沒有還原的話，使用者調好的 min_score / 提示詞會被清成預設（踩過）。
-_saved_global = kb_db.get_global_param_overrides()      # 全量（含提示詞）
+# ★ 檢索參數按商家隔離（2026-10-14 塊C）→ 存/還原都要指明自檢商家，
+#   否則讀到的是「無主」那批（恆為空），還原等於沒還原。
+_saved_global = kb_db.get_global_param_overrides(BIZ)      # 全量（含提示詞）
 _saved_chunk = {k: kb_db.get_param_overrides(cid).get(k) for k in ("chunk_size",)}
 kb_db.set_params(cid, {"top_k": 5, "min_score": "0.5", "chunk_size": 300})
 p = kb_db.load_params(cid)
@@ -342,7 +344,7 @@ check(kb_search.prompt_of("rag_answer_prompt") == rag_config.RAG_PROMPT,
 kb_db.set_params(None, {k: None for k in rag_config.PARAM_SPECS
                         if kb_db._param_scope(k) == "global"})
 kb_db.set_params(cid, _saved_chunk)
-kb_db.set_params(None, _saved_global)
+kb_db.set_params(None, _saved_global, business_id=BIZ)
 kb_search.invalidate()
 _p = kb_db.get_global_param_overrides()
 check(_p == _saved_global,

@@ -13,8 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from app import audit
@@ -25,6 +25,7 @@ from app.core import config
 from app.internal import connector_client
 from app.llm import reply_engine
 from app.rag import kb_db
+from app.utils import xlsx_io
 
 log = logging.getLogger("crm")
 
@@ -356,15 +357,32 @@ def faqs(business_id: int = Query(...), q: str = Query(default=""),
     if bad:
         return bad
     items = autoreply_db.list_faqs(int(business_id), q=q)
-    return {"ok": True, "items": items}
+    # ★ 同時回 `faqs` / `total` 兩個別名 —— 工作台前端是從舊版 console 整包移植的，
+    #   舊端點就是這個形狀；給別名省掉一整批「這裡讀 items、那裡讀 faqs」的分支。
+    return {"ok": True, "items": items, "faqs": items, "total": len(items)}
 
 
 @router.get("/tables")
-def tables(business_id: int = Query(...), sess: dict = Depends(deps.require_agent)):
+def tables(business_id: int = Query(...), rows: int = Query(default=1),
+           sess: dict = Depends(deps.require_agent)):
+    """列出該商家的業務表格。
+
+    ★ 每一張都附上 `rows`（資料列）與 `row_count` —— 舊 console 就是這個形狀
+      （工作台前端整包移植過來，展開資料列時直接讀 `t.rows`，不再另外打一次 API）。
+      `rows=0` 可省掉資料列（只要清單時用）。
+    """
     bad = _biz_guard(sess, business_id)
     if bad:
         return bad
-    return {"ok": True, "items": autoreply_db.list_tables(int(business_id))}
+    items = autoreply_db.list_tables(int(business_id))
+    by_table: dict[int, list[dict]] = {}
+    if rows:
+        for tid in [int(t["id"]) for t in items]:
+            by_table[tid] = autoreply_db.list_rows(tid)
+    for t in items:
+        t["rows"] = by_table.get(int(t["id"]), []) if rows else []
+        t["row_count"] = len(by_table.get(int(t["id"]), []))
+    return {"ok": True, "items": items, "tables": items, "total": len(items)}
 
 
 @router.get("/collections")
@@ -585,6 +603,249 @@ def table_row(payload: TableRowIn, sess: dict = Depends(deps.require_csrf)):
     return _err(400, "action 必須是 create / update / delete")
 
 
+# ================================================================ FAQ／表格 匯入匯出（Excel / CSV）
+
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _attachment(data: bytes, filename: str, mime: str) -> Response:
+    """下載附件（檔名用 RFC 5987 編碼 —— 中文檔名才不會變亂碼）。"""
+    from urllib.parse import quote
+    return Response(
+        content=data, media_type=mime,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+def _json_faqs(text: str) -> list[dict]:
+    """貼上的 JSON → FAQ items（支援中英欄名）。"""
+    import json as _json
+    data = _json.loads(text)
+    if isinstance(data, dict):
+        data = data.get("faqs") or data.get("items") or []
+    if not isinstance(data, list):
+        raise ValueError("JSON 需為陣列")
+    out = []
+    for it in data:
+        if not isinstance(it, dict):
+            continue
+        q = str(it.get("question") or it.get("問題") or it.get("问题") or "").strip()
+        a = str(it.get("answer") or it.get("答案") or "").strip()
+        if not q or not a:
+            continue
+        out.append({"question": q, "answer": a,
+                    "keywords": str(it.get("keywords") or it.get("關鍵詞") or "").strip(),
+                    "enabled": xlsx_io.parse_bool(str(it.get("enabled", "")), default=True)})
+    if not out:
+        raise ValueError("沒有解析到任何有效的問答對")
+    return out
+
+
+def _json_table(text: str) -> tuple[list[str], list[dict]]:
+    """貼上的 JSON → (欄位, 資料列)。"""
+    import json as _json
+    data = _json.loads(text)
+    if isinstance(data, dict):
+        data = data.get("rows") or data.get("data") or []
+    if not isinstance(data, list) or not data:
+        raise ValueError("JSON 需為非空陣列")
+    columns: list[str] = []
+    for it in data:
+        if isinstance(it, dict):
+            for k in it:
+                if str(k) not in columns:
+                    columns.append(str(k))
+    rows = [{str(k): str(v) for k, v in it.items()} for it in data if isinstance(it, dict)]
+    if not columns or not rows:
+        raise ValueError("沒有解析到任何資料列")
+    return columns, rows
+
+
+@router.post("/faq-import")
+async def faq_import(business_id: int = Form(...), mode: str = Form("replace"),
+                     file: UploadFile | None = File(None), text: str = Form(""),
+                     sess: dict = Depends(deps.require_csrf)):
+    """匯入 FAQ（Excel / CSV / 貼上 JSON）。mode = replace（先清空該商家）或 append。"""
+    bad = _biz_guard(sess, business_id) or _kb_edit_guard(sess)
+    if bad:
+        return bad
+    mode = (mode or "replace").lower()
+    if mode not in ("replace", "append"):
+        return _err(400, "mode 必須是 replace 或 append")
+    try:
+        if file is not None:
+            raw = await file.read()
+            items = xlsx_io.parse_faq_rows(xlsx_io.read_rows(file.filename or "", raw))
+        elif text.strip():
+            items = _json_faqs(text)
+        else:
+            return _err(400, "請選擇檔案或提供 JSON 內容")
+    except xlsx_io.SpreadsheetError as e:
+        return _err(400, str(e))
+    except Exception as e:  # noqa: BLE001
+        return _err(400, f"解析失敗：{e}")
+
+    result = autoreply_db.replace_faqs(int(business_id), items, mode=mode)
+    _refresh_engine()
+    audit.log_standalone(sess, "faq_import", business_id=int(business_id),
+                         payload={"mode": mode, **{k: v for k, v in result.items()}})
+    return {"ok": True, **result,
+            "total": len(autoreply_db.list_faqs(int(business_id)))}
+
+
+@router.get("/faq-export")
+def faq_export(business_id: int = Query(...), sess: dict = Depends(deps.require_agent)):
+    bad = _biz_guard(sess, business_id)
+    if bad:
+        return bad
+    faqs = autoreply_db.list_faqs(int(business_id))
+    rows = [[f["question"], f["answer"], f.get("keywords") or "",
+             "是" if f["enabled"] else "否"] for f in faqs]
+    data = xlsx_io.to_xlsx_bytes(xlsx_io.FAQ_HEADERS, rows, "FAQ")
+    return _attachment(data, "faq.xlsx", _XLSX_MIME)
+
+
+def _template(headers: list[str], rows: list[list[str]], title: str, fmt: str) -> Response:
+    if (fmt or "xlsx").lower() == "csv":
+        return _attachment(xlsx_io.to_csv_bytes(headers, rows),
+                           f"{title}_template.csv", "text/csv; charset=utf-8")
+    return _attachment(xlsx_io.to_xlsx_bytes(headers, rows, title),
+                       f"{title}_template.xlsx", _XLSX_MIME)
+
+
+@router.get("/faq-template")
+def faq_template(fmt: str = Query(default="xlsx"), sess: dict = Depends(deps.require_agent)):
+    return _template(xlsx_io.FAQ_HEADERS, xlsx_io.FAQ_TEMPLATE_ROWS, "FAQ", fmt)
+
+
+@router.post("/table-import")
+async def table_import(business_id: int = Form(...), table_id: int = Form(0),
+                       name: str = Form(""), description: str = Form(""),
+                       mode: str = Form("replace"),
+                       file: UploadFile | None = File(None), text: str = Form(""),
+                       sess: dict = Depends(deps.require_csrf)):
+    """匯入業務表格。`table_id=0` → 依第一列欄位名新建一張表；否則覆寫／附加。"""
+    bad = _biz_guard(sess, business_id) or _kb_edit_guard(sess)
+    if bad:
+        return bad
+    mode = (mode or "replace").lower()
+    if mode not in ("replace", "append"):
+        return _err(400, "mode 必須是 replace 或 append")
+    try:
+        if file is not None:
+            raw = await file.read()
+            columns, rows = xlsx_io.parse_grid(xlsx_io.read_rows(file.filename or "", raw))
+        elif text.strip():
+            columns, rows = _json_table(text)
+        else:
+            return _err(400, "請選擇檔案或提供 JSON 內容")
+    except xlsx_io.SpreadsheetError as e:
+        return _err(400, str(e))
+    except Exception as e:  # noqa: BLE001
+        return _err(400, f"解析失敗：{e}")
+
+    mine = autoreply_db.list_tables(int(business_id))
+    if table_id:
+        t = next((x for x in mine if int(x["id"]) == int(table_id)), None)
+        if t is None:
+            return _err(404, "找不到該表")
+        if columns and columns != [str(c) for c in (t.get("columns") or [])]:
+            autoreply_db.update_table(int(t["id"]), {"columns": columns})
+        n = (autoreply_db.replace_rows(int(t["id"]), rows) if mode == "replace"
+             else autoreply_db.append_rows(int(t["id"]), rows))
+        _refresh_engine()
+        return {"ok": True, "table_id": int(t["id"]), "written": n,
+                "columns": columns, "mode": mode}
+
+    t = autoreply_db.create_table(int(business_id), name.strip() or "業務表格",
+                                  (description or "").strip(), columns)
+    n = autoreply_db.replace_rows(int(t["id"]), rows)
+    _refresh_engine()
+    return {"ok": True, "table_id": int(t["id"]), "written": n,
+            "columns": columns, "table": t}
+
+
+@router.get("/table-export")
+def table_export(business_id: int = Query(...), table_id: int = Query(default=0),
+                 sess: dict = Depends(deps.require_agent)):
+    bad = _biz_guard(sess, business_id)
+    if bad:
+        return bad
+    mine = autoreply_db.list_tables(int(business_id))
+    if table_id:
+        tables = [t for t in mine if int(t["id"]) == int(table_id)]
+    else:
+        tables = mine
+    if not tables:
+        return _err(404, "找不到該表")
+    t = tables[0]
+    columns = [str(c) for c in (t.get("columns") or [])]
+    rows = autoreply_db.list_rows(int(t["id"]))
+    if not columns and rows:
+        for r in rows:
+            for k in (r.get("data") or {}):
+                if k not in columns:
+                    columns.append(k)
+    body = [[str((r.get("data") or {}).get(c, "")) for c in columns] for r in rows]
+    data = xlsx_io.to_xlsx_bytes(columns, body, t["name"] or "業務表格")
+    return _attachment(data, f"{t['name'] or 'business_table'}.xlsx", _XLSX_MIME)
+
+
+@router.get("/table-template")
+def table_template(fmt: str = Query(default="xlsx"), sess: dict = Depends(deps.require_agent)):
+    rows = xlsx_io.TABLE_TEMPLATE_ROWS
+    return _template(rows[0], rows[1:], "業務表格", fmt)
+
+
+class TableRowsBulkDeleteIn(BaseModel):
+    business_id: int
+    ids: list[int] = []
+
+
+@router.post("/table-row-bulk-delete")
+def table_row_bulk_delete(payload: TableRowsBulkDeleteIn,
+                          sess: dict = Depends(deps.require_csrf)):
+    """批次刪資料列（只刪屬於該商家的表底下的列）。"""
+    bad = _biz_guard(sess, payload.business_id) or _kb_edit_guard(sess)
+    if bad:
+        return bad
+    ids = [int(i) for i in (payload.ids or [])]
+    if not ids:
+        return _err(400, "缺少 ids")
+    owned_tables = {int(x["id"]) for x in autoreply_db.list_tables(int(payload.business_id))}
+    owned_rows = {int(r["id"]) for tid in owned_tables
+                  for r in autoreply_db.list_rows(tid)}
+    safe = [i for i in ids if i in owned_rows]
+    n = autoreply_db.delete_rows_bulk(safe)
+    _refresh_engine()
+    return {"ok": True, "deleted": n}
+
+
+@router.get("/stats")
+def stats(business_id: int = Query(...), sess: dict = Depends(deps.require_agent)):
+    """命中情況統計（紀錄頁的「命中情況統計」子頁）。"""
+    bad = _biz_guard(sess, business_id)
+    if bad:
+        return bad
+    biz = int(business_id)
+    summary = autoreply_db.log_summary(biz)
+    miss = autoreply_db.miss_counts() or {}
+    scopes = []
+    for channel, scope in config.AUTOREPLY_SCOPES:
+        key = autoreply_db.scope_key(channel, scope)
+        s = summary.get(key, {"faq": 0, "table": 0, "rag": 0, "miss": 0, "error": 0,
+                              "rewritten": 0, "total": 0})
+        scopes.append({
+            "channel": channel, "scope": scope, "label": config.scope_label(channel, scope),
+            "enabled": autoreply_db.effective_scope_mode(biz, channel, scope),
+            "pending_miss": miss.get(key, 0),
+            **s,
+        })
+    return {"ok": True, "scopes": scopes,
+            "miss_total": sum(miss.values()),
+            "rewritten_total": sum(int(s.get("rewritten") or 0) for s in summary.values())}
+
+
 # ================================================================ 紀錄
 
 @router.get("/logs")
@@ -609,7 +870,9 @@ def log_detail(business_id: int = Query(...), id: int = Query(...),
     row = autoreply_db.get_log(int(id))
     if not row or int(row.get("business_id") or 0) != int(business_id):
         return _err(404, "找不到紀錄")
-    return {"ok": True, "item": row}
+    # ★ `item` 之外再攤平一次（`matched_rows` / `detail` 等）—— 舊 console 的
+    #   `/logs/<id>` 是直接回那筆紀錄本身，前端讀 `d.matched_rows`。
+    return {"ok": True, "item": row, **row}
 
 
 # ================================================================ 命中測試
@@ -621,6 +884,12 @@ class TestIn(BaseModel):
     text: str = ""
     layers: list[str] | None = None
     post_config_id: int = 0
+    # ★ 與舊 console 的 `/test/engine` 對齊（命中測試頁要能模擬真實情境）：
+    history: list[dict] | None = None      # 自備對話（[{direction,text},…]）
+    with_history: bool = True              # 沒自備時，自動撈最近對話
+    query_rewrite: bool | None = None      # 只覆寫這次；不動 DB 參數
+    sender_id: str = ""
+    comment_id: str = ""
 
 
 @router.post("/test")
@@ -643,20 +912,40 @@ async def test_engine(payload: TestIn, sess: dict = Depends(deps.require_agent))
             return _err(400, f"不支援的層: {'、'.join(bad_layers)}")
         layers = [x for x in reply_engine.ALL_LAYERS if x in layers]
 
+    # ★ 沒自備對話就自動撈最近對話（等同真實流程）——舊版就是這個行為，
+    #   少了它「帶對話改寫問句」這一塊在測試頁永遠試不出來。
+    history = payload.history
+    if history is None and payload.with_history:
+        try:
+            history = await asyncio.to_thread(
+                autoreply_db.get_conversation_history, payload.platform, payload.scope,
+                sender_id=payload.sender_id, comment_id=payload.comment_id,
+                message_id="", current_text=text,
+                limit=config.TABLE_REWRITE_HISTORY_TURNS)
+        except Exception as e:  # noqa: BLE001 —— 取不到對話不該讓測試失敗
+            log.warning("命中測試取對話失敗（改用無對話）: %s", e)
+            history = []
+    history = history or []
+
     ss = await asyncio.to_thread(
         autoreply_db.resolve_scope_set, int(payload.business_id),
         scope=payload.scope, post_config_id=int(payload.post_config_id))
     ans = await reply_engine.answer(
         text, business_id=int(payload.business_id), channel=payload.platform,
-        scope=payload.scope, layers=layers, scope_set=ss)
-    return {"ok": True, "tier": ans.tier, "answer": ans.text, "score": ans.score,
-            "detail": ans.detail, "reason": ans.reason,
-            "matched": ans.matched_rows, "assets": ans.assets,
-            "rewrote": ans.rewrote, "rewritten_query": ans.rewritten_query,
-            "elapsed_ms": ans.elapsed_ms, "llm_calls": ans.llm_calls,
-            "scope_set": {"faq": len(ss.get("faq") or []), "table": len(ss.get("table") or []),
-                          "kb": len(ss.get("kb") or []), "source": ss.get("source"),
-                          "layers": ss.get("layers")}}
+        scope=payload.scope, history=history, layers=layers,
+        query_rewrite=payload.query_rewrite, scope_set=ss)
+    # ★ 回傳形狀與舊版 `/test/engine` 一致（前端是整包移植過來的）：
+    #   as_dict() 已含 tier/text/score/detail/reason/matched_rows/rag_* /rewrote/…，
+    #   再加 would_send / history / layers / query_rewrite 與相容別名。
+    out = {"ok": True, **ans.as_dict(),
+           "would_send": bool(ans.text),
+           "history": history, "layers": layers, "query_rewrite": payload.query_rewrite,
+           # 相容別名（舊前端讀這幾個名字）
+           "answer": ans.text, "matched": ans.matched_rows,
+           "scope_set": {"faq": len(ss.get("faq") or []), "table": len(ss.get("table") or []),
+                         "kb": len(ss.get("kb") or []), "source": ss.get("source"),
+                         "layers": ss.get("layers")}}
+    return out
 
 
 # ================================================================ 由引擎產生草稿（右鍵）

@@ -497,20 +497,110 @@ function readPw() {
     await settle(400);
   }
 
-  console.log('\n[6] 設定面板（⚙）');
+  console.log('\n[6] 設定面板（⚙）· 六分頁逐一走訪');
   await page.click('#arCfgBtn');
   await settle(1800);
   const tabs = await page.$$eval('.sp-tab', els => els.map(x => x.textContent.trim()));
   check(tabs.length === 6, '設定面板六分頁', tabs.join('/'));
   check((await page.textContent('#spBody') || '').length > 50, '自動回復面板有內容');
   await shot('shot10_settings.png');
+
+  // ★★★ 逐頁走一遍，並斷言**每一頁都沒有 JS 錯誤**。
+  //   為什麼要這樣做（2026-10-14 小jo 回報的三個問題）：
+  //     · 整包移植最容易漏的是「區塊外的全域宣告」。KB_STATUS 沒搬過來 →
+  //       kbDocTag() 一呼叫就 ReferenceError → **知識庫文件列表整頁空白**，
+  //       而統計數字正常，看起來像後端壞掉，極難從截圖判斷。
+  //     · FAQ／表格的匯入匯出與紀錄頁的卡片式展示也是整批沒搬。
+  //   下面的「每頁零錯誤 + 關鍵元素存在」是最直接的防線。
+  const TAB_SPEC = [
+    { tab: 'autoreply', label: '自動回復', must: ['商家 × 平台 × 場景'] },
+    { tab: 'faq', label: 'FAQ',
+      must: ['FAQ 問答對', '匯入 Excel / CSV', '下載範本 xlsx', '下載範本 csv',
+             '匯出目前 FAQ', '儲存全部修改'] },
+    { tab: 'table', label: '業務表格',
+      must: ['業務表格（第二層）', '上傳 Excel / CSV 建新表', '下載範本 xlsx',
+             '下載範本 csv'] },
+    { tab: 'kb', label: '知識庫', must: ['知識庫概覽'] },
+    { tab: 'hittest', label: '命中測試', must: ['開始測試'] },
+    { tab: 'logs', label: '紀錄',
+      must: ['自動回復紀錄', '命中情況統計'] },
+  ];
+  for (const spec of TAB_SPEC) {
+    const pageErrs = [];
+    const tap = m => { if (m.type() === 'error') pageErrs.push(m.text().slice(0, 140)); };
+    const tapErr = e => pageErrs.push('PAGEERROR: ' + e.message.slice(0, 140));
+    page.on('console', tap);
+    page.on('pageerror', tapErr);
+    await page.click('.sp-tab[data-tab="' + spec.tab + '"]');
+    await settle(spec.tab === 'kb' ? 2200 : 1700);
+    const txt = (await page.textContent('#spBody')) || '';
+    const stuck = txt.indexOf('載入中…') >= 0 && txt.length < 200;
+    const missing = spec.must.filter(m => txt.indexOf(m) < 0);
+    check(missing.length === 0, '[' + spec.tab + '] ' + spec.label + ' 關鍵元素齊全',
+      missing.length ? '缺：' + missing.join('、') : txt.replace(/\s+/g, ' ').slice(0, 60));
+    check(!stuck, '[' + spec.tab + '] ' + spec.label + ' 沒有卡在「載入中…」',
+      txt.replace(/\s+/g, ' ').slice(0, 60));
+    check(pageErrs.length === 0, '[' + spec.tab + '] ' + spec.label + ' 沒有 JS 錯誤',
+      pageErrs.slice(0, 2).join(' | '));
+    page.off('console', tap);
+    page.off('pageerror', tapErr);
+  }
+
+  // FAQ 清單真的載入（不是只有外框）
   await page.click('.sp-tab[data-tab="faq"]');
-  await settle(1400);
-  check(await page.$('#faqBox') !== null, 'FAQ 分頁有清單容器');
+  await settle(1600);
+  const faqRows = await page.$$eval('#faqBody tr', els => els.length).catch(() => 0);
+  const faqInputs = await page.$$eval('#spBody input[type=file]', els => els.length).catch(() => 0);
+  check(faqRows > 0, 'FAQ 清單載入', faqRows + ' 組');
+  check(faqInputs >= 1, 'FAQ 有檔案上傳輸入（匯入 Excel / CSV）', faqInputs + ' 個');
+
+  // 表格：展開資料列 + 匯入輸入
+  await page.click('.sp-tab[data-tab="table"]');
+  await settle(1600);
+  const tblInputs = await page.$$eval('#spBody input[type=file]', els => els.length).catch(() => 0);
+  check(tblInputs >= 2, '業務表格有匯入輸入（建新表 + 單表匯入）', tblInputs + ' 個');
+
+  // 下載連結一定要帶 business_id（裸 location.href 會 400）
+  // 「有沒有帶 business_id」要在**執行時**看（stDownload 是在點擊時才補上），
+  // 所以改看 onclick 有沒有經過 stDownload —— 裸 location.href 才是錯的。
+  const dl = await page.evaluate(() => {
+    const btns = Array.from(document.querySelectorAll('#spBody button'))
+      .filter(b => /下載範本|匯出/.test(b.textContent));
+    const bad = [], viaSt = [];
+    btns.forEach(b => {
+      const oc = b.getAttribute('onclick') || '';
+      if (!oc) return;
+      if (oc.indexOf('stDownload') >= 0) viaSt.push(oc.slice(0, 40));
+      else if (oc.indexOf('/console/agent/') >= 0) bad.push(oc.slice(0, 60));
+    });
+    return { n: btns.length, bad, viaSt };
+  });
+  check(dl.n > 0, '有下載類按鈕', dl.n + ' 個');
+  check(dl.bad.length === 0 && dl.viaSt.length > 0,
+    '★ 下載按鈕都經由 stDownload（執行時補 business_id），沒有裸 location.href',
+    dl.bad.join('、') || (dl.viaSt.length + ' 個走 stDownload'));
+
+  // 紀錄頁：卡片式 + 可展開檢索明細
   await page.click('.sp-tab[data-tab="logs"]');
-  await settle(1200);
-  const logRows = await page.$$eval('#logBox table tbody tr', els => els.length).catch(() => 0);
-  check(true, '紀錄分頁渲染', logRows + ' 筆');
+  await settle(1600);
+  const logView = await page.evaluate(() => ({
+    items: document.querySelectorAll('#logList .log-item').length,
+    clickable: document.querySelectorAll('#logList .log-item.clickable').length,
+    hasStatsBtn: Array.from(document.querySelectorAll('#spBody button'))
+      .some(b => b.textContent.indexOf('命中情況統計') >= 0),
+  }));
+  check(logView.items > 0, '★ 紀錄用卡片式呈現（.log-item）', logView.items + ' 筆');
+  check(logView.clickable > 0, '★ 有可展開檢索明細的紀錄', logView.clickable + ' 筆');
+  check(logView.hasStatsBtn, '有「命中情況統計」入口');
+
+  // 命中情況統計子頁
+  await page.evaluate(() => openLogsStats());
+  await settle(1600);
+  const statTxt = (await page.textContent('#logStatsBox')) || '';
+  check(statTxt.indexOf('渠道') >= 0 || statTxt.indexOf('FAQ 命中') >= 0,
+    '★ 命中情況統計子頁渲染出表格', statTxt.replace(/\s+/g, ' ').slice(0, 60));
+  await page.evaluate(() => backToLogs());
+  await settle(600);
 
 
   // ---------- [6b] 設定 → 知識庫（塊C：從舊版 console 移植 + 每商家獨立） ----------
@@ -526,6 +616,10 @@ function readPw() {
   };
   page.on('response', kbTap);
   await page.click('.sp-tab[data-tab="kb"]');
+  await settle(1200);
+  // ★ [6] 已經走過 KB 分頁（資料有快取）→ 這裡必須強制重載一次，
+  //   否則攔不到任何 /console/kb 請求，「每個請求都帶 business_id」會變成空轉斷言。
+  await page.evaluate(() => loadKbOverview(true));
   await settle(2200);
   const kbPage = await page.evaluate(() => {
     const body = document.getElementById('spBody');
@@ -573,8 +667,20 @@ function readPw() {
   });
   check(kbParams.open && kbParams.n >= 17, '參數彈窗可開且參數齊全', kbParams.n + ' 項');
   check(kbParams.groups === 3, '三組（A 檢索／B 分塊／C 提示詞）', kbParams.groups + ' 組');
-  check(String(kbParams.minScore) === '0.25',
-    '★★ 參數按商家載入（商家 1 的實測值 min_score=0.25）', String(kbParams.minScore));
+  // ★ 不硬編碼某個值（使用者會自己調參）—— 驗的是「UI 顯示 == 該商家在 DB 的值」，
+  //   也就是「按商家載入」這個不變量本身。
+  const apiParams = await page.evaluate(async () => {
+    const r = await fetch('/console/kb/params?business_id=1', { credentials: 'same-origin' });
+    const d = await r.json();
+    const m = {};
+    (d.items || []).forEach(i => { m[i.key] = i.value; });
+    return m;
+  });
+  check(String(kbParams.minScore) === String(apiParams.min_score),
+    '★★ 參數按商家載入（UI 顯示 == 後端該商家的值）',
+    'UI=' + kbParams.minScore + ' / API=' + apiParams.min_score);
+  check(kbParams.minScore !== '' && kbParams.minScore != null,
+    '參數有實際值（不是空白）', String(kbParams.minScore));
   check(kbParams.promptLen > 200, '提示詞有載入（按商家）', kbParams.promptLen + ' 字');
   await page.evaluate(() => closeKbParams());
   await settle(300);

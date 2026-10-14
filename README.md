@@ -203,10 +203,17 @@ C:\Users\its-admin\AppData\Local\Python\pythoncore-3.14-64\python.exe -m uvicorn
    命中哪一層、分數多少）。
 2. **自動回覆**：兩層開關（商家 × 平台 × 場景 + 帳號層）、FAQ / 表格 / 知識庫管理、
    檢索參數與提示詞、防護值（冷卻 / 上限）。
-   ⚙ 的**知識庫分頁**是完整內容管理（2026-10-14 塊C）：知識庫清單 → 該庫的文件 →
-   單份文件的分塊微調 / 逐塊編輯、圖片庫（描述可人工或 AI 生成）、參數配置
-   （A 檢索 / B 分塊 / C 提示詞）、檢索測試。**全部按商家隔離**：
-   每個商家各自維護自己的知識庫與參數（檢索參數、提示詞也是每家一組）。
+   ⚙ 的六個分頁**全部是舊版 console 整包移植**（UI 與功能一致，2026-10-14 塊C）：
+   · **FAQ**：逐條編輯 / 批次儲存 / 即時搜尋 / 匯入 Excel・CSV・JSON / 匯出 / 範本下載。
+   · **業務表格**：多表、展開資料列（逐格編輯）、欄位編輯、匯入建新表 / 覆寫 / 附加、
+     單表匯出、範本下載。
+   · **知識庫**：清單 → 文件 → 分塊微調、圖片庫（描述可人工或 AI）、參數配置
+     （A 檢索 / B 分塊 / C 提示詞）、檢索測試。
+   · **命中測試**：分層勾選試跑、可關掉帶入對話、可切換查詢改寫、結果含召回明細。
+   · **紀錄**：卡片式（層級標籤 / 耗時 / 改寫問句 / 回覆）＋ 點開看召回明細，
+     另有「命中情況統計」子頁。
+   **全部按商家隔離**：每個商家各自維護自己的 FAQ / 表格 / 知識庫與參數
+   （檢索參數、提示詞也是每家一組）。
 3. **命中測試**：不發訊息的試跑，看四層引擎對某問句的處置與命中的知識庫 chunk。
 4. **回覆紀錄**：每次自動回覆的處置（命中哪一層、未命中原因、送出結果、命中的 chunk）。
 
@@ -329,6 +336,14 @@ PUBLIC_BASE_URL=https://<你的域名>.ngrok-free.dev
 | POST | `/internal/api/sync-history` | Connector | 主動補拉歷史（工作台「重新整理」） |
 | POST | `/console/agent/draft` | CRM | 右鍵「由自動回復引擎產生回覆」（只出草稿、不送出） |
 | * | `/console/kb/*` | CRM | 知識庫管理 34 條路由（塊C，2026-10-14 掛載；全部需登入 + 按商家隔離） |
+| POST | `/console/agent/faq-import` | CRM | 匯入 FAQ（Excel／CSV／JSON，replace 或 append） |
+| GET | `/console/agent/faq-export` | CRM | 匯出 FAQ（xlsx） |
+| GET | `/console/agent/faq-template` | CRM | FAQ 範本（`fmt=xlsx\|csv`） |
+| POST | `/console/agent/table-import` | CRM | 匯入業務表格（建新表／覆寫／附加） |
+| GET | `/console/agent/table-export` | CRM | 匯出單張業務表格（xlsx） |
+| GET | `/console/agent/table-template` | CRM | 業務表格範本（`fmt=xlsx\|csv`） |
+| POST | `/console/agent/table-row-bulk-delete` | CRM | 批次刪資料列 |
+| GET | `/console/agent/stats` | CRM | 命中情況統計（紀錄頁子頁） |
 
 ---
 

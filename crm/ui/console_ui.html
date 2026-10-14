@@ -2213,228 +2213,6 @@ function renderSettingsTab() {
 }
 
 /* ---------- FAQ 問答對 ---------- */
-function renderSettingsFaq(body) {
-  body.innerHTML = '<div class="card">'
-    + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'
-    + '<input type="text" id="faqQ" placeholder="搜尋問題／答案…" style="flex:1;padding:8px 11px;'
-    + 'border:1px solid var(--border);border-radius:9px">'
-    + '<button class="btn primary" onclick="faqNew()">新增 FAQ</button></div>'
-    + '<div id="faqBox"><div class="empty">載入中…</div></div></div>'
-    + '<div class="card" id="faqEditCard" style="display:none">'
-    + '<h3 id="faqEditTitle">新增 FAQ</h3>'
-    + '<input type="hidden" id="faqEditId">'
-    + '<label style="display:block;font-size:12px;color:var(--text-soft);margin:8px 0 4px">問題</label>'
-    + '<textarea id="faqEditQ" rows="2" style="width:100%;padding:8px 11px;border:1px solid var(--border);'
-    + 'border-radius:9px;font-family:inherit"></textarea>'
-    + '<label style="display:block;font-size:12px;color:var(--text-soft);margin:10px 0 4px">答案</label>'
-    + '<textarea id="faqEditA" rows="4" style="width:100%;padding:8px 11px;border:1px solid var(--border);'
-    + 'border-radius:9px;font-family:inherit"></textarea>'
-    + '<label style="display:block;font-size:12px;color:var(--text-soft);margin:10px 0 4px">關鍵詞（逗號分隔，選填）</label>'
-    + '<input type="text" id="faqEditK" style="width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:9px">'
-    + '<div style="margin-top:12px;display:flex;gap:8px">'
-    + '<button class="btn primary" onclick="faqSave()">儲存</button>'
-    + '<button class="btn" onclick="faqEditCancel()">取消</button></div></div>';
-  var q = $('faqQ');
-  if (q) q.oninput = function () { loadFaqList(this.value); };
-  loadFaqList('');
-}
-
-function loadFaqList(q) {
-  api(qs('/console/agent/faqs', [['business_id', state.bizId], ['q', q || '']]))
-    .then(function (res) {
-      var box = $('faqBox');
-      if (!box) return;
-      if (!guard(res)) { box.innerHTML = '<div class="empty">載入失敗</div>'; return; }
-      var items = res.data.items || [];
-      if (!items.length) { box.innerHTML = '<div class="empty">尚無 FAQ</div>'; return; }
-      box.innerHTML = '<div class="tbl-wrap"><table class="data-table"><thead><tr>'
-        + '<th>問題</th><th>答案</th><th>關鍵詞</th><th>狀態</th><th>操作</th></tr></thead><tbody>'
-        + items.map(function (f) {
-          return '<tr><td>' + esc(String(f.question || '').slice(0, 40)) + '</td>'
-            + '<td>' + esc(String(f.answer || '').slice(0, 50)) + '</td>'
-            + '<td>' + esc(f.keywords || '') + '</td>'
-            + '<td>' + (f.enabled ? '<span class="chip">啟用</span>' : '<span class="chip">停用</span>') + '</td>'
-            + '<td><button class="btn sm" onclick="faqEdit(' + f.id + ')">編輯</button> '
-            + '<button class="btn sm" onclick="faqDelete(' + f.id + ')">刪除</button></td></tr>';
-        }).join('') + '</tbody></table></div>';
-      window._faqs = items;
-    });
-}
-
-function faqNew() {
-  $('faqEditCard').style.display = 'block';
-  $('faqEditTitle').textContent = '新增 FAQ';
-  $('faqEditId').value = '';
-  $('faqEditQ').value = ''; $('faqEditA').value = ''; $('faqEditK').value = '';
-  $('faqEditQ').focus();
-}
-
-function faqEdit(id) {
-  var f = (window._faqs || []).filter(function (x) { return x.id === id; })[0];
-  if (!f) return;
-  $('faqEditCard').style.display = 'block';
-  $('faqEditTitle').textContent = '編輯 FAQ';
-  $('faqEditId').value = String(id);
-  $('faqEditQ').value = f.question || '';
-  $('faqEditA').value = f.answer || '';
-  $('faqEditK').value = f.keywords || '';
-  $('faqEditQ').focus();
-}
-
-function faqEditCancel() { $('faqEditCard').style.display = 'none'; }
-
-function faqSave() {
-  var id = $('faqEditId').value;
-  var body = {
-    business_id: state.bizId,
-    question: $('faqEditQ').value, answer: $('faqEditA').value,
-    keywords: $('faqEditK').value, enabled: true
-  };
-  var p = id
-    ? apiJson('/console/agent/faq-update', { business_id: state.bizId, id: parseInt(id, 10),
-        question: body.question, answer: body.answer, keywords: body.keywords })
-    : apiJson('/console/agent/faq', body);
-  p.then(function (res) {
-    if (!guard(res)) return;
-    showToast(id ? '已更新' : '已新增');
-    $('faqEditCard').style.display = 'none';
-    loadFaqList($('faqQ') ? $('faqQ').value : '');
-    loadAutoSettingsAnd();
-  });
-}
-
-function faqDelete(id) {
-  askConfirm('確定刪除這條 FAQ？', function () {
-    apiJson('/console/agent/faq-delete', { business_id: state.bizId, ids: [id] }).then(function (res) {
-      if (!guard(res)) return;
-      showToast('已刪除');
-      loadFaqList($('faqQ') ? $('faqQ').value : '');
-      loadAutoSettingsAnd();
-    });
-  });
-}
-
-/* ---------- 業務表格 ---------- */
-function renderSettingsTable(body) {
-  body.innerHTML = '<div class="card">'
-    + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'
-    + '<label style="font-size:12px;color:var(--text-soft)">表格</label>'
-    + '<select id="tblSel" style="min-width:200px;padding:8px 11px;border:1px solid var(--border);'
-    + 'border-radius:9px"></select>'
-    + '<div style="flex:1"></div>'
-    + '<button class="btn primary" onclick="tableNew()">新增表格</button></div>'
-    + '<div id="tblBox"><div class="empty">載入中…</div></div></div>'
-    + '<div class="card" id="tblNewCard" style="display:none">'
-    + '<h3>新增業務表格</h3>'
-    + '<label style="display:block;font-size:12px;color:var(--text-soft);margin:8px 0 4px">表名</label>'
-    + '<input type="text" id="tblNewName" style="width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:9px">'
-    + '<label style="display:block;font-size:12px;color:var(--text-soft);margin:10px 0 4px">欄位（逗號分隔）</label>'
-    + '<input type="text" id="tblNewCols" placeholder="例：品項, 價格, 說明" style="width:100%;padding:8px 11px;'
-    + 'border:1px solid var(--border);border-radius:9px">'
-    + '<div style="margin-top:12px;display:flex;gap:8px">'
-    + '<button class="btn primary" onclick="tableCreate()">建立</button>'
-    + '<button class="btn" onclick="document.getElementById(\'tblNewCard\').style.display=\'none\'">取消</button>'
-    + '</div></div>';
-  loadTables();
-}
-
-function loadTables(selId) {
-  api(qs('/console/agent/tables', [['business_id', state.bizId]])).then(function (res) {
-    if (!guard(res)) return;
-    var items = res.data.items || [];
-    window._tables = items;
-    var sel = $('tblSel');
-    if (!sel) return;
-    sel.innerHTML = items.length
-      ? items.map(function (t) {
-        return '<option value="' + t.id + '">' + esc(t.name) + '（' + (t.row_count || 0) + ' 列）</option>';
-      }).join('')
-      : '<option value="">（尚無表格）</option>';
-    sel.onchange = function () { loadTableRows(this.value); };
-    if (items.length) { if (selId) sel.value = String(selId); loadTableRows(sel.value); }
-    else $('tblBox').innerHTML = '<div class="empty">尚無業務表格</div>';
-  });
-}
-
-function tableNew() { $('tblNewCard').style.display = 'block'; $('tblNewName').focus(); }
-
-function tableCreate() {
-  var cols = ($('tblNewCols').value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-  apiJson('/console/agent/table-create', {
-    business_id: state.bizId, name: $('tblNewName').value.trim(), columns: cols
-  }).then(function (res) {
-    if (!guard(res)) return;
-    showToast('已建立');
-    $('tblNewCard').style.display = 'none';
-    $('tblNewName').value = ''; $('tblNewCols').value = '';
-    loadTables(res.data.table && res.data.table.id);
-    loadAutoSettingsAnd();
-  });
-}
-
-function loadTableRows(tableId) {
-  var box = $('tblBox');
-  if (!tableId) { if (box) box.innerHTML = '<div class="empty">尚無業務表格</div>'; return; }
-  api(qs('/console/agent/table', [['business_id', state.bizId], ['table_id', tableId]]))
-    .then(function (res) {
-      if (!box) return;
-      if (!guard(res)) { box.innerHTML = '<div class="empty">載入失敗</div>'; return; }
-      var t = res.data.table || {};
-      var cols = (t.columns || []).slice();
-      var rows = t.rows || [];
-      if (!cols) rows.forEach(function (r) { Object.keys(r.data || {}).forEach(function (k) { if (cols.indexOf(k) < 0) cols.push(k); }); });
-      window._tblCols = cols; window._tblId = tableId;
-      var h = '<div style="display:flex;gap:8px;margin-bottom:8px">'
-        + '<button class="btn sm" onclick="tableRowAdd()">新增列</button>'
-        + '<button class="btn sm" onclick="tableRemove(' + tableId + ')">刪除表格</button></div>'
-        + '<div class="tbl-wrap"><table class="data-table"><thead><tr>'
-        + cols.map(function (c) { return '<th>' + esc(c) + '</th>'; }).join('')
-        + '<th>操作</th></tr></thead><tbody>';
-      if (!rows.length) {
-        h += '<tr><td colspan="' + (cols.length + 1) + '">尚無資料列</td></tr>';
-      } else {
-        rows.forEach(function (r) {
-          h += '<tr>' + cols.map(function (c) {
-            return '<td>' + esc((r.data || {})[c] || '') + '</td>';
-          }).join('') + '<td><button class="btn sm" onclick="tableRowDel(' + r.id + ')">刪除</button></td></tr>';
-        });
-      }
-      h += '</tbody></table></div>';
-      box.innerHTML = h;
-    });
-}
-
-function tableRowAdd() {
-  var cols = window._tblCols || [];
-  var data = {};
-  for (var i = 0; i < cols.length; i++) {
-    var v = window.prompt('「' + cols[i] + '」的值：', '');
-    if (v === null) return;
-    data[cols[i]] = v;
-  }
-  if (!Object.keys(data).length) { showToast('這張表沒有欄位'); return; }
-  apiJson('/console/agent/table-row', {
-    business_id: state.bizId, table_id: parseInt(window._tblId, 10), action: 'create', data: data
-  }).then(function (res) { if (guard(res)) { showToast('已新增'); loadTableRows(window._tblId); loadTables(window._tblId); } });
-}
-
-function tableRowDel(rowId) {
-  apiJson('/console/agent/table-row', {
-    business_id: state.bizId, table_id: parseInt(window._tblId, 10), action: 'delete', id: rowId
-  }).then(function (res) { if (guard(res)) { showToast('已刪除'); loadTableRows(window._tblId); loadTables(window._tblId); } });
-}
-
-function tableRemove(tableId) {
-  askConfirm('確定刪除整張表格？', function () {
-    apiJson('/console/agent/table-delete', { business_id: state.bizId, id: tableId }).then(function (res) {
-      if (!guard(res)) return;
-      showToast('已刪除表格');
-      loadTables();
-      loadAutoSettingsAnd();
-    });
-  });
-}
-
 function renderSettingsAutoreply(body) {
   if (!state.overview) { body.innerHTML = '<div class="empty">載入中…</div>'; return; }
   var o = state.overview;
@@ -2537,90 +2315,6 @@ function loadAutoSettingsAnd() {
   });
 }
 
-function renderSettingsHittest(body) {
-  var h = '<div class="card"><h3>測試問句（只跑你勾的層，不寫紀錄、不改開關）</h3>'
-    + '<div style="display:flex;gap:8px;margin-bottom:10px">';
-  ['faq', 'table', 'rag'].forEach(function (k) {
-    var on = state.testLayers.indexOf(k) >= 0;
-    h += '<button class="ar-btn ' + (on ? 'on' : 'off') + '" data-tl="' + k + '">'
-      + esc(TIER_LABEL[k]) + '</button>';
-  });
-  h += '</div><input type="text" id="testInput" style="width:100%;padding:9px 12px;border:1px solid var(--border);'
-    + 'border-radius:9px" placeholder="例：你們的營業時間？" value="' + esc(state.testText) + '"></div>';
-  if (state.testResult) {
-    var r = state.testResult;
-    h += '<div class="card"><h3>結果</h3><div style="display:flex;gap:8px;margin-bottom:8px">'
-      + '<span class="chip">' + esc(TIER_LABEL[r.tier] || r.tier) + '</span>'
-      + (r.score !== null && r.score !== undefined ? '<span class="chip">分數 ' + esc(r.score) + '</span>' : '')
-      + '<span class="chip">' + esc(r.elapsed_ms) + ' ms</span>'
-      + '<span class="chip">模型呼叫 ' + esc(r.llm_calls) + '</span></div>'
-      + '<div style="font-size:13.5px;line-height:1.7">' + mdImages(r.answer || '(無)') + '</div>'
-      + '<div style="color:var(--text-soft);font-size:12.5px">' + esc(r.detail || '') + '</div></div>';
-  }
-  body.innerHTML = h;
-  Array.prototype.forEach.call(document.querySelectorAll('[data-tl]'), function (b) {
-    b.onclick = function () {
-      var k = b.getAttribute('data-tl');
-      var i = state.testLayers.indexOf(k);
-      if (i >= 0) state.testLayers.splice(i, 1); else state.testLayers.push(k);
-      renderSettingsHittest(body);
-    };
-  });
-  var inp = $('testInput');
-  if (inp) inp.onkeydown = function (e) { if (e.key === 'Enter') runTest(); };
-}
-
-function runTest() {
-  var inp = $('testInput');
-  var text = inp ? inp.value.trim() : '';
-  if (!text) { showToast('請輸入問句'); return; }
-  state.testText = text;
-  showToast('測試中…');
-  apiJson('/console/agent/test', {
-    business_id: state.bizId, platform: state.platform, scope: state.scope,
-    text: text, layers: state.testLayers.length ? state.testLayers : null
-  }).then(function (res) {
-    if (!guard(res)) return;
-    state.testResult = res.data;
-    renderSettingsHittest($('spBody'));
-    showToast('完成：' + (TIER_LABEL[res.data.tier] || res.data.tier));
-  });
-}
-
-function renderSettingsLogs(body) {
-  body.innerHTML = '<div class="card"><h3>回覆紀錄</h3>'
-    + '<select id="selTier" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px;margin-bottom:10px">'
-    + ['', 'faq', 'table', 'rag', 'miss'].map(function (v) {
-      var t = v === '' ? '全部層級' : TIER_LABEL[v];
-      return '<option value="' + v + '"' + (state.logTier === v ? ' selected' : '') + '>' + esc(t) + '</option>';
-    }).join('') + '</select><div id="logBox"></div></div>';
-  $('selTier').onchange = function () { state.logTier = this.value; loadLogs(); };
-  loadLogs();
-}
-
-function loadLogs() {
-  api(qs('/console/agent/logs', [['business_id', state.bizId], ['tier', state.logTier], ['limit', 100]]))
-    .then(function (res) {
-      var box = $('logBox');
-      if (!box) return;
-      if (!guard(res)) { box.innerHTML = '<div class="empty">載入失敗</div>'; return; }
-      var rows = res.data.logs || [];
-      if (!rows.length) { box.innerHTML = '<div class="empty">沒有紀錄</div>'; return; }
-      box.innerHTML = '<div class="tbl-wrap"><table class="data-table"><thead><tr>'
-        + '<th>時間</th><th>層級</th><th>平台</th><th>問句</th><th>分數</th><th>回覆</th>'
-        + '</tr></thead><tbody>'
-        + rows.map(function (g) {
-          return '<tr><td>' + fmtTime(g.created_at) + '</td>'
-            + '<td>' + esc(TIER_LABEL[g.tier] || g.tier) + '</td>'
-            + '<td>' + esc(PLATFORM_LABEL[g.platform] || g.platform || '') + '</td>'
-            + '<td>' + esc(String(g.question || '').slice(0, 30)) + '</td>'
-            + '<td>' + esc(g.score === null || g.score === undefined ? '' : g.score) + '</td>'
-            + '<td>' + mdPreview(g.answer, 40) + '</td></tr>';
-        }).join('') + '</tbody></table></div>';
-    });
-}
-
-/* ---------------------------------------------------------------- 通用詢問框（不用原生是/否彈窗） */
 var _askYes = null;
 function askConfirm(msg, onYes) {
   var ov = $('askOverlay');
@@ -3565,6 +3259,22 @@ function kbRender() {
 }
 
 // 清掉「目前這份文件」的狀態（跳頁時用）
+/* ★ 文件狀態 / 背景任務的顯示對照表 —— 舊版定義在 KB 區塊**之前**，
+   移植時漏了這兩個 → `kbDocTag()` 一呼叫就 ReferenceError，
+   文件列表整頁渲染失敗（症狀：統計有數字、列表空白）。 */
+var KB_STATUS = {
+  draft:     { text: '草稿（待確認入庫）', cls: 'draft' },
+  parsing:   { text: '解析中', cls: 'busy' },
+  chunking:  { text: '分塊中', cls: 'busy' },
+  embedding: { text: '向量化中', cls: 'busy' },
+  ready:     { text: '已上線', cls: 'ready' },
+  failed:    { text: '失敗', cls: 'err' },
+  disabled:  { text: '已停用', cls: 'err' },
+};
+
+var KB_RUN_LABEL = { 'parse+chunk': '解析分塊中…', 'reparse': '重新分塊中…',
+                     'embedding': '向量化中…' };
+
 /* 內嵌圖片數（`![題注](/media/x.png)`）—— 舊版在 mdImages() 旁邊，這裡一併帶過來。 */
 function mdImageCount(text) {
   const m = String(text == null ? '' : text).match(/!\[[^\]\n]*\]\([^)\s]+\)/g);
@@ -4319,6 +4029,990 @@ function kbResetParams() {
 }
 
 
+
+/* ==================================================================
+   FAQ／業務表格／命中測試／紀錄 —— 從舊版 console 整包移植（2026-10-14）
+   UI 與功能與舊版一致；差別只在：
+     ① 端點改成 CRM 的 `/console/agent/*`，且**一律帶 business_id**；
+     ② 確定／二選一／輸入改用 CRM 自己的對話框（不用瀏覽器原生彈窗）；
+     ③ 渲染進「設定」的 #spBody，狀態掛在 stState。
+   ================================================================== */
+
+var stState = {
+  faqs: [], faqQ: '', faqTotal: 0,
+  tables: [], openTableId: null,
+  logs: [], openLogId: null, logDetail: null, logsSub: 0, stats: null,
+  ktResult: null,
+  ktLayers: { faq: true, table: true, rag: true },
+  ktSynced: false, ktNoHistory: false, ktRewrite: '',
+};
+
+// 舊版叫 AR_CHANNEL_LABEL（值就是平台中文名）
+var AR_CHANNEL_LABEL = PLATFORM_LABEL;
+
+/* 某個 scope 選項的顯示文字（CRM 的 scopes 沒有 label 欄位）。 */
+function stScopeLabel(sc) {
+  return (PLATFORM_LABEL[sc.platform] || sc.platform) +
+    ' ' + (sc.scope === 'dm' ? '私訊' : '貼文留言');
+}
+
+/* 統一把 business_id 補上（GET 補 query、POST 補 body、上傳補 FormData）。 */
+function stBiz(path) {
+  if (String(path).indexOf('/console/agent/') !== 0) return path;
+  if (/[?&]business_id=/.test(path)) return path;
+  return path + (path.indexOf('?') >= 0 ? '&' : '?')
+    + 'business_id=' + encodeURIComponent(state.bizId || 0);
+}
+
+async function stApi(path, opts) {
+  const r = await fetch(stBiz(path), Object.assign({ credentials: 'same-origin' },
+                                                   opts || {}));
+  const d = await r.json().catch(function () { return {}; });
+  if (r.status === 401) { window.location.href = '/login'; throw new Error('未登入'); }
+  if (!r.ok) throw new Error((d && d.error) || ('HTTP ' + r.status));
+  return d;
+}
+
+async function stApiJson(path, body) {
+  const payload = Object.assign({}, body || {});
+  if (String(path).indexOf('/console/agent/') === 0) payload.business_id = state.bizId;
+  const r = await fetch(path, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf },
+    body: JSON.stringify(payload),
+  });
+  const d = await r.json().catch(function () { return {}; });
+  if (r.status === 401) window.location.href = '/login';
+  return { status: r.status, data: d };
+}
+
+/* 上傳（FormData）——自動帶 business_id 與 CSRF。 */
+async function stUpload(path, fd) {
+  fd.append('business_id', String(state.bizId || 0));
+  const r = await fetch(path, {
+    method: 'POST', body: fd, credentials: 'same-origin',
+    headers: { 'X-CSRF-Token': state.csrf },
+  });
+  return await r.json().catch(function () { return {}; });
+}
+
+/* 下載（匯出／範本）——必須帶 business_id，所以不能只寫 location.href。 */
+function stDownload(path) { window.location.href = stBiz(path); }
+
+/* 匯出單張業務表格（onclick 裡避免「字串+變數+字串」的嵌套引號）。 */
+function stDownloadTable(id) {
+  stDownload('/console/agent/table-export?table_id=' + encodeURIComponent(id));
+}
+
+/* 渲染設定分頁內容。 */
+function stRender(html) {
+  const body = $('spBody');
+  if (!body) return false;
+  body.innerHTML = html;
+  return true;
+}
+
+function stConfirm(msg, fn) { askConfirm(msg, fn); }
+
+/* 單行輸入（沿用 settings 的 #askInputOverlay）。 */
+function stPrompt(title, value, onOk) { kbPrompt(title, value, onOk); }
+
+/* 二選一（三個以上選項的場景不存在，這裡只做 A/B）。 */
+var _stChooseCb = null;
+function stChoose(title, options, onPick) {
+  const ov = $('stChooseOverlay');
+  if (!ov) { if (onPick) onPick(options[0] && options[0].value); return; }
+  $('stChooseTitle').textContent = title || '請選擇';
+  $('stChooseOpts').innerHTML = options.map(function (o, i) {
+    return '<button class="btn" style="width:100%;text-align:left;margin-bottom:6px" ' +
+      'data-i="' + i + '">' + esc(o.label) + '</button>';
+  }).join('');
+  _stChooseCb = function (i) {
+    const o = options[i];
+    if (onPick && o) onPick(o.value);
+  };
+  Array.prototype.forEach.call($('stChooseOpts').querySelectorAll('button'), function (b) {
+    b.onclick = function () { closeStChoose(); const cb = _stChooseCb; _stChooseCb = null;
+                              if (cb) cb(parseInt(b.getAttribute('data-i'), 10)); };
+  });
+  ov.classList.add('open');
+}
+function closeStChoose() {
+  const ov = $('stChooseOverlay');
+  if (ov) ov.classList.remove('open');
+  _stChooseCb = null;
+}
+
+
+async function loadStats() {
+  if (stState.stats) return stState.stats;
+  try {
+    stState.stats = await stApi('/console/agent/stats');
+  } catch (e) {
+    stState.stats = { __error__: e.message };
+  }
+  return stState.stats;
+}
+
+// 統計表只有在「紀錄 → 命中情況統計」子頁開著時才畫（不重新打 API）
+function renderStatsInto(el, d) {
+  if (!el) return;
+  if (!d || !d.scopes) {
+    el.innerHTML = '<div class="empty-note">讀不到統計資料' +
+      (d && d.__error__ ? '：' + esc(d.__error__) : '') + '</div>';
+    return;
+  }
+  el.innerHTML = '<table class="data-table"><thead><tr>' +
+    '<th>渠道</th><th>場景</th><th>開關</th><th>FAQ 命中</th><th>表格命中</th>' +
+    '<th title="第三層知識庫檢索命中">知識庫命中</th>' +
+    '<th title="業務表格 / 知識庫第一次沒查到、帶對話改寫 query 後才命中">改寫救回</th>' +
+    '<th>未命中</th><th>待處理</th></tr></thead><tbody>' +
+    d.scopes.map(s => '<tr>' +
+      '<td>' + esc(AR_CHANNEL_LABEL[s.platform] || s.channel) + '</td>' +
+      '<td>' + (s.scope === 'dm' ? '私訊' : '貼文留言') + '</td>' +
+      '<td><span class="pill ' + (s.enabled ? 'on' : 'off') + '">' + (s.enabled ? '開' : '關') + '</span></td>' +
+      '<td>' + s.faq + '</td><td>' + s.table + '</td>' +
+      '<td>' + (s.rag || 0) + '</td>' +
+      '<td>' + (s.rewritten || 0) + '</td>' +
+      '<td>' + s.miss + '</td>' +
+      '<td>' + (s.pending_miss ? '<span class="pill miss">' + s.pending_miss + '</span>' : '0') + '</td>' +
+    '</tr>').join('') + '</tbody></table>' +
+    '<div class="hint" style="margin-top:8px">「改寫救回」＝第一次沒查到，' +
+    '帶入最近對話讓模型改寫問句後才命中（這些原本會降級人工）。' +
+    '累計 ' + (d.rewritten_total || 0) + ' 次。</div>';
+}
+
+// 紀錄頁 →「命中情況統計」子頁
+async function openLogsStats() {
+  stState.logsSub = 1;
+  stState.stats = null;                 // 每次進來重撈，數字才是新的
+  stRender(logsTabHtml());
+  const d = await loadStats();
+  renderStatsInto(document.getElementById('logStatsBox'), d);
+}
+
+function backToLogs() {
+  stState.logsSub = 0;
+  stRender(logsTabHtml());
+}
+
+
+/* ----- 分頁二：FAQ ----- */
+
+function faqTabHtml() {
+  const rows = stState.faqs.length
+    ? stState.faqs.map(f => faqRowHtml(f)).join('')
+    : '<tr><td colspan="6"><div class="empty-note">尚無 FAQ。可新增、貼上 JSON，或上傳 Excel / CSV。</div></td></tr>';
+  return '' +
+    '<div class="card">' +
+      '<h3>FAQ 問答對（第一層）' +
+        infotip('規則匹配：繁簡正規化 + 分詞 + 字元相似度加權打分，達門檻即直接回覆，不呼叫 AI。' +
+                '「關鍵詞」欄可填同一問題的其他問法（逗號分隔），會一起參與匹配。') +
+      '</h3>' +
+      '<div class="row">' +
+        '<button class="btn primary" onclick="addFaq()">＋ 新增一組</button>' +
+        '<button class="btn" onclick="saveAllFaqs()">儲存全部修改</button>' +
+        '<label class="btn" style="cursor:pointer">匯入 Excel / CSV' +
+          '<input type="file" accept=".xlsx,.xlsm,.csv" style="display:none" onchange="importFaq(this)"></label>' +
+        '<select id="faqImportMode" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+          '<option value="replace">匯入時：清空後匯入</option>' +
+          '<option value="append">匯入時：附加到現有</option>' +
+        '</select>' +
+        '<button class="btn" onclick="stDownload(\'/console/agent/faq-template?fmt=xlsx\')" >下載範本 xlsx</button>' +
+        '<button class="btn" onclick="stDownload(\'/console/agent/faq-template?fmt=csv\')" >下載範本 csv</button>' +
+        '<button class="btn" onclick="stDownload(\'/console/agent/faq-export\')" >匯出目前 FAQ</button>' +
+      '</div>' +
+      '<div class="row" style="margin-top:10px">' +
+        '<input type="text" id="faqQ" value="' + esc(stState.faqQ || '') + '" ' +
+          'placeholder="搜尋問題 / 答案 / 關鍵詞（即時過濾）" ' +
+          'oninput="onFaqSearchInput()" ' +
+          'style="flex:1;min-width:220px;padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
+        (stState.faqQ
+          ? '<button class="btn sm" onclick="clearFaqSearch()">清除</button>' +
+            '<span class="hint" style="margin:0">符合 ' + stState.faqs.length +
+            ' 組（全部 ' + (stState.faqTotal || 0) + ' 組）</span>'
+          : '<span class="hint" style="margin:0">共 ' + (stState.faqTotal || stState.faqs.length) + ' 組</span>') +
+      '</div>' +
+    '</div>' +
+    '<div class="card">' +
+      '<div class="tbl-wrap"><table class="data-table"><thead><tr>' +
+        '<th style="width:46px">啟用</th><th style="width:24%">問題</th><th>答案</th>' +
+        '<th style="width:18%">關鍵詞</th><th style="width:64px">命中</th><th style="width:60px">操作</th>' +
+      '</tr></thead><tbody id="faqBody">' + rows + '</tbody></table></div>' +
+      '<div id="faqImportNote"></div>' +
+    '</div>';
+}
+
+function faqRowHtml(f) {
+  return '<tr data-id="' + f.id + '" class="' + (f.enabled ? '' : 'off') + '">' +
+    '<td style="text-align:center"><input type="checkbox" ' + (f.enabled ? 'checked' : '') +
+      ' onchange="markFaqDirty(this)"></td>' +
+    '<td><textarea rows="2" oninput="markFaqDirty(this)">' + esc(f.question) + '</textarea></td>' +
+    '<td><textarea rows="2" oninput="markFaqDirty(this)">' + esc(f.answer) + '</textarea></td>' +
+    '<td><textarea rows="2" oninput="markFaqDirty(this)">' + esc(f.keywords || '') + '</textarea></td>' +
+    '<td style="text-align:center">' + (f.hit_count || 0) + '</td>' +
+    '<td style="text-align:center"><button class="btn sm danger" onclick="deleteFaq(' + f.id + ')">刪除</button></td>' +
+  '</tr>';
+}
+
+function markFaqDirty() { /* 目前改動即時收集，這裡只作為 oninput 掛勾 */ }
+
+function collectFaqs() {
+  const out = [];
+  document.querySelectorAll('#faqBody tr').forEach(tr => {
+    const id = Number(tr.dataset.id);
+    if (!id) return;
+    const tas = tr.querySelectorAll('textarea');
+    out.push({
+      id: id,
+      enabled: tr.querySelector('input[type="checkbox"]').checked,
+      question: tas[0].value.trim(),
+      answer: tas[1].value.trim(),
+      keywords: tas[2].value.trim(),
+    });
+  });
+  return out;
+}
+
+async function loadFaqs() {
+  const q = (stState.faqQ || '').trim();
+  try {
+    const d = await stApi('/console/agent/faqs' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    stState.faqs = d.faqs || [];
+    stState.faqTotal = (d.total != null) ? d.total : stState.faqs.length;
+  } catch (e) {
+    stState.faqs = [];
+  }
+  if (state.settingsTab === 'faq') {
+    stRender(faqTabHtml());
+  }
+}
+
+// FAQ 搜尋：打一個字就送一次查詢會太吵，等 250ms 停手再打
+let _faqSearchTimer = null;
+function onFaqSearchInput() {
+  const el = document.getElementById('faqQ');
+  if (!el) return;
+  stState.faqQ = el.value;
+  clearTimeout(_faqSearchTimer);
+  _faqSearchTimer = setTimeout(function () {
+    // 只更新表格本體，不整頁重繪 —— 否則輸入框會失焦、游標跳位
+    const box = document.getElementById('faqBody');
+    const q = (stState.faqQ || '').trim();
+    stApi('/console/agent/faqs' + (q ? '?q=' + encodeURIComponent(q) : ''))
+      .then(function (d) {
+        stState.faqs = d.faqs || [];
+        stState.faqTotal = (d.total != null) ? d.total : stState.faqs.length;
+        if (box) {
+          box.innerHTML = stState.faqs.length
+            ? stState.faqs.map(faqRowHtml).join('')
+            : '<tr><td colspan="6"><div class="empty-note">沒有符合「' +
+              esc(q) + '」的問答對</div></td></tr>';
+        }
+        const el2 = document.getElementById('faqQ');
+        if (el2 && document.activeElement !== el2) return;   // 使用者已離開就不動
+      })
+      .catch(function () { /* 忽略 */ });
+  }, 250);
+}
+
+function clearFaqSearch() {
+  stState.faqQ = '';
+  stState.faqs = [];
+  loadFaqs();
+}
+
+async function saveAllFaqs() {
+  const items = collectFaqs();
+  let ok = 0, bad = 0;
+  for (const it of items) {
+    if (!it.question || !it.answer) { bad++; continue; }
+    const res = await stApiJson('/console/agent/faq-update', it);
+    if (res.data.ok) ok++; else bad++;
+  }
+  showToast('已儲存 ' + ok + ' 組' + (bad ? '，' + bad + ' 組有問題（問題與答案不可為空）' : ''));
+  await loadFaqs();
+}
+
+async function addFaq() {
+  const res = await stApiJson('/console/agent/faq', {
+    question: '（請填寫問題）', answer: '（請填寫答案）', keywords: '', enabled: false,
+  });
+  if (res.data.error) { showToast('新增失敗：' + res.data.error); return; }
+  await loadFaqs();
+}
+
+function deleteFaq(id) {
+  stConfirm('確定刪除這組 FAQ？', async function () {
+    const res = await stApiJson('/console/agent/faq-delete', { ids: [id] });
+    if (res.data.error) { showToast('刪除失敗：' + res.data.error); return; }
+    await loadFaqs();
+  });
+}
+
+async function importFaq(input) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  const mode = document.getElementById('faqImportMode').value;
+  const note = document.getElementById('faqImportNote');
+  const fd = new FormData();
+  fd.append('mode', mode);
+  fd.append('file', file);
+  note.innerHTML = '<div class="test-result">匯入中…</div>';
+  try {
+    const d = await stUpload('/console/agent/faq-import', fd);
+    if (d.error) { note.innerHTML = '<div class="test-result">❌ ' + esc(d.error) + '</div>'; return; }
+    note.innerHTML = '<div class="test-result">✅ 已寫入 ' + d.written + ' 組，目前共 ' + d.total + ' 組。</div>';
+    await loadFaqs();
+    await loadAutoSettingsAnd();
+  } catch (e) {
+    note.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+/* ----- 分頁三：業務表格 ----- */
+
+function tableTabHtml() {
+  const tables = stState.tables.length
+    ? stState.tables.map(t => tableCardHtml(t)).join('')
+    : '<div class="card"><div class="empty-note">尚無業務表格。可新增一張，或直接上傳 Excel / CSV（第一列為欄位名）。</div></div>';
+
+  return '' +
+    '<div class="card">' +
+      '<h3>業務表格（第二層）' +
+        infotip('FAQ 未命中時，把這裡的表格內容交給 DeepSeek 理解後回答；' +
+                '模型判斷表格答不出來時，直接降級人工回復。整個功能可在「自動回復」分頁停用。') +
+      '</h3>' +
+      '<div class="row">' +
+        '<button class="btn primary" onclick="createTable()">＋ 新增空白表格</button>' +
+        '<label class="btn" style="cursor:pointer">上傳 Excel / CSV 建新表' +
+          '<input type="file" accept=".xlsx,.xlsm,.csv" style="display:none" onchange="importTable(this,0)"></label>' +
+        '<button class="btn" onclick="stDownload(\'/console/agent/table-template?fmt=xlsx\')" >下載範本 xlsx</button>' +
+        '<button class="btn" onclick="stDownload(\'/console/agent/table-template?fmt=csv\')" >下載範本 csv</button>' +
+      '</div>' +
+      '<div id="tableImportNote"></div>' +
+    '</div>' + tables;
+}
+
+function tableCardHtml(t) {
+  const cols = t.columns || [];
+  const rows = t.rows || [];
+  const open = stState.openTableId === t.id;
+
+  const head = '<div class="row" style="margin-bottom:8px">' +
+    '<input type="text" value="' + esc(t.name) + '" onchange="updateTable(' + t.id + ',{name:this.value})" ' +
+      'style="font-weight:700;font-size:14px;padding:6px 9px;border:1px solid var(--border);border-radius:8px;min-width:180px">' +
+    '<input type="text" value="' + esc(t.description || '') + '" placeholder="說明（會一起給模型參考）" ' +
+      'onchange="updateTable(' + t.id + ',{description:this.value})" ' +
+      'style="flex:1;min-width:200px;padding:6px 9px;border:1px solid var(--border);border-radius:8px">' +
+    '<span class="pill ' + (t.enabled ? 'on' : 'off') + '">' + (t.enabled ? '啟用' : '停用') + '</span>' +
+    '<button class="btn sm" onclick="updateTable(' + t.id + ',{enabled:' + (!t.enabled) + '})">' +
+      (t.enabled ? '停用' : '啟用') + '</button>' +
+    '<button class="btn sm" onclick="toggleTableRows(' + t.id + ')">' + (open ? '收起' : '展開資料列（' + t.row_count + '）') + '</button>' +
+    '<button class="btn sm" onclick="stDownloadTable(' + t.id + ')">匯出</button>' +
+    '<label class="btn sm" style="cursor:pointer">匯入' +
+      '<input type="file" accept=".xlsx,.xlsm,.csv" style="display:none" onchange="importTable(this,' + t.id + ')"></label>' +
+    '<button class="btn sm danger" onclick="deleteTable(' + t.id + ')">刪除表</button>' +
+    '</div>' +
+    '<div class="hint">欄位：' + (cols.length ? esc(cols.join('、')) : '（未設定，匯入檔案時自動建立）') + '</div>';
+
+  let bodyHtml = '';
+  if (open) {
+    const th = cols.map(c => '<th>' + esc(c) + '</th>').join('');
+    const trs = rows.length
+      ? rows.map(r => '<tr>' +
+          cols.map(c => '<td><input type="text" value="' + esc((r.data || {})[c] || '') +
+            '" onchange="updateRow(' + r.id + ',' + t.id + ',' + JSON.stringify(c) + ',this.value)"></td>').join('') +
+          '<td style="text-align:center"><button class="btn sm danger" onclick="deleteRow(' + r.id + ',' + t.id + ')">刪</button></td>' +
+        '</tr>').join('')
+      : '<tr><td colspan="' + (cols.length + 1) + '"><div class="empty-note">尚無資料列</div></td></tr>';
+
+    bodyHtml = '<div class="tbl-wrap"><table class="data-table"><thead><tr>' + th +
+      '<th style="width:52px">操作</th></tr></thead><tbody>' + trs + '</tbody></table></div>' +
+      '<div class="row" style="margin-top:8px">' +
+        '<button class="btn sm" onclick="addRow(' + t.id + ')">＋ 新增一列</button>' +
+        '<button class="btn sm" onclick="editColumns(' + t.id + ')">編輯欄位</button>' +
+      '</div>';
+  }
+
+  return '<div class="card">' + head + bodyHtml + '</div>';
+}
+
+async function loadTables(keepOpen) {
+  try {
+    const d = await stApi('/console/agent/tables?rows=1');
+    stState.tables = d.tables || [];
+  } catch (e) {
+    stState.tables = [];
+  }
+  if (!keepOpen) stState.openTableId = stState.openTableId;
+  if (state.settingsTab === 'table') {
+    stRender(tableTabHtml());
+  }
+}
+
+function toggleTableRows(id) {
+  stState.openTableId = stState.openTableId === id ? null : id;
+  stRender(tableTabHtml());
+}
+
+function createTable() {
+  stPrompt('新表格名稱', '業務表格', async function (name) {
+    if (!name) return;
+    const res = await stApiJson('/console/agent/table-create', { name: name, columns: [] });
+    if (res.data.error) { showToast('新增失敗：' + res.data.error); return; }
+    await loadTables();
+    await loadAutoSettingsAnd();
+  });
+}
+
+async function updateTable(id, fields) {
+  const res = await stApiJson('/console/agent/table-update', Object.assign({ id: id }, fields));
+  if (res.data.error) { showToast('更新失敗：' + res.data.error); return; }
+  await loadTables();
+  await loadAutoSettingsAnd();
+}
+
+function deleteTable(id) {
+  stConfirm('確定刪除這張表？底下的資料列會一併刪除。', async function () {
+    const res = await stApiJson('/console/agent/table-delete', { id: id });
+    if (res.data.error) { showToast('刪除失敗：' + res.data.error); return; }
+    if (stState.openTableId === id) stState.openTableId = null;
+    await loadTables();
+    await loadAutoSettingsAnd();
+  });
+}
+
+async function addRow(tableId) {
+  const t = stState.tables.find(x => x.id === tableId);
+  if (!t) return;
+  if (!(t.columns || []).length) { showToast('請先編輯欄位（設定欄位名稱）'); return; }
+  const data = {};
+  (t.columns || []).forEach(c => { data[c] = ''; });
+  const res = await stApiJson('/console/agent/table-row', { action: 'create', table_id: tableId, data: data });
+  if (res.data.error) { showToast('新增失敗：' + res.data.error); return; }
+  await loadTables();
+}
+
+async function updateRow(rowId, tableId, column, value) {
+  const t = stState.tables.find(x => x.id === tableId);
+  const row = t && (t.rows || []).find(r => r.id === rowId);
+  const data = Object.assign({}, (row && row.data) || {});
+  data[column] = value;
+  const res = await stApiJson('/console/agent/table-row', { action: 'update', id: rowId, data: data });
+  if (res.data.error) showToast('更新失敗：' + res.data.error);
+}
+
+async function deleteRow(rowId, tableId) {
+  const res = await stApiJson('/console/agent/table-row', { action: 'delete', id: rowId });
+  if (res.data.error) { showToast('刪除失敗：' + res.data.error); return; }
+  await loadTables();
+  await loadAutoSettingsAnd();
+}
+
+function editColumns(tableId) {
+  const t = stState.tables.find(x => x.id === tableId);
+  if (!t) return;
+  const cur = (t.columns || []).join(', ');
+  stPrompt('欄位名稱（用逗號分隔）', cur, async function (input) {
+    if (input === null) return;
+    const cols = String(input).split(',').map(s => s.trim()).filter(Boolean);
+    const res = await stApiJson('/console/agent/table-update', { id: tableId, columns: cols });
+    if (res.data.error) { showToast('更新失敗：' + res.data.error); return; }
+    await loadTables();
+  });
+}
+
+function importTable(input, tableId) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  // 有指定既有表 → 先問「附加」還是「覆寫」（二選一，不用瀏覽器原生 confirm）
+  if (tableId) {
+    stChoose('匯入方式：要附加還是覆寫？',
+             [{ label: '附加（保留原有資料）', value: 'append' },
+              { label: '覆寫（清空後匯入）', value: 'replace' }],
+             function (mode) { if (mode) stTableImportGo(file, tableId, mode); });
+    return;
+  }
+  stTableImportGo(file, 0, 'replace');
+}
+
+async function stTableImportGo(file, tableId, mode) {
+  const note = document.getElementById('tableImportNote');
+  const fd = new FormData();
+  fd.append('table_id', String(tableId || 0));
+  fd.append('name', file.name.replace(/\.[^.]+$/, ''));
+  fd.append('mode', mode);
+  fd.append('file', file);
+  if (note) note.innerHTML = '<div class="test-result">匯入中…</div>';
+  try {
+    const d = await stUpload('/console/agent/table-import', fd);
+    if (d.error) {
+      if (note) note.innerHTML = '<div class="test-result">❌ ' + esc(d.error) + '</div>';
+      return;
+    }
+    if (note) {
+      note.innerHTML = '<div class="test-result">✅ 已寫入 ' + d.written + ' 列，欄位：' +
+        esc((d.columns || []).join('、')) + '</div>';
+    }
+    stState.openTableId = d.table_id;
+    await loadTables();
+    await loadAutoSettingsAnd();
+  } catch (e) {
+    if (note) note.innerHTML = '<div class="test-result">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+
+/* ----- 分頁五：命中測試 ----- */
+
+// 第一次進這個分頁時，勾選狀態先照「自動回復」頁的實際開關（試跑卡片已經搬過來，
+// 這裡就是它唯一的家）。之後使用者自己改的勾選**不會**被 30 秒的設定同步蓋掉。
+function ktSyncLayers(force) {
+  const s = state.overview;
+  if (!s) return;
+  if (stState.ktSynced && !force) return;
+  stState.ktLayers = { faq: !!s.faq_layer, table: !!s.table_layer, rag: !!s.rag_layer };
+  stState.ktSynced = true;
+}
+
+function ktResetLayers() {
+  ktSyncLayers(true);
+  stRender(hittestTabHtml());
+}
+
+function ktAllLayers(on) {
+  stState.ktLayers = { faq: !!on, table: !!on, rag: !!on };
+  stState.ktSynced = true;      // 使用者動過了，別再被同步蓋掉
+  stRender(hittestTabHtml());
+}
+
+function hittestTabHtml() {
+  const s = state.overview;
+  const opts = s ? (s.scopes || []).map(sc =>
+    '<option value="' + sc.platform + '|' + sc.scope + '">' + esc(stScopeLabel(sc)) +
+      '</option>').join('') : '';
+  const L = stState.ktLayers;
+  const box = (key, label, sub) =>
+    '<label class="switch-row' + (L[key] ? ' on' : '') + '" style="cursor:pointer;flex:1;min-width:190px">' +
+      '<input type="checkbox" id="kt_' + key + '"' + (L[key] ? ' checked' : '') +
+        ' onchange="ktSetLayer(\'' + key + '\', this.checked)">' +
+      '<span class="sr-name">' + label + '<span class="sr-sub">' + sub + '</span></span>' +
+    '</label>';
+  const r = stState.ktResult;
+  return '' +
+    '<div class="card">' +
+      '<h3>命中測試' +
+        infotip('用真實客戶問句試跑，看它會落在哪一層。不會發送任何訊息、不會改上面的開關、' +
+                '也不寫任何紀錄 —— 純粹是「我想知道這句會怎樣」的工具。' +
+                '勾選的層依固定順序由上而下嘗試（FAQ → 表格 → 知識庫）；' +
+                '全部取消勾選 = 直接看「降級人工」。') +
+      '</h3>' +
+      '<div class="row" style="margin-bottom:10px">' +
+        '<input type="text" id="ktQuery" placeholder="例如：保固期內人為損壞要收費嗎？" ' +
+          'onkeydown="if(event.key===\'Enter\')runHitTest()" ' +
+          'style="flex:1;min-width:240px;padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
+        '<select id="ktTarget" style="padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
+          opts + '</select>' +
+        '<button class="btn primary" onclick="runHitTest()">開始測試</button>' +
+      '</div>' +
+      '<div class="row">' + box('faq', '第一層 FAQ', '規則匹配，回覆最快') +
+        box('table', '第二層 業務表格', '會呼叫 DeepSeek') +
+        box('rag', '第三層 知識庫', '向量 + 字面混合檢索') + '</div>' +
+      '<div class="row" style="margin-top:8px">' +
+        '<label class="hint" style="margin:0;display:flex;align-items:center;gap:6px">' +
+          '<input type="checkbox" id="ktNoHistory"' + (stState.ktNoHistory ? ' checked' : '') +
+          ' onchange="stState.ktNoHistory=this.checked">' +
+          '不帶入最近對話' +
+          infotip('表格／知識庫的查詢改寫會用「該會話的最近對話」來補齊主語；' +
+                  '勾起來就是模擬「客戶第一次開口」的情況。') +
+        '</label>' +
+        '<label class="hint" style="margin:0;display:flex;align-items:center;gap:6px">' +
+          '查詢改寫' +
+          infotip('規則層（FAQ）沒命中時，請模型把問句改寫成 2 條（修同音錯別字、' +
+                  '補齊「這個」的指代、並保留一條客戶原話版）。這一組查詢三層共用：' +
+                  'FAQ 再匹配一次、業務表格拿去問、知識庫拿去檢索 —— 整個流程只呼叫模型一次。') +
+          '<select onchange="stState.ktRewrite=this.value" ' +
+            'style="padding:4px 7px;border:1px solid var(--border);border-radius:7px">' +
+            '<option value=""' + (stState.ktRewrite === '' ? ' selected' : '') +
+              '>依知識庫設定</option>' +
+            '<option value="on"' + (stState.ktRewrite === 'on' ? ' selected' : '') +
+              '>這次強制開啟</option>' +
+            '<option value="off"' + (stState.ktRewrite === 'off' ? ' selected' : '') +
+              '>這次強制關閉</option>' +
+          '</select></label>' +
+      '</div>' +
+      '<div class="row" style="margin-top:8px">' +
+        '<button class="btn sm" onclick="ktAllLayers(true)">全選</button>' +
+        '<button class="btn sm" onclick="ktAllLayers(false)">全不選</button>' +
+        '<button class="btn sm" onclick="ktResetLayers()">照目前開關重設</button>' +
+        '<span class="hint" style="margin:0">目前開關：' +
+          'FAQ <b>' + (s && s.faq_layer ? '開' : '關') + '</b>' +
+          ' · 表格 <b>' + (s && s.table_layer ? '開' : '關') + '</b>' +
+          ' · 知識庫 <b>' + (s && s.rag_layer ? '開' : '關') + '</b></span>' +
+      '</div>' +
+    '</div>' +
+    '<div id="ktResult">' + (r ? ktResultHtml(r) : '<div class="empty-note">還沒有測試結果</div>') + '</div>';
+}
+
+function ktSetLayer(key, on) {
+  stState.ktLayers[key] = on;
+  stState.ktSynced = true;      // 使用者手動改過，之後不再自動蓋掉
+  stRender(hittestTabHtml());
+}
+
+async function runHitTest() {
+  const qEl = document.getElementById('ktQuery');
+  const tEl = document.getElementById('ktTarget');
+  const text = (qEl && qEl.value || '').trim();
+  if (!text) { showToast('請先輸入一句客戶可能說的話'); return; }
+  const parts = ((tEl && tEl.value) || '|').split('|');
+  const layers = Object.keys(stState.ktLayers).filter(k => stState.ktLayers[k]);
+  const box = document.getElementById('ktResult');
+  if (box) box.innerHTML = '<div class="empty-note">測試中…（勾到第二／三層會呼叫 DeepSeek，約需數秒）</div>';
+  const body = {
+    text: text, platform: parts[0], scope: parts[1],
+    layers: layers, with_history: !stState.ktNoHistory,
+  };
+  // '' = 不送，讓後端依知識庫參數（設定頁的勾選）決定
+  if (stState.ktRewrite === 'on') body.query_rewrite = true;
+  else if (stState.ktRewrite === 'off') body.query_rewrite = false;
+  try {
+    const res = await stApiJson('/console/agent/test', body);
+    if (res.data.error) {
+      if (box) box.innerHTML = '<div class="empty-note">❌ ' + esc(res.data.error) + '</div>';
+      return;
+    }
+    stState.ktResult = res.data;
+    if (box) box.innerHTML = ktResultHtml(res.data);
+  } catch (e) {
+    if (box) box.innerHTML = '<div class="empty-note">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+function ktResultHtml(d) {
+  const tierTag = { faq: 'tag-auto-faq', table: 'tag-auto-table', rag: 'tag-auto-rag' }[d.tier];
+  const sent = d.would_send
+    ? '<span class="pill on">會自動回覆</span>'
+    : '<span class="pill miss">降級人工</span>';
+  return '' +
+    '<div class="card">' +
+      '<h3>測試結果</h3>' +
+      '<div class="lg-head">' +
+        (tierTag ? '<span class="' + tierTag + '">' + esc(d.label) + '</span>'
+                 : '<span class="tag-auto-miss">' + esc(d.label || '未命中') + '</span>') +
+        sent +
+        '<span class="lg-time">tier = ' + esc(d.tier) + '</span>' +
+        (d.layers ? '<span class="lg-time">跑了 ' + esc((d.layers || []).join(' → ')) + '</span>'
+                  : '<span class="lg-time">全部層（依開關）</span>') +
+      '</div>' +
+      '<div class="test-result" style="margin-top:8px">' +
+        (d.detail ? '說明：' + esc(d.detail) + '\n' : '') +
+        (d.reason ? '原因：' + esc(d.reason) + '\n' : '') +
+        (d.matched_question ? '命中問法：' + esc(d.matched_question) + '\n' : '') +
+        (d.score != null ? '分數：' + d.score + '\n' : '') +
+        (d.rewritten_query ? '改寫後問句：' + esc(d.rewritten_query) +
+          (d.history_used ? '（帶入 ' + d.history_used + ' 則對話）' : '') + '\n' : '') +
+        ((Array.isArray(d.rag_queries) && d.rag_queries.length > 1)
+          ? '本次共用的查詢（共 ' + d.rag_queries.length + ' 條，三層共用）：\n' +
+            d.rag_queries.map((q, i) => '　' + (i === 0 ? '原句 ' : '改寫' + i + ' ') +
+              esc(q)).join('\n') + '\n' : '') +
+        (d.rag_threshold != null
+          ? '知識庫門檻：' + d.rag_threshold + '（召回 ' + (d.rag_candidates || 0) + ' 塊）\n' : '') +
+        (d.text ? '\n回覆內容：\n' + mdImages(d.text) : '（沒有可送出的回覆）') +
+      '</div>' +
+      ((d.history && d.history.length)
+        ? '<div class="hint" style="margin-top:8px">參考到的最近對話（query 改寫用）：<br>' +
+          d.history.map(h => '　' + (h.direction === 'outbound' ? '客服' : '客戶') + '：' +
+            esc(h.text)).join('<br>') + '</div>'
+        : '') +
+      (d.matched_rows && d.matched_rows.length
+        ? '<div style="margin-top:10px">' +
+            '<b style="font-size:12.5px">知識庫召回明細</b>' +
+            renderMatchedRows(d.matched_rows, true, d.rag_threshold) +
+            '<div class="hint" style="margin-top:4px">' +
+            '調門檻最直接的依據：看<b>最高分離門檻多遠</b> —— 只差一點就往下調；' +
+            '差很多、且候選句句不相關，那才是這份文件真的沒有答案（該補文件，不是調門檻）。</div></div>'
+        : (stState.ktLayers.rag && d.tier !== 'rag'
+            ? '<div class="hint" style="margin-top:8px">這次沒有知識庫召回紀錄（可能是知識庫層沒被勾選、已停用，或知識庫是空的）。</div>'
+            : '')) +
+    '</div>';
+}
+
+
+/* ----- 分頁六：紀錄 ----- */
+
+function logsTabHtml() {
+  const s = state.overview;
+  const opts = s ? (s.scopes || []).map(sc =>
+    '<option value="' + sc.channel + '|' + sc.scope + '">' + esc(sc.label) + '</option>').join('') : '';
+  const items = stState.logs.length
+    ? stState.logs.map(logItemHtml).join('')
+    : '<div class="empty-note">尚無自動回復紀錄</div>';
+
+  // ── 子頁：命中情況統計（原本是「自動回復」頁的一張卡，搬到這裡）──
+  if (stState.logsSub === 1) {
+    return '' +
+      '<div class="card">' +
+        '<div class="kb-pg-head" style="margin-bottom:8px">' +
+          '<h3 style="margin:0">命中情況統計' +
+            infotip('自動回復送出與未命中的累計次數（未命中且未處理的顯示為待處理）。' +
+                    '「改寫救回」＝第一次沒查到、帶對話改寫問句後才命中。') +
+          '</h3>' +
+          '<div class="spacer" style="flex:1"></div>' +
+          '<button class="btn sm" onclick="backToLogs()">← 回紀錄列表</button>' +
+        '</div>' +
+        '<div id="logStatsBox"><div class="empty-note">載入中…</div></div>' +
+      '</div>';
+  }
+
+  return '' +
+    '<div class="card">' +
+      '<div class="kb-pg-head" style="margin-bottom:8px">' +
+        '<h3 style="margin:0">自動回復紀錄' +
+          infotip('每次自動回復的處置都會留痕：命中哪一層、未命中的原因、送出結果。' +
+                  '點任一筆可展開檢索明細（知識庫那層會列出每個候選塊的分數與是否入選）。') +
+        '</h3>' +
+        '<div class="spacer" style="flex:1"></div>' +
+        '<button class="btn sm" onclick="openLogsStats()">命中情況統計</button>' +
+      '</div>' +
+      '<div class="row">' +
+        '<select id="logChannel" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+          '<option value="">全部渠道</option>' + opts + '</select>' +
+        '<select id="logTier" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px">' +
+          '<option value="">全部結果</option>' +
+          '<option value="faq">FAQ 命中</option>' +
+          '<option value="table">表格命中</option>' +
+          '<option value="rag">知識庫命中</option>' +
+          '<option value="miss">未命中</option>' +
+        '</select>' +
+        '<button class="btn primary" onclick="loadLogs()">查詢</button>' +
+        '<span id="logTotal" class="hint" style="margin:0"></span>' +
+      '</div>' +
+    '</div>' +
+    '<div id="logList">' + items + '</div>';
+}
+
+function logItemHtml(r) {
+  let tierTag;
+  if (r.tier === 'faq') {
+    tierTag = '<span class="tag-auto-faq">自動回復-FAQ命中</span>';
+  } else if (r.tier === 'table') {
+    tierTag = '<span class="tag-auto-table' + (r.rewrote ? ' rw' : '') + '">自動回復-表格命中' +
+      (r.rewrote ? '·改寫' : '') + '</span>';
+  } else if (r.tier === 'rag') {
+    tierTag = '<span class="tag-auto-rag">自動回復-知識庫命中' +
+      (r.rewrote ? '·改寫' : '') + '</span>';
+  } else {
+    tierTag = '<span class="tag-auto-miss">自動回復未命中</span>';
+  }
+  const sendTag = r.send_status === 'sent'
+    ? '<span class="pill on">已送出</span>'
+    : (r.send_status === 'failed' ? '<span class="pill miss">送出失敗</span>'
+      : '<span class="pill off">未送出</span>');
+  const label = AR_CHANNEL_LABEL[r.platform] || r.channel;
+  // 只有真的寫過檢索明細的紀錄才值得點開（舊資料沒有這個欄位）
+  const hasRows = !!r.has_matched_rows;
+  // ⚠ 明細框一定要「有明細 且 正在展開」才畫：否則 openLogId 一旦殘留（例如換了篩選條件
+  //    但沒清掉），就會在沒有明細的列底下留一個空的明細框。
+  const showDetail = hasRows && stState.openLogId === r.id;
+  const arrow = hasRows
+    ? '<span class="lg-time">' + (showDetail ? '▾ 收起明細' : '▸ 檢索明細') + '</span>' : '';
+  return '<div class="log-item' + (hasRows ? ' clickable' : '') + (showDetail ? ' open' : '') + '"' +
+    (hasRows ? ' onclick="toggleLogDetail(' + r.id + ')"' : '') + '>' +
+    '<div class="lg-head">' + tierTag + sendTag +
+      '<b>' + esc(label) + ' ' + (r.scope === 'dm' ? '私訊' : '貼文留言') + '</b>' +
+      '<span class="lg-time">' + fmtTime(r.created_at) + '</span>' +
+      arrow +
+    '</div>' +
+    (r.question ? '<div class="lg-q">客戶：' + esc(r.question) + '</div>' : '') +
+    // 耗時與模型呼叫次數：一次知識庫回覆可能呼叫 8 次模型（實測 49 秒），
+    // 這一行是「為什麼這麼慢」最直接的答案。
+    (r.elapsed_ms
+      ? '<div class="lg-q">耗時 <b>' + (r.elapsed_ms / 1000).toFixed(1) + 's</b>' +
+        (r.llm_calls ? '，模型呼叫 <b>' + r.llm_calls + '</b> 次' +
+          (r.llm_seconds ? '（佔 ' + Number(r.llm_seconds).toFixed(1) + 's）' : '') : '') + '</div>'
+      : '') +
+    (r.rewrote && r.rewritten_query
+      ? '<div class="lg-q">改寫問句：' + esc(r.rewritten_query) +
+        (r.history_used ? '（帶入 ' + r.history_used + ' 則對話）' : '') + '</div>'
+      : (r.rewrote ? '<div class="lg-q">改寫後命中</div>' : '')) +
+    (r.answer ? '<div class="lg-a">回覆：' + mdImages(r.answer) + '</div>' : '') +
+    (r.detail ? '<div class="lg-q">' + esc(r.detail) + '</div>' : '') +
+    (r.detail && r.reason && r.reason !== 'sent'
+      ? '' : '') +
+    (showDetail ? '<div class="lg-detail" id="logDetailBox">' +
+      (stState.logDetail ? renderMatchedRows(stState.logDetail.matched_rows, true)
+                         : '<div class="hint" style="margin:0">讀取明細中…</div>') +
+      '</div>' : '') +
+  '</div>';
+}
+
+// 展開／收起單筆紀錄的檢索明細（明細不在列表裡，要另外撈）
+async function toggleLogDetail(logId) {
+  const box = document.getElementById('logDetailBox');
+  if (stState.openLogId === logId) {
+    stState.openLogId = null;
+    stState.logDetail = null;
+    const l = document.getElementById('logList');
+    if (l) l.innerHTML = stState.logs.map(logItemHtml).join('') || '<div class="empty-note">沒有符合條件的紀錄</div>';
+    return;
+  }
+  stState.openLogId = logId;
+  stState.logDetail = null;
+  const l = document.getElementById('logList');
+  if (l) l.innerHTML = stState.logs.map(logItemHtml).join('');
+  const box2 = document.getElementById('logDetailBox');
+  try {
+    const d = await stApi('/console/agent/log?id=' + logId);
+    stState.logDetail = d;
+    if (box2) box2.innerHTML = renderMatchedRows(d.matched_rows, true);
+  } catch (e) {
+    if (box2) box2.innerHTML = '<div class="hint" style="margin:0">讀取明細失敗：' + esc(e.message) + '</div>';
+  }
+}
+
+/* ----- 知識庫召回明細（紀錄頁 / 命中測試 / 試跑共用） -----
+   rows 是 autoreply_log.matched_rows 的形狀：每筆含 vec / lex / final / rerank /
+   來源（doc / heading / page / sheet / 列） / text 片段 / picked（是否真的送進模型）。
+   ⚠️ 這欄是「TEXT 存 JSON」的老坑高風險區 —— 一律不假設型別，壞資料降級成不顯示。 */
+// thr（可選）：這次的門檻。沒過門檻時把它一起說出來，使用者才知道差多少。
+function renderMatchedRows(rows, showAll, thr) {
+  if (!Array.isArray(rows) || !rows.length) return '';
+  const picked = rows.filter(r => r && r.picked);
+  const rest = rows.filter(r => r && !r.picked);
+  // 有任一塊是被「多條查詢」撈到的 → 這次是多查詢檢索，才逐塊標出命中查詢
+  const multi = rows.some(r => r && Array.isArray(r.queries) && r.queries.length > 1);
+  // ★ rows 已按 final 由高到低排 —— 所以第一筆就是最高分。
+  //   ⚠️ 「入選（picked）」＝**真的會被送進模型**：沒過門檻時引擎直接降級、
+  //   一塊都不送，這裡就會是 0 塊。以前後端無條件標 picked=True，害工作台顯示
+  //   「入選 6 塊」但模型一塊都沒看到（小jo 2026-10-12 回報），現在對齊了。
+  const top1 = Number((rows[0] || {}).final || 0);
+  const thrTxt = (thr === null || thr === undefined || thr === '')
+    ? '' : ' ' + Number(thr).toFixed(2);
+  const head = '<div class="hint" style="margin:0 0 6px">召回 ' + rows.length + ' 塊，' +
+    (picked.length
+      ? '實際送進模型 <b>' + picked.length + '</b> 塊'
+      : '<b>最高分 ' + top1.toFixed(3) + ' 未達門檻' + thrTxt + '</b>' +
+        ' → <b>一塊都沒送進模型</b>（不呼叫模型，直接降級人工）') +
+    (multi ? '　· 多查詢檢索：每塊標出是被哪一條查詢撈到的' : '') + '</div>';  // 沒入選的只顯示前 12 筆，避免洗版；要看全部就把 showAll 帶上
+  const tailLimit = showAll ? rest.length : 12;
+  const tail = rest.slice(0, tailLimit);
+  const more = rest.length > tail.length
+    ? '<div class="hint" style="margin:4px 0 0">…另有 ' + (rest.length - tail.length) + ' 塊未列出</div>' : '';
+  return '<div>' + head +
+    picked.map(r => kbHitHtml(r, true, multi)).join('') +
+    (tail.length ? '<div class="hint" style="margin:8px 0 4px">未入選的候選：</div>' +
+      tail.map(r => kbHitHtml(r, false, multi)).join('') + more : '') +
+    '</div>';
+}
+
+function kbHitHtml(r, isPicked, showQueries) {
+  if (!r || typeof r !== 'object') return '';
+  const src = [r.doc, r.heading, r.sheet ? ('工作表 ' + r.sheet) : '',
+               r.page ? ('第 ' + r.page + ' 頁') : '',
+               (r.row_from != null && r.row_to != null && r.row_to !== r.row_from)
+                 ? ('列 ' + r.row_from + '-' + r.row_to) : '']
+    .filter(Boolean).map(esc).join(' › ');
+  const n = v => (v == null ? '—' : Number(v).toFixed(3));
+  // 這一塊帶出來的圖（「圖文結合輸出」的證據：命中時客戶會一起收到這些圖）
+  const atts = Array.isArray(r.assets) ? r.assets.filter(a => a && a.id) : [];
+  const attHtml = atts.length
+    ? '<div class="hint" style="margin:6px 0 0">命中附圖 ' + atts.length + ' 張：</div>' +
+      '<div class="row" style="flex-wrap:wrap;gap:8px;margin-top:4px">' +
+        atts.map(function (a) {
+          return '<div style="width:96px">' +
+            '<img src="' + esc(a.url) + '" alt="" loading="lazy"' +
+              ' style="width:96px;height:68px;object-fit:contain;border:1px solid var(--border);' +
+              'border-radius:7px;background:#fafbfc;cursor:zoom-in"' +
+              ' title="' + esc(a.caption || '') + '"' +
+              ' onclick="window.open(\'' + esc(a.url) + '\',\'_blank\')">' +
+            '<div class="hint" style="margin:2px 0 0;font-size:11.5px;line-height:1.35">' +
+              (a.caption ? esc(String(a.caption).slice(0, 30))
+                         : '<span style="color:#b45309">未填描述</span>') + '</div></div>';
+        }).join('') +
+      '</div>'
+    : '';
+  return '<div class="kb-hit' + (isPicked ? ' picked' : '') + '">' +
+    '<div class="kh-head">' + (isPicked ? '<span class="pill on">入選</span>'
+                                        : '<span class="pill off">未入選</span>') +
+      (r.kind === 'image' ? '<span class="pill on">圖片命中</span>' : '') +
+      '<span class="kb-src">' + (src || '未知來源') + '</span>' +
+      (r.chunk_id != null && r.kind !== 'image'
+        ? '<span class="kb-score">塊 #' + esc(String(r.chunk_id)) + '</span>'
+        : (r.asset_id != null ? '<span class="kb-score">圖 #' + esc(String(r.asset_id)) + '</span>' : '')) +
+    '</div>' +
+    '<div class="kb-score">總分 <b>' + n(r.final) + '</b>' +
+      ' · 向量 ' + n(r.vec) + ' · 字面 ' + n(r.lex) +
+      (r.rerank != null ? ' · rerank ' + n(r.rerank) : '') +
+      (atts.length ? ' · <b>附圖 ' + atts.length + '</b>' : '') + '</div>' +
+    (showQueries && Array.isArray(r.queries) && r.queries.length
+      ? '<div class="kb-score">命中查詢：' +
+        r.queries.map(esc).join(' ｜ ') + '</div>' : '') +
+    (r.text ? '<div style="margin-top:3px">' + mdImages(r.text) + '</div>' : '') +
+    attHtml +
+  '</div>';
+}
+
+async function loadLogs() {
+  const box = document.getElementById('logList');
+  const sel = document.getElementById('logChannel');
+  const tier = document.getElementById('logTier');
+  const parts = (sel && sel.value) ? sel.value.split('|') : ['', ''];
+  const qs = new URLSearchParams();
+  if (parts[0]) qs.set('platform', parts[0]);
+  if (parts[1]) qs.set('scope', parts[1]);
+  if (tier && tier.value) qs.set('tier', tier.value);
+  qs.set('limit', '100');
+  if (box) box.innerHTML = '<div class="empty-note">載入中…</div>';
+  try {
+    const d = await stApi('/console/agent/logs?' + qs.toString());
+    stState.logs = d.logs || [];
+    stState.openLogId = null;      // 換一批結果就把展開狀態歸零
+    stState.logDetail = null;
+    if (box) box.innerHTML = stState.logs.length
+      ? stState.logs.map(logItemHtml).join('')
+      : '<div class="empty-note">沒有符合條件的紀錄</div>';
+    const tot = document.getElementById('logTotal');
+    if (tot) tot.textContent = '共 ' + d.total + ' 筆';
+  } catch (e) {
+    if (box) box.innerHTML = '<div class="empty-note">載入失敗：' + esc(e.message) + '</div>';
+  }
+}
+
+
+
+/* ---- 設定分頁入口（renderSettingsTab 呼叫；實際內容由移植過來的舊版 UI 產生）---- */
+
+function renderSettingsFaq(body) {
+  body.innerHTML = '<div class="card"><div class="empty-note">載入中…</div></div>';
+  loadFaqs();
+}
+
+function renderSettingsTable(body) {
+  body.innerHTML = '<div class="card"><div class="empty-note">載入中…</div></div>';
+  loadTables(true);
+}
+
+function renderSettingsHittest(body) {
+  ktSyncLayers();          // 先照「自動回復」頁的實際開關對齊（只做一次）
+  body.innerHTML = hittestTabHtml();
+}
+
+function renderSettingsLogs(body) {
+  body.innerHTML = logsTabHtml();
+  if (stState.logsSub === 1) {
+    loadStats().then(function (d) {
+      renderStatsInto(document.getElementById('logStatsBox'), d);
+    });
+  } else if (!stState.logs.length) {
+    loadLogs();
+  }
+}
+
+
 /* ---------------------------------------------------------------- 尾端靜態節點用到的函式 */
 function closeFaqDialog() { var el = $('faqOverlay'); if (el) el.classList.remove('open'); }
 function saveFaqDialog() { closeFaqDialog(); }
@@ -4549,6 +5243,19 @@ boot();
       <div class="spacer"></div>
       <button class="btn" onclick="closeAskInput()">取消</button>
       <button class="btn primary" onclick="askInputOk()">確定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 二選一彈窗（業務表格匯入：附加 / 覆寫；專案約定不用原生 confirm） ========== -->
+<div class="faq-overlay" id="stChooseOverlay" onclick="if(event.target===this)closeStChoose()">
+  <div class="faq-box" style="width:min(440px,100%)">
+    <div class="sp-head"><h2 id="stChooseTitle">請選擇</h2><div class="spacer"></div>
+      <button class="sp-close" onclick="closeStChoose()" title="關閉">✕</button></div>
+    <div class="fm-body" id="stChooseOpts"></div>
+    <div class="sp-head" style="border-top:1px solid var(--border);border-bottom:none">
+      <div class="spacer"></div>
+      <button class="btn" onclick="closeStChoose()">取消</button>
     </div>
   </div>
 </div>

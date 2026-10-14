@@ -357,6 +357,9 @@ class Answer:
         return {"tier": self.tier, "text": self.text, "faq_id": self.faq_id,
                 "score": self.score, "rewrote": self.rewrote, "reason": self.reason,
                 "detail": self.detail, "label": self.label,
+                # ★ 命中測試頁要顯示「命中的那一條 FAQ 問句」（舊版有這個欄位）
+                "matched_question": self.matched_question,
+                "table_context_chars": self.table_context_chars,
                 "rewritten_query": self.rewritten_query, "history_used": self.history_used,
                 "matched_rows": self.matched_rows,
                 "rag_threshold": self.rag_threshold,

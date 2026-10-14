@@ -176,7 +176,9 @@ def main() -> int:
     # ---------------------------------------------------------------- [2]
     print("\n[2] 參數配置")
     # ⚠️ 檢索參數與**提示詞**都是全域的，這一段會寫到正式設定 → 先整批存起來，最後還原。
-    saved_global = kb_db.get_global_param_overrides()
+    # ★ 檢索參數按商家隔離 → 存/還原都要指明商家，否則比對的是「無主」那批（恆為空），
+    #   「沒有改動正式設定」這條斷言會變成空轉。
+    saved_global = kb_db.get_global_param_overrides(BIZ)
     saved_chunk = {k: kb_db.get_param_overrides(cid).get(k) for k in ("chunk_strategy",)}
     try:
         d = _call(kb_console.get_params, str(cid))
@@ -245,7 +247,7 @@ def main() -> int:
         _call(kb_console.set_params,
               {"collection_id": cid, "values": dict(saved_global, **saved_chunk)})
         kb_search.invalidate()
-    after = kb_db.get_global_param_overrides()
+    after = kb_db.get_global_param_overrides(BIZ)
     check(after == saved_global, "自檢沒有改動正式的全域設定（檢索參數 + 提示詞）",
           f"top_k={after.get('top_k')} min_score={after.get('min_score')} "
           f"提示詞覆寫={'有' if after.get('rag_answer_prompt') else '無'}")
