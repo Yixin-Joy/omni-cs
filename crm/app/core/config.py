@@ -152,6 +152,27 @@ CREDENTIAL_FIELDS = {
     ],
 }
 
+# ★ 兩庫對齊鍵（`platform_business_account_id`）在各平台**就是某一個憑證欄位**，
+#   不再另外要使用者填一次（見 admin/repo.native_id_of）。
+#   ⚠️ 必須與 webhook 正規化出的原生 ID 一致：
+#      微信 = AppID / WhatsApp = phone_number_id / FB = page id / IG = ig user id
+NATIVE_ID_FIELD = {
+    "wechat": "appid",
+    "whatsapp": "phone_number_id",
+    "fb": "page_id",
+    "ig": "ig_user_id",
+}
+
+# ★ 這些憑證**不是選填** —— 想真的連上平台收發訊息就必須有（見 admin UI：欄位標「必填」）。
+#   新增綁定時缺任何一項直接擋下（400），不再允許「先建空殼之後再補」——
+#   空殼帳號會讓 webhook 收訊時取不到憑證，變成靜默失敗。
+CREDENTIAL_REQUIRED = {
+    "wechat": ("appid", "appsecret", "encoding_aes_key"),
+    "whatsapp": ("phone_number_id", "access_token"),
+    "fb": ("page_id", "page_access_token"),
+    "ig": ("ig_user_id", "ig_access_token", "page_access_token"),
+}
+
 
 def scope_label(channel: str, scope: str) -> str:
     return f"{CHANNEL_LABELS.get(channel, channel)} {SCOPE_LABELS.get(scope, scope)}"

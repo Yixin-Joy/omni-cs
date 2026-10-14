@@ -206,6 +206,21 @@
   /* 憑證欄位右上角的「已填」小標：讓管理員一眼看出這個欄位後端真的有值 */
   .cred-ok { font-size: 10.5px; font-weight: 700; color: var(--accent-dark);
     background: var(--accent-soft); padding: 1px 6px; border-radius: 999px; flex-shrink: 0; }
+  /* 「＝原生 ID」小標：指出這個欄位就是兩庫對齊鍵，不用另外填一次 */
+  .cred-id { font-size: 10.5px; font-weight: 700; color: #8a5a00;
+    background: #fdf3dd; padding: 1px 6px; border-radius: 999px; flex-shrink: 0; }
+  /* 原生 ID 說明（新增模式）：解釋它來自哪個憑證欄位 */
+  .acct-native-note { font-size: 11.5px; line-height: 1.5; color: var(--text-soft);
+    background: #f6f8fa; border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 9px; margin-bottom: 9px; }
+  .acct-native-note .an-key { font-weight: 700; color: var(--text); }
+  /* 原生 ID 唯讀顯示（編輯模式）：綁定後不可改 */
+  .acct-native-view { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    font-size: 11.5px; background: #f6f8fa; border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 9px; margin-bottom: 9px; }
+  .acct-native-view label { color: var(--text-soft); }
+  .acct-native-view code { font-size: 12px; word-break: break-all; color: var(--text); }
+  .acct-native-view .an-lock { font-size: 10.5px; color: var(--text-soft); }
   /* 佔位符（••••••••）用灰底灰字 —— 一看就知道是「已填、未顯示」，不是要你重打 */
   .cred-fld input[data-masked="1"] { color: var(--text-soft); background: #f6f8fa;
     letter-spacing: 1px; cursor: default; }
@@ -300,9 +315,9 @@
         <div class="card" style="box-shadow:none">
           <h3 id="acctFormTitle">新增綁定</h3>
           <div class="fld"><label>平台</label><select id="acctPlatform"></select></div>
-          <div class="fld"><label>平台原生帳號 ID
-            <span class="infotip" data-tip="兩個服務的對齊鍵，綁定後不可修改（改了等於換一個帳號）。要換帳號請先刪除再重新綁定。">i</span></label>
-            <input type="text" id="acctNative" placeholder="例：1362588056935295"></div>
+          <!-- ★ 原生 ID 不再單獨填：它就是下方憑證的某一個欄位（AppID / Phone Number ID / Page ID / IG 帳號 ID） -->
+          <div class="acct-native-note" id="acctNativeNote"></div>
+          <div class="acct-native-view" id="acctNativeView" style="display:none"></div>
           <div class="fld"><label>顯示名稱
             <span class="infotip" data-tip="只是給人看的標籤，隨時可以改，不影響收發。">i</span></label>
             <input type="text" id="acctDisplay" placeholder="選填，例：客服主號"></div>
@@ -417,8 +432,21 @@
     ],
     ig: [
       ['ig_user_id', 'IG 專業帳號 ID', false],
-      ['ig_access_token', 'IG Access Token（IGAA…）', true]
+      ['ig_access_token', 'IG Access Token（IGAA…）', true],
+      ['page_access_token', '粉專 Page Token（留言回覆用）', true]
     ]
+  };
+  // ★ 兩庫對齊鍵＝各平台的某一個憑證欄位（與後端 config.NATIVE_ID_FIELD 對齊）。
+  //   新增綁定時不再要使用者單獨填一次原生 ID（見 _nativeField）。
+  var NATIVE_ID_FIELD = { wechat: 'appid', whatsapp: 'phone_number_id',
+                          fb: 'page_id', ig: 'ig_user_id' };
+  // ★ 這些憑證**不是選填**（與後端 config.CREDENTIAL_REQUIRED 對齊）：
+  //   想真的連上平台收發就必須有，缺一項就不讓綁定。
+  var CREDENTIAL_REQUIRED = {
+    wechat: ['appid', 'appsecret', 'encoding_aes_key'],
+    whatsapp: ['phone_number_id', 'access_token'],
+    fb: ['page_id', 'page_access_token'],
+    ig: ['ig_user_id', 'ig_access_token', 'page_access_token']
   };
   var ROLE_LABEL = { admin: '管理員', agent: '客服坐席', ops: '運維' };
   var SCOPES = [
@@ -924,10 +952,43 @@
      - 敏感欄位（appsecret / access_token / aes_key）→ 已填則顯示 ••••••••，未填留空
      ★ 之前的 bug：不管三七二十一傳 null → 全部欄位都是空的，
        管理員看到「AppID 也沒有」會以為憑證沒填（其實後端有值、轉發也正常）。 */
+  /* ★ 原生 ID 提示：它在每個平台就是某一個憑證欄位，不用另外填。
+     `nativeValue` 有值（編輯模式）→ 顯示目前綁定的原生 ID（唯讀，因為它是兩庫對齊鍵）。 */
+  function credFieldLabel(platform, key) {
+    var out = key;
+    (CREDENTIAL_FIELDS[platform] || []).forEach(function (f) {
+      if (f[0] === key) out = f[1];
+    });
+    return out;
+  }
+
+  function updateNativeNote(platform, nativeValue) {
+    var key = NATIVE_ID_FIELD[platform] || '';
+    var label = credFieldLabel(platform, key);
+    var note = $('acctNativeNote');
+    if (note) {
+      note.innerHTML = key
+        ? '<span class="an-key">平台原生帳號 ID</span> 直接取自下方憑證的「'
+          + esc(label) + '」欄位，<b>不用另外填</b>。它就是兩個服務的對齊鍵。'
+        : '';
+    }
+    var view = $('acctNativeView');
+    if (!view) return;
+    if (nativeValue) {
+      view.style.display = '';
+      view.innerHTML = '<label>目前綁定的原生 ID</label><code>'
+        + esc(nativeValue) + '</code><span class="an-lock">綁定後不可修改</span>';
+    } else {
+      view.style.display = 'none';
+      view.innerHTML = '';
+    }
+  }
+
   function renderCredFields(platform, view) {
     var fields = CREDENTIAL_FIELDS[platform] || [];
     var plain = (view && view.plain) || {};
     var filled = (view && view.filled) || [];
+    var idKey = NATIVE_ID_FIELD[platform] || '';
     $('acctCredBox').innerHTML = fields.length
       ? fields.map(function (f) {
           var key = f[0], label = f[1], sensitive = f[2];
@@ -937,12 +998,13 @@
           if (isFilled && sensitive) { val = CRED_MASK; masked = true; }
           return '<div class="fld cred-fld">'
             + '<label>' + esc(label)
+            + (key === idKey ? '<span class="cred-id">＝原生 ID</span>' : '')
             + (isFilled ? '<span class="cred-ok">已填</span>' : '')
             + '</label>'
             + '<input type="text" data-cred="' + key + '"'
             + (masked ? ' data-masked="1"' : '')
             + ' value="' + esc(val) + '"'
-            + ' placeholder="' + (isFilled ? '留空＝不改' : '選填') + '">'
+            + ' placeholder="' + (isFilled ? '留空＝不改' : '必填') + '">'
             + '</div>';
         }).join('')
       : '<div class="muted" style="font-size:12px">此平台無需額外憑證。</div>';
@@ -969,15 +1031,18 @@
     $('acctPlatform').innerHTML = Object.keys(PLATFORM_LABEL).map(function (p) {
       return '<option value="' + p + '">' + PLATFORM_LABEL[p] + '</option>';
     }).join('');
-    $('acctNative').value = '';
     $('acctDisplay').value = '';
     renderCredFields($('acctPlatform').value, null);
+    updateNativeNote($('acctPlatform').value, '');
     ovErr('ovAcctErr', '');
     loadAcct().then(function () { openOv('ovAcct'); });
   }
 
-  // 切換平台 → 重渲染憑證欄位
-  $('acctPlatform').onchange = function () { renderCredFields(this.value, null); };
+  // 切換平台 → 重渲染憑證欄位（原生 ID 提示跟著換）
+  $('acctPlatform').onchange = function () {
+    renderCredFields(this.value, null);
+    updateNativeNote(this.value, '');
+  };
 
   function renderAcctRows(items) {
     $('acctCount').textContent = items.length ? items.length + ' 個' : '';
@@ -1030,14 +1095,22 @@
       return;
     }
 
-    var native = $('acctNative').value.trim();
-    if (!native) { ovErr('ovAcctErr', '請填平台原生帳號 ID'); return; }
+    // ★ 不送 platform_business_account_id：後端從憑證的「原生 ID 欄位」推導
+    var cred = collectCred() || {};
+    var plat = $('acctPlatform').value;
+    // 憑證不是選填 → 逐項檢查（原生 ID 用的那個欄位也在必填清單裡）
+    var missing = (CREDENTIAL_REQUIRED[plat] || []).filter(function (k) { return !cred[k]; });
+    if (missing.length) {
+      ovErr('ovAcctErr', '請填：' + missing.map(function (k) {
+        return credFieldLabel(plat, k) + (k === NATIVE_ID_FIELD[plat] ? '（＝原生 ID）' : '');
+      }).join('、'));
+      return;
+    }
     api('/api/admin/accounts', 'POST', {
       business_id: state.acctBizId,
-      platform: $('acctPlatform').value,
-      platform_business_account_id: native,
+      platform: plat,
       display_name: $('acctDisplay').value.trim(),
-      credential: collectCred()
+      credential: cred
     }).then(function (res) {
       if (!guard(res)) { ovErr('ovAcctErr', res.data.error || '新增失敗'); return; }
       ovErr('ovAcctErr', '');
@@ -1052,12 +1125,11 @@
     $('acctAdd').textContent = '新增綁定';
     $('acctFormTitle').textContent = '新增綁定';
     $('acctReset').style.display = 'none';
-    $('acctNative').disabled = false;
-    $('acctNative').value = '';
     $('acctPlatform').disabled = false;
     $('acctDisplay').disabled = false;
     $('acctDisplay').value = '';
     renderCredFields($('acctPlatform').value, null);
+    updateNativeNote($('acctPlatform').value, '');
   }
   $('acctReset').onclick = function () { resetAcctForm(); ovErr('ovAcctErr', ''); };
 
@@ -1069,8 +1141,7 @@
     var row = findAcct(parseInt(id, 10));
     if (!row) return;
     renderCredFields(row.platform, { plain: row.credential_plain, filled: row.credential_filled });
-    $('acctNative').value = row.platform_business_account_id;
-    $('acctNative').disabled = true;
+    updateNativeNote(row.platform, row.platform_business_account_id);
     $('acctPlatform').value = row.platform;
     $('acctPlatform').disabled = true;
     $('acctDisplay').value = row.display_name || '';

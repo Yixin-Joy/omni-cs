@@ -167,15 +167,25 @@ function readPw() {
         editing: document.getElementById('acctAdd').textContent.indexOf('儲存') >= 0,
         hasCancel: document.getElementById('acctReset').offsetParent !== null,
         scroll: box.scrollHeight > box.clientHeight + 1 || box.scrollWidth > box.clientWidth + 1,
-        // 顯示名稱是「給人看的標籤」→ 隨時可改；原生 ID 是兩庫對齊鍵 → 鎖住
+        // 顯示名稱是「給人看的標籤」→ 隨時可改
         displayEditable: !document.getElementById('acctDisplay').disabled,
-        nativeLocked: document.getElementById('acctNative').disabled,
+        // ★ 原生 ID 已無輸入框（＝兩庫對齊鍵，由憑證推導）；編輯模式改用唯讀框顯示目前值
+        hasNativeInput: !!document.getElementById('acctNative'),
+        nativeView: (() => {
+          const v = document.getElementById('acctNativeView');
+          if (!v || v.offsetParent === null) return null;
+          return { code: (v.querySelector('code') || {}).textContent || '',
+                   locked: v.textContent.indexOf('不可修改') >= 0 };
+        })(),
       };
     });
     check(em.editing && em.hasCancel, '點「憑證」→ 左欄切編輯模式（可取消）');
     check(!em.scroll, '編輯模式下彈窗仍不捲動');
-    check(em.displayEditable && em.nativeLocked,
-      '★ 編輯模式：顯示名稱可改、原生 ID（對齊鍵）鎖住');
+    check(em.displayEditable, '★ 編輯模式：顯示名稱可改');
+    check(!em.hasNativeInput && em.nativeView && em.nativeView.code.length > 0
+          && em.nativeView.locked,
+      '★ 編輯模式：原生 ID 以唯讀框顯示目前值（不再要人填、不可改）',
+      em.nativeView ? em.nativeView.code : '（未顯示）');
 
     const anyFilled = em.rows.filter(r => r.marked);
     check(anyFilled.length === em.rows.length,
@@ -212,6 +222,36 @@ function readPw() {
       cancel: document.getElementById('acctReset').offsetParent !== null,
     }));
     check(back.add.indexOf('新增') >= 0 && !back.cancel, '「取消編輯」回到新增模式');
+
+    // ★★ 原生 ID 不再單獨填：它就是某個憑證欄位（AppID / Phone Number ID /
+    //    Page ID / IG 帳號 ID），由後端從憑證推導。帳號清單仍以「原生 ID」一欄呈現。
+    const nat = await page.evaluate(() => {
+      const ths = Array.from(document.querySelectorAll('#ovAcct thead th'))
+        .map(t => t.textContent.trim());
+      const firstRow = Array.from(document.querySelectorAll('#acctRows tr')[0].children)
+        .map(td => td.textContent.trim());
+      const note = document.getElementById('acctNativeNote');
+      return {
+        ths, firstRow,
+        hasInput: !!document.getElementById('acctNative'),
+        noteText: note ? note.textContent.replace(/\s+/g, ' ') : '',
+        idBadges: document.querySelectorAll('#acctCredBox .cred-id').length,
+        placeholders: Array.from(document.querySelectorAll('#acctCredBox input[data-cred]'))
+          .map(i => i.placeholder),
+        scroll: (() => {
+          const b = document.querySelector('#ovAcct .box');
+          return b.scrollHeight > b.clientHeight + 1 || b.scrollWidth > b.clientWidth + 1;
+        })(),
+      };
+    });
+    check(!nat.hasInput, '★ 新增模式已無「平台原生帳號 ID」輸入框（不用填第二次）');
+    check(nat.noteText.indexOf('不用另外填') >= 0,
+      '有「原生 ID 取自憑證」的說明', nat.noteText.slice(0, 40));
+    check(nat.idBadges === 1, '憑證欄位標出「＝原生 ID」（恰好一個）', nat.idBadges + ' 個');
+    check(nat.placeholders.length > 0 && nat.placeholders.every(p => p === '必填'),
+      '★ 憑證欄位全部標為「必填」（不是選填）', nat.placeholders.join('/'));
+    check(nat.ths.indexOf('原生 ID') >= 0, '帳號清單仍有「原生 ID」一欄', nat.ths.join(' | '));
+    check(!nat.scroll, '新增原生 ID 說明後彈窗仍不捲動');
   }
   await page.click('#ovAcct [data-close]');
   await settle(300);

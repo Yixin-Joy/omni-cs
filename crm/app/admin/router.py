@@ -50,6 +50,13 @@ def _clean_credential(platform: str, credential: dict | None) -> dict | None:
     return out or None
 
 
+def _cred_field_label(platform: str, key: str) -> str:
+    for k, label, _ in config.CREDENTIAL_FIELDS.get(platform, []):
+        if k == key:
+            return label
+    return key
+
+
 # ================================================================ 商家
 
 @router.get("/businesses")
@@ -115,12 +122,25 @@ class AccountIn(BaseModel):
 @router.post("/accounts")
 def create_account(payload: AccountIn, sess: dict = Depends(deps.require_admin)):
     platform = (payload.platform or "").strip()
-    native = (payload.platform_business_account_id or "").strip()
     if platform not in PLATFORMS:
         return _err(400, f"平台不合法（可選：{'/'.join(PLATFORMS)}）")
-    if not native:
-        return _err(400, "平台原生帳號 ID 不能為空（這是兩庫對齊鍵）")
     cred = _clean_credential(platform, payload.credential)
+    # ★ 憑證**不是選填**：缺任何一項就擋下。空殼帳號會讓 webhook 取不到憑證而靜默失敗。
+    missing = [k for k in config.CREDENTIAL_REQUIRED.get(platform, ())
+               if not (cred or {}).get(k)]
+    if missing:
+        labels = "、".join(_cred_field_label(platform, k) for k in missing)
+        return _err(400, f"缺少必要憑證：{labels}")
+    # ★ 原生 ID 不再要使用者單獨填 —— 它在每個平台就是某一個憑證欄位
+    #   （微信 AppID / WhatsApp phone_number_id / FB page id / IG ig user id）。
+    #   表單若仍帶了值（舊前端）以表單為準，否則從憑證推導。
+    native = (payload.platform_business_account_id or "").strip()
+    if not native:
+        key = config.NATIVE_ID_FIELD.get(platform, "")
+        native = str((cred or {}).get(key) or "").strip()
+        if not native:
+            return _err(400, f"請填「{_cred_field_label(platform, key)}」"
+                             "（它就是這個帳號的平台原生 ID，兩庫對齊鍵）")
     try:
         with repo.tx() as (_, cur):
             if not repo.business_exists(cur, payload.business_id):

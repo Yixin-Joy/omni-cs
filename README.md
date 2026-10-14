@@ -367,14 +367,22 @@ PUBLIC_BASE_URL=https://<你的域名>.ngrok-free.dev
 由 admin 在後台「商家 → 平台帳號」填寫，經帳號映射同步到 Connector 的 `connector_account_map`
 快取，Connector 收發時用 `account_map.credential_of()` 取用。
 
-| 平台 | 業務憑證欄位（存 DB） |
-|---|---|
-| 微信 | `appid`、`appsecret`、`encoding_aes_key` |
-| WhatsApp | `access_token`、`phone_number_id` |
-| Facebook | `page_id`、`page_access_token` |
-| Instagram | `ig_user_id`、`ig_access_token` |
+| 平台 | 業務憑證欄位（存 DB） | 原生 ID 取自 |
+|---|---|---|
+| 微信 | `appid`、`appsecret`、`encoding_aes_key` | **AppID** |
+| WhatsApp | `access_token`、`phone_number_id` | **Phone Number ID** |
+| Facebook | `page_id`、`page_access_token` | **Page ID** |
+| Instagram | `ig_user_id`、`ig_access_token`、`page_access_token` | **IG 專業帳號 ID** |
 
 > 欄位單一真相：CRM `config.CREDENTIAL_FIELDS` ↔ Connector `account_map.CREDENTIAL_KEYS`。
+
+**★ 原生 ID 不用另外填**（`config.NATIVE_ID_FIELD`）：兩個服務的對齊鍵
+`platform_business_account_id` 在各平台**就是上面某一個憑證欄位**，新增綁定時由後端
+從憑證推導，後台帳號清單再統一以「原生 ID」一欄呈現。
+
+**★ 憑證是必填、不是選填**（`config.CREDENTIAL_REQUIRED`）：想真的連上平台收發就必須有，
+缺任何一項新增直接 400（錯誤訊息指名缺哪個欄位）。不允許先建空殼——
+空殼帳號會讓 webhook 取不到憑證而靜默失敗。
 
 ---
 
