@@ -88,7 +88,8 @@
 
 - Python 3.11+（本專案開發環境為 3.14）
 - PostgreSQL 16+（本專案為 18；兩個庫：`platform_forwarder` 與 `crm_db`）
-- 一個能讓外網訪問的位址（ngrok 或 natapp），因為微信 / Meta 要回調你的服務
+- 一條公網隧道（`ngrok` 或 `natapp`）**指向 Connector 8010**，因為微信 / Meta 要回調你的
+  服務（專案根附了 `ngrok.exe`，用法見第六節）
 - （可選）DeepSeek API Key，第二層表格與 FAQ 改寫要用
 
 ### 2. 安裝依賴
@@ -208,13 +209,52 @@ C:\Users\its-admin\AppData\Local\Python\pythoncore-3.14-64\python.exe -m uvicorn
 
 ---
 
-## 六、各渠道接入
+## 六、對外接入（ngrok + 各渠道後台設定）
 
-- **微信公眾號**：`mp.weixin.qq.com` 伺服器配置 URL 填 `https://你的域名/wechat`，Token 對應
-  `WECHAT_TOKEN`（握手 token）。
-- **WhatsApp / IG / FB**：Meta 後台 Callback URL 填 `https://你的域名/whatsapp/webhook`，
-  Verify token 對應 `WHATSAPP_VERIFY_TOKEN` / `META_VERIFY_TOKEN`。完整 checklist 見
-  `docs/META_SETUP.md`。
+對外只需要**一條公網隧道，指向 Connector（8010）** —— webhook 收訊在那裡；CRM（8020）不對外。
+
+### 1. 開隧道（ngrok → 8010）
+
+專案根目錄附了 `ngrok.exe`：
+
+```bash
+ngrok http 8010
+```
+
+拿到形如 `https://<隨機字>.ngrok-free.dev` 的公網網址（免費版每次重啟會變）。
+
+> ★ **一定要指向 8010（Connector）**，不是 8020（CRM）、也不是舊單體 8001。
+> 指向錯的地方，客戶來訊不會進新架構。
+
+### 2. 把公網網址寫進 `connector/.env`
+
+```
+PUBLIC_BASE_URL=https://<你的域名>.ngrok-free.dev
+```
+
+用途：把客戶來訊的媒體檔拼成公開網址，讓 Meta 抓得到。ngrok 網址變了要跟著改（見第八節）。
+
+### 3. 各渠道後台填 Callback URL
+
+| 渠道 | 後台位置 | URL 填 | token 對應 |
+|---|---|---|---|
+| 微信公眾號 | `mp.weixin.qq.com` → 設定與開發 → 伺服器配置 | `https://<域名>/wechat` | `WECHAT_TOKEN` |
+| WhatsApp | Meta App → WhatsApp → Configuration | `https://<域名>/whatsapp/webhook` | `WHATSAPP_VERIFY_TOKEN` |
+| Instagram / Facebook | Meta App → Webhooks | `https://<域名>/webhook` | `META_VERIFY_TOKEN` |
+
+完整 Meta checklist 見 `docs/META_SETUP.md`。
+
+> 本機實測域名：`https://slam-shivering-revival.ngrok-free.dev`（2026-10-14）。
+> 填好後可 `curl https://<域名>/health` 確認隧道通到 Connector（回 `{"ok":true,...}`）。
+
+### 4. 平台憑證放哪（★ 不在 .env）
+
+按商家區分的**業務憑證**（AppSecret / Access Token / EncodingAESKey 等）**存 CRM 資料庫**，
+由 admin 在後台「商家 → 平台帳號 → 憑證」填寫，經帳號映射同步給 Connector 收發使用。
+`.env` 只留**握手 token**（webhook 接入驗證用，見第八節）。
+
+> 既有環境一鍵匯入：`crm/scripts/import_credentials.py`（從根 `.env` 讀已調通的憑證寫進 DB）。
+> 匯入後跑 `connector/tests/credentials_check.py` 驗證四平台連通（唯讀、不發訊息）。
 
 > **多租戶 URL（可選）**：若要按商家用不同憑證，改用帶原生 ID 的路徑 ——
 > 微信 `/wechat/{AppID}`、Meta `/webhook/{phone_number_id|page_id|ig_user_id}`。
@@ -256,7 +296,7 @@ C:\Users\its-admin\AppData\Local\Python\pythoncore-3.14-64\python.exe -m uvicorn
 | `PORT` / `INTERNAL_BIND_HOST` | 8010 / 127.0.0.1 |
 | `CRM_INTERNAL_BASE` | CRM 內網位址（`http://127.0.0.1:8020`） |
 | `INTERNAL_API_TOKEN` | 內網認證 token（兩邊一致） |
-| `PUBLIC_BASE_URL` | 對外 https 位址（拼媒體下載連結給 Meta 抓檔，跟著 ngrok 走） |
+| `PUBLIC_BASE_URL` | ngrok 公網網址（**指向 8010**；拼媒體下載連結給 Meta 抓檔，ngrok 網址變了要跟著改） |
 | `MEDIA_DIR` / `KB_CACHE_DIR` | 媒體 / 知識庫快取目錄 |
 | `OUTBOUND_SEND_MODE` | `live`（真發）或 `mock`（離線自檢用） |
 | `WECHAT_TOKEN` / `WHATSAPP_VERIFY_TOKEN` / `META_VERIFY_TOKEN` / `META_APP_SECRET` | **握手 token**（webhook 接入驗證用；驗證階段不知商家，故留 .env） |
