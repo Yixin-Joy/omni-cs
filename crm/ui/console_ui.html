@@ -18,6 +18,9 @@
     --bubble-in: #ffffff;
     --bubble-out: #d9f0e4;
     --shadow: 0 1px 3px rgba(15, 30, 50, 0.06);
+    /* 側欄寬度（頂欄帳號框共用同一組值 → 保證同寬） */
+    --side-w: 340px;
+    --side-min: 300px;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
@@ -29,7 +32,8 @@
   .app { display: flex; height: 100vh; overflow: hidden; }
 
   .sidebar {
-    width: 340px; min-width: 300px; background: var(--panel);
+    /* ★ 寬度用變數：頂欄的帳號框要跟它一模一樣寬（見 .mbar .mwho） */
+    width: var(--side-w); min-width: var(--side-min); background: var(--panel);
     border-right: 1px solid var(--border); display: flex; flex-direction: column;
   }
   .sidebar-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--border); }
@@ -671,71 +675,84 @@
   table.data-table tbody tr.row-link { cursor: pointer; }
   table.data-table tbody tr.row-link:hover { background: var(--accent-soft); }
 
-  /* ===================== 頂部：商家列（新） ===================== */
-  .mbar { display: flex; align-items: center; gap: 8px; padding: 9px 14px;
-    background: var(--panel); border-bottom: 1px solid var(--border);
-    position: relative; z-index: 40; }
-  .mbar .mtitle { font-size: 12px; color: var(--text-soft); font-weight: 700;
-    white-space: nowrap; margin-right: 2px; }
-  .mbar .mlist { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
-    overflow: hidden; }
-  .mbar .mbtn { position: relative; flex: 0 0 auto; max-width: 190px;
-    padding: 7px 14px; border-radius: 9px; border: 1px solid var(--border);
-    background: #fafbfc; color: var(--text-soft); font-weight: 700; font-size: 13px;
-    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    font-family: inherit; transition: all .12s; }
-  .mbar .mbtn:hover { border-color: var(--accent); color: var(--accent); }
-  .mbar .mbtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .mbar .mbtn .badge { position: absolute; top: -6px; right: -6px;
-    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px;
-    background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
-    text-align: center; padding: 0 5px; box-shadow: 0 0 0 2px #fff; z-index: 2; }
-  .mbar .more { padding: 7px 12px; font-size: 15px; font-weight: 700; }
-  .mbar .mmenu { display: none; position: absolute; top: 100%; right: 14px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 11px;
-    box-shadow: 0 10px 30px rgba(15, 30, 50, .14); padding: 8px; z-index: 220;
-    min-width: 180px; max-height: 60vh; overflow: auto; }
-  .mbar .mmenu.open { display: block; }
-  .mbar .mmenu .mbtn { display: block; width: 100%; text-align: left;
-    margin-bottom: 4px; max-width: none; }
-  .app { height: calc(100vh - 52px); }
+  /* ============ 頂欄：左＝當前帳號（同側欄寬）、右＝商家列 ============ */
+  .mbar { display: flex; align-items: stretch; height: 60px; background: var(--panel);
+    border-bottom: 1px solid var(--border); position: relative; z-index: 60; }
 
-  /* ===================== 側欄底部：身分切換 + 登出（新） ===================== */
-  .sfoot { padding: 10px 12px; border-top: 1px solid var(--border); position: relative; }
-  .sfoot .who { display: flex; align-items: center; gap: 8px; padding: 5px 6px;
-    border-radius: 9px; margin-bottom: 6px; transition: background .12s; }
-  .sfoot .who.clickable { cursor: pointer; }
-  .sfoot .who.clickable:hover { background: #f6f8fa; }
-  .sfoot .who .ava { width: 30px; height: 30px; border-radius: 50%; background: #e2e8f0;
+  /* 左：當前帳號 —— 點頭像展開「切換身分 + 登出」 */
+  .mbar .mwho { width: var(--side-w); min-width: var(--side-min); flex-shrink: 0; position: relative;
+    border-right: 1px solid var(--border); display: flex; align-items: center;
+    padding: 0 12px; }
+  .mbar .mwho .who { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0;
+    padding: 7px 9px; border-radius: 10px; transition: background .12s; }
+  .mbar .mwho .who.clickable { cursor: pointer; }
+  .mbar .mwho .who.clickable:hover { background: #f6f8fa; }
+  .mbar .mwho .who .ava { width: 34px; height: 34px; border-radius: 50%; background: #e2e8f0;
     color: #475569; display: flex; align-items: center; justify-content: center;
-    font-weight: 700; font-size: 13px; flex-shrink: 0; }
-  .sfoot .who .whoInfo { min-width: 0; }
-  .sfoot .who .nm { font-weight: 600; font-size: 13.5px; }
-  .sfoot .who .rl { color: var(--text-soft); font-size: 11.5px; }
-  .sfoot .who .caret { margin-left: auto; color: var(--text-soft); font-size: 10px; }
-  .sfoot .rolemenu { display: none; position: absolute; left: 10px; right: 10px;
-    bottom: calc(100% - 4px); background: var(--panel); border: 1px solid var(--border);
-    border-radius: 11px; box-shadow: 0 10px 30px rgba(15, 30, 50, .14);
-    padding: 8px; z-index: 200; }
-  .sfoot .rolemenu.open { display: block; }
-  .sfoot .rolemenu-head { font-size: 11.5px; color: var(--text-soft); font-weight: 700;
+    font-weight: 700; font-size: 14px; flex-shrink: 0; }
+  .mbar .mwho .who .whoInfo { min-width: 0; flex: 1; }
+  .mbar .mwho .who .nm { font-weight: 700; font-size: 13.5px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .mbar .mwho .who .rl { color: var(--text-soft); font-size: 11.5px; }
+  .mbar .mwho .who .caret { color: var(--text-soft); font-size: 10px; flex-shrink: 0; }
+  .mbar .mwho .rolemenu { display: none; position: absolute; left: 10px; right: 10px;
+    top: calc(100% - 6px); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 11px; box-shadow: 0 10px 30px rgba(15, 30, 50, .16);
+    padding: 8px; z-index: 320; }
+  .mbar .mwho .rolemenu.open { display: block; }
+  .mbar .mwho .rolemenu-head { font-size: 11.5px; color: var(--text-soft); font-weight: 700;
     padding: 2px 6px 7px; }
-  .sfoot .roleitem { display: flex; align-items: center; gap: 8px; width: 100%;
+  .mbar .mwho .roleitem { display: flex; align-items: center; gap: 8px; width: 100%;
     text-align: left; padding: 8px 9px; border: 1px solid transparent; border-radius: 8px;
     background: transparent; color: var(--text); font-size: 13px; font-weight: 600;
     cursor: pointer; font-family: inherit; }
-  .sfoot .roleitem:hover { background: #f6f8fa; }
-  .sfoot .roleitem.cur { background: var(--accent-soft); color: var(--accent-dark); cursor: default; }
-  .sfoot .roleitem .ic { width: 22px; height: 22px; border-radius: 7px; background: #eef1f5;
+  .mbar .mwho .roleitem:hover { background: #f6f8fa; }
+  .mbar .mwho .roleitem.cur { background: var(--accent-soft); color: var(--accent-dark); cursor: default; }
+  .mbar .mwho .roleitem .ic { width: 22px; height: 22px; border-radius: 7px; background: #eef1f5;
     color: #475569; display: flex; align-items: center; justify-content: center;
     font-size: 11px; font-weight: 700; flex-shrink: 0; }
-  .sfoot .roleitem.cur .ic { background: #fff; color: var(--accent-dark); }
-  .sfoot .roleitem .now { margin-left: auto; font-size: 10.5px; font-weight: 700;
+  .mbar .mwho .roleitem.cur .ic { background: #fff; color: var(--accent-dark); }
+  .mbar .mwho .roleitem .now { margin-left: auto; font-size: 10.5px; font-weight: 700;
     color: var(--accent-dark); }
-  .sfoot .logout { width: 100%; padding: 7px; border: 1px solid var(--border);
+  .mbar .mwho .rolemenu-foot { margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid var(--border); }
+  .mbar .mwho .logout { width: 100%; padding: 8px; border: 1px solid var(--border);
     border-radius: 8px; background: #fafbfc; color: var(--text-soft); font-size: 12.5px;
     cursor: pointer; font-family: inherit; }
-  .sfoot .logout:hover { border-color: var(--red); color: var(--red); background: #fdecec; }
+  .mbar .mwho .logout:hover { border-color: var(--red); color: var(--red); background: #fdecec; }
+
+  /* 右：商家列 */
+  .mbar .mrest { flex: 1; display: flex; align-items: center; gap: 8px;
+    padding: 0 16px; min-width: 0; position: relative; }
+  .mbar .mtitle { font-size: 12px; color: var(--text-soft); font-weight: 700;
+    white-space: nowrap; flex-shrink: 0; }
+  /* ★ overflow:visible —— 紅點是絕對定位在按鈕外，裁掉就看不見 */
+  .mbar .mlist { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0;
+    padding: 9px 2px; overflow: visible; }
+  .mbar .mbtn { position: relative; flex: 0 0 auto;
+    padding: 7px 14px; border-radius: 9px; border: 1px solid var(--border);
+    background: #fafbfc; color: var(--text-soft); font-weight: 700; font-size: 13px;
+    cursor: pointer; font-family: inherit; transition: all .12s; }
+  .mbar .mbtn:hover { border-color: var(--accent); color: var(--accent); }
+  .mbar .mbtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* 名字自己省略號（按鈕本身不裁 → 紅點才露得出來） */
+  .mbar .mbtn .nm { display: block; max-width: 160px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .mbar .mbtn .badge { position: absolute; top: -7px; right: -7px;
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px;
+    background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
+    text-align: center; padding: 0 5px; box-shadow: 0 0 0 2px #fff; z-index: 2; }
+  .mbar .more { padding: 7px 13px; font-size: 15px; font-weight: 700; }
+  .mbar .mmenu { display: none; position: absolute; top: calc(100% - 6px); right: 16px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 11px;
+    box-shadow: 0 10px 30px rgba(15, 30, 50, .16); padding: 8px; z-index: 320;
+    min-width: 180px; max-height: 60vh; overflow: auto; }
+  .mbar .mmenu.open { display: block; }
+  .mbar .mmenu .mbtn { display: block; width: 100%; text-align: left;
+    margin-bottom: 4px; }
+  .mbar .mmenu .mbtn .nm { max-width: none; }
+  .app { height: calc(100vh - 60px); }
+
 
   /* 貼文特殊配置彈窗內的群組 */
   .postgrp { border: 1px solid var(--border); border-radius: 11px; padding: 10px 12px;
@@ -761,7 +778,27 @@
 <body>
 
 <!-- ================= 頂部：商家列（該客服名下的商家） ================= -->
-<div class="mbar" id="mbar"></div>
+<div class="mbar" id="mbar">
+  <!-- 左：當前帳號（★ 靜態節點 —— renderMerchantBar 不會動到它，否則 TopUser 綁定會失效）
+       點頭像展開「切換身分 + 登出」 -->
+  <div class="mwho">
+    <div class="who" id="whoBox">
+      <div class="ava" id="ava">–</div>
+      <div class="whoInfo">
+        <div class="nm" id="meName">–</div>
+        <div class="rl" id="meRole">–</div>
+      </div>
+      <span class="caret" id="whoCaret" hidden>▼</span>
+    </div>
+    <div class="rolemenu" id="roleMenu">
+      <div class="rolemenu-head">切換身分</div>
+      <div id="roleList"></div>
+      <div class="rolemenu-foot"><button class="logout" id="btnLogout">登出</button></div>
+    </div>
+  </div>
+  <!-- 右：商家列（由 renderMerchantBar() 重建） -->
+  <div class="mrest" id="mrest"></div>
+</div>
 
 <div class="app">
   <aside class="sidebar">
@@ -783,21 +820,6 @@
     </div>
     <div class="search"><input id="search" type="text" placeholder="搜尋…" oninput="onSearchInput()"></div>
     <div class="conv-list" id="convList"></div>
-    <div class="sfoot">
-      <div class="who" id="whoBox">
-        <div class="ava" id="ava">–</div>
-        <div class="whoInfo">
-          <div class="nm" id="meName">–</div>
-          <div class="rl" id="meRole">–</div>
-        </div>
-        <span class="caret" id="whoCaret" hidden>▼</span>
-      </div>
-      <div class="rolemenu" id="roleMenu">
-        <div class="rolemenu-head">切換身分</div>
-        <div id="roleList"></div>
-      </div>
-      <button class="logout" id="btnLogout">登出</button>
-    </div>
   </aside>
 
   <main class="chat">
@@ -1047,7 +1069,10 @@ function loadBusinesses() {
 function statOf(bid) { return state.bizStats[String(bid)] || {}; }
 
 function renderMerchantBar() {
-  var bar = $('mbar');
+  // ★ 只重建 #mrest（商家列）；#mbar 左邊的帳號區是靜態節點，
+  //   重建會讓 TopUser 的 addEventListener 綁定失效。
+  var bar = $('mrest');
+  if (!bar) return;
   bar.innerHTML = '<span class="mtitle">商家</span>';
   var wrap = document.createElement('div');
   wrap.className = 'mlist'; wrap.id = 'mlist';
@@ -1086,7 +1111,9 @@ function mkMerchantBtn(b) {
   var btn = document.createElement('button');
   btn.className = 'mbtn' + (String(b.id) === String(state.bizId) ? ' active' : '');
   btn.setAttribute('data-biz', String(b.id));
-  btn.innerHTML = esc(b.business_name || ('#' + b.id))
+  // ★ 名字用內層 .nm 做省略號，按鈕本身不 overflow:hidden
+  //   —— 否則右上角的紅點會被裁掉一半。
+  btn.innerHTML = '<span class="nm">' + esc(b.business_name || ('#' + b.id)) + '</span>'
     + (st.pending ? '<span class="badge">' + (st.pending > 99 ? '99+' : st.pending) + '</span>' : '');
   btn.onclick = function () { pickBiz(b.id); };
   return btn;
@@ -1110,7 +1137,7 @@ function fitMerchantBar() {
     hidden.unshift(btns[i]);
     if (wrap.scrollWidth <= avail) break;
   }
-  if (!hidden.length) { more.style.display = 'none'; wrap.style.overflow = ''; return; }
+  if (!hidden.length) { more.style.display = 'none'; return; }
   hidden.forEach(function (b) {
     var c = b.cloneNode(true);
     c.style.display = '';
