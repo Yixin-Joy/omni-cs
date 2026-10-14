@@ -67,38 +67,43 @@ def invalidate() -> None:
 
 # ---------- 參數 ----------
 
-def params_for(collection_id: int | None) -> dict:
+def params_for(collection_id: int | None, *, business_id: int | None = None) -> dict:
     """執行時參數（DB 覆寫優先），5 秒 TTL。
 
-    檢索參數與提示詞都是**全域**的，與 `collection_id` 無關；
-    只有分塊參數才分知識庫。這裡仍帶 cid 是因為回傳的是整包參數（含分塊那組），
-    方便呼叫端一次拿齊。
+    ★ **按商家隔離**（2026-10-14）：檢索參數與提示詞是「該商家」的全域值，
+      每個商家各自一組，互不干擾。快取鍵含 business_id，換商家不會拿到別人的。
+
+    仍帶 cid 是因為回傳的是整包參數（含分塊那組），方便呼叫端一次拿齊。
     """
-    key = str(collection_id or 0)
+    key = f"{business_id or 0}:{collection_id or 0}"
     now = time.time()
     with _lock:
         item = _param_cache.get(key)
         if item and now - item["ts"] < _PARAM_TTL:
             return item["value"]
-    value = kb_db.load_params(collection_id)
+    value = kb_db.load_params(collection_id, business_id=business_id)
     with _lock:
         _param_cache[key] = {"ts": now, "value": value}
     return value
 
 
-def prompt_of(name: str) -> str:
-    """提示詞的執行時值（DB 全域覆寫優先），共用參數快取（5 秒 TTL）。
+def prompt_of(name: str, *, business_id: int | None = None) -> str:
+    """提示詞的執行時值（DB 該商家的覆寫優先），共用參數快取（5 秒 TTL）。
 
     ★ 這是**所有提示詞讀取的唯一入口** —— `deepseek_client` 的知識庫問答
     （`rag_answer_prompt`）與查詢改寫（`rewrite_prompt`）都走這裡，
     所以「在知識庫 → 參數配置 → C. 提示詞」改完約 5 秒就會反映到線上行為
     （`POST /console/kb/params` 會立刻 `invalidate()`，通常不用等）。
 
+    ★ `business_id` 決定讀誰的提示詞 —— 每個商家可以有自己的問答風格。
+      沒給時退回 `None`（未歸屬商家的舊資料／自檢）。
+
     `rag_config.prompt_value()` 負責型別轉換與必需佔位符檢查：
     使用者萬一把 `{context}` 刪掉，這裡會有第二道保險退回內建預設，
     不讓 `.format()` 在生成答案那一刻炸掉整層。
     """
-    return rag_config.prompt_value(name, params_for(None).get(name))
+    return rag_config.prompt_value(
+        name, params_for(None, business_id=business_id).get(name))
 
 
 # ---------- 索引 ----------
@@ -469,13 +474,15 @@ def _pick(hits: list[Hit], top_k: int, max_per_doc: int) -> list[Hit]:
 
 def _resolve_params(params: dict | None, top_k: int | None, min_score: float | None,
                     max_per_doc: int | None, max_context_chars: int | None,
-                    rerank_enabled: bool | None) -> dict:
-    """★ 檢索參數一律取**全域**那一組（所有知識庫共用）——
+                    rerank_enabled: bool | None,
+                    business_id: int | None = None) -> dict:
+    """★ 檢索參數取**該商家**那一組（同一商家的所有知識庫共用）——
     以前是「每庫用自己的 top_k / min_score 各自召回」，結果最終參數其實
     由 `load_ready_chunks` 的 ORDER BY c.doc_id 決定（誰的 doc_id 小就聽誰）。
+    現在按商家隔離：商家 A 調的參數不影響商家 B。
     顯式給的值覆蓋參數（命中測試／調參端點用）。
     """
-    p = dict(params or params_for(None))
+    p = dict(params or params_for(None, business_id=business_id))
     for key, val in (("top_k", top_k), ("min_score", min_score), ("max_per_doc", max_per_doc),
                      ("max_context_chars", max_context_chars), ("rerank_enabled", rerank_enabled)):
         if val is not None:
@@ -682,7 +689,7 @@ def search(query: str, *, collection_id: int | None = None,
         return res
 
     res.params = _resolve_params(params, top_k, min_score, max_per_doc,
-                                 max_context_chars, rerank_enabled)
+                                 max_context_chars, rerank_enabled, business_id)
     idx = _index(collection_id, business_id, collection_ids)
     if not idx["rows"] and not _asset_index(collection_id, business_id, collection_ids)["rows"]:
         res.reason = "empty_index"
@@ -733,7 +740,7 @@ def search_multi(queries: list[str], *, collection_id: int | None = None,
 
     res = SearchResult(query=qs[0], queries=qs)
     res.params = _resolve_params(params, top_k, min_score, max_per_doc,
-                                 max_context_chars, rerank_enabled)
+                                 max_context_chars, rerank_enabled, business_id)
     idx = _index(collection_id, business_id, collection_ids)
     if not idx["rows"] and not _asset_index(collection_id, business_id, collection_ids)["rows"]:
         res.reason = "empty_index"
@@ -780,9 +787,9 @@ def build_context(query: str, *, collection_id: int | None = None,
     return search(query, collection_id=collection_id, params=params, **overrides)
 
 
-def query_rewrite_enabled() -> bool:
-    """檢索前是否做多查詢改寫（全域檢索參數，5 秒 TTL，改完不用重啟）。"""
-    return bool(params_for(None).get("query_rewrite"))
+def query_rewrite_enabled(business_id: int | None = None) -> bool:
+    """檢索前是否做多查詢改寫（該商家的檢索參數，5 秒 TTL，改完不用重啟）。"""
+    return bool(params_for(None, business_id=business_id).get("query_rewrite"))
 
 
 def warmup_index() -> dict:

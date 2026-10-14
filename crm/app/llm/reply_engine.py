@@ -473,7 +473,8 @@ async def _rag_try(queries: list[str], flavor: str, post_context: str, score: fl
         # ⚠️ 生成用**客戶原問句**（qs[0]），不是改寫句 —— 改寫只是為了「查得到」，
         #    回答還是要針對客戶真正問的那句話，免得答成另一種說法的問題。
         out = await DeepSeekClient().answer_with_rag(qs[0], context, flavor=flavor,
-                                                     post_context=post_context)
+                                                     post_context=post_context,
+                                                     business_id=business_id)
     except DeepSeekError as e:
         log.warning("知識庫回答失敗: %s", e)
         return None, f"知識庫：命中 {len(res.hits)} 塊但生成失敗（{e}）", extra
@@ -497,7 +498,7 @@ async def _rag_try(queries: list[str], flavor: str, post_context: str, score: fl
         try:
             out2 = await DeepSeekClient().answer_with_rag(
                 qs[0], context, flavor=flavor, post_context=post_context,
-                require_answer=True)
+                require_answer=True, business_id=business_id)
         except DeepSeekError as e:
             log.warning("知識庫追問失敗（改用後備）：%s", e)
         if looks_answered(out2):
@@ -692,8 +693,8 @@ async def _answer_inner(text: str, *, business_id: int, channel: str, scope: str
     # 8 次模型呼叫 / 48.9 秒。現在 FAQ 命中時 0 次、未命中時也只有 1 次。
     from app.rag import kb_search
 
-    use_rewrite = (kb_search.query_rewrite_enabled() if query_rewrite is None
-                   else bool(query_rewrite))
+    use_rewrite = (kb_search.query_rewrite_enabled(business_id)
+                   if query_rewrite is None else bool(query_rewrite))
     queries: list[str] = [question]
     rewrite_note = ""
 
@@ -702,7 +703,7 @@ async def _answer_inner(text: str, *, business_id: int, channel: str, scope: str
             extra_q = await DeepSeekClient().rewrite_queries(
                 question, history_text, count=rag_config.RAG_QUERY_REWRITE_N,
                 faq_questions=_faq_questions(business_id, faq_ids) if faq_on else None,
-                post_context=post_context)
+                post_context=post_context, business_id=business_id)
         except DeepSeekError as e:
             log.warning("查詢改寫失敗（沿用原問句）: %s", e)
             extra_q = []

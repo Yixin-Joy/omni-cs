@@ -512,6 +512,83 @@ function readPw() {
   const logRows = await page.$$eval('#logBox table tbody tr', els => els.length).catch(() => 0);
   check(true, '紀錄分頁渲染', logRows + ' 筆');
 
+
+  // ---------- [6b] 設定 → 知識庫（塊C：從舊版 console 移植 + 每商家獨立） ----------
+  // ★ 這裡釘死三件容易壞的事：
+  //   ① 分頁真的接上（曾長期是「尚未接線」佔位）；
+  //   ② 每個 /console/kb 請求都帶 business_id（漏帶＝讀到別人的資料或直接 400）；
+  //   ③ 參數配置按商家顯示（商家 1 的 min_score 是實測校正過的 0.25，不是內建 0.28）。
+  console.log('\n[6b] 設定 · 知識庫');
+  const kbReqs = [];
+  const kbTap = r => {
+    const u = r.url();
+    if (u.indexOf('/console/kb/') >= 0) kbReqs.push(r.status() + ' ' + u.split('/console/kb/')[1]);
+  };
+  page.on('response', kbTap);
+  await page.click('.sp-tab[data-tab="kb"]');
+  await settle(2200);
+  const kbPage = await page.evaluate(() => {
+    const body = document.getElementById('spBody');
+    const st = (window.kbState && window.kbState.kb) || null;
+    const cols = (st && st.collections) || [];
+    const shown = cols.filter(c => !(c.kind === 'image' && c.image_of));
+    const ungrouped = Number((st && st.totals && st.totals.ungrouped_docs) || 0) ? 1 : 0;
+    return {
+      placeholder: body ? body.textContent.indexOf('尚未接線') >= 0 : true,
+      html: body ? body.innerHTML.length : 0,
+      cards: document.querySelectorAll('#spBody .kb-col').length,
+      expectCards: shown.length + ungrouped,
+      cols: cols.length,
+      minScoreSeen: st ? null : null,
+    };
+  });
+  check(!kbPage.placeholder, '★ 知識庫分頁已接線（不再是「尚未接線」佔位）');
+  check(kbPage.html > 500, '知識庫分頁有內容', kbPage.html + ' bytes');
+  check(kbPage.cols > 0, '★ 讀到本商家的知識庫清單', kbPage.cols + ' 個庫');
+  check(kbPage.cards === kbPage.expectCards,
+    '★ 卡片數 == 應顯示的庫數（附帶圖片庫不列 + 未分組虛擬卡）',
+    kbPage.cards + ' vs ' + kbPage.expectCards);
+  check(kbReqs.length > 0, '有打到 /console/kb 端點', kbReqs.length + ' 個');
+  check(kbReqs.every(r => r.indexOf('business_id=') >= 0),
+    '★★ 每個 /console/kb 請求都帶 business_id', kbReqs.slice(0, 3).join(' | '));
+  check(kbReqs.every(r => r.startsWith('200')),
+    '★ /console/kb 全部 200（沒有 403/400）',
+    kbReqs.filter(r => !r.startsWith('200')).slice(0, 3).join(' | ') || '—');
+
+  // 參數配置：按商家顯示（商家 1 有實測校正過的覆寫值）
+  await page.evaluate(() => openKbParams(0));
+  await settle(1600);
+  const kbParams = await page.evaluate(() => {
+    const ids = Array.from(document.querySelectorAll('#kbParamsBody [id^="kbp_"]'))
+      .map(e => e.id).filter(id => id.indexOf('_len') < 0);
+    const val = k => { const e = document.getElementById('kbp_' + k); return e ? e.value : undefined; };
+    return {
+      open: (document.getElementById('kbParamsOverlay') || {}).classList
+        ? document.getElementById('kbParamsOverlay').classList.contains('open') : false,
+      n: new Set(ids.map(i => i.slice(4))).size,
+      groups: document.querySelectorAll('#kbParamsBody .card').length,
+      minScore: val('min_score'), promptLen: (val('rag_answer_prompt') || '').length,
+      total: (val('top_k') || '') + '',
+    };
+  });
+  check(kbParams.open && kbParams.n >= 17, '參數彈窗可開且參數齊全', kbParams.n + ' 項');
+  check(kbParams.groups === 3, '三組（A 檢索／B 分塊／C 提示詞）', kbParams.groups + ' 組');
+  check(String(kbParams.minScore) === '0.25',
+    '★★ 參數按商家載入（商家 1 的實測值 min_score=0.25）', String(kbParams.minScore));
+  check(kbParams.promptLen > 200, '提示詞有載入（按商家）', kbParams.promptLen + ' 字');
+  await page.evaluate(() => closeKbParams());
+  await settle(300);
+
+  // 檢索端點（帶商家）
+  const kbSearch = await page.evaluate(async () => {
+    const r = await fetch('/console/kb/search?q=' + encodeURIComponent('退貨')
+      + '&business_id=1&candidates=5', { credentials: 'same-origin' });
+    const d = await r.json().catch(() => ({}));
+    return { status: r.status, thr: d.threshold, reason: d.reason };
+  });
+  check(kbSearch.status === 200, '★ 檢索端點帶商家可查', 'threshold=' + kbSearch.thr);
+  page.off('response', kbTap);
+
   await browser.close();
 
   console.log('\n[7] JS 錯誤');

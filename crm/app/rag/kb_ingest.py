@@ -90,11 +90,15 @@ def _human_size(n: int) -> str:
 # ======================================================================
 
 def save_upload(filename: str, content: bytes, mime: str = "",
-                collection_id: int | None = None) -> dict:
+                collection_id: int | None = None,
+                business_id: int | None = None) -> dict:
     """把上傳的檔案落地到 `media/kb/<uuid>/`，並建立 `kb_document`（draft）。
 
     重複偵測：同一知識庫內若已有相同 sha256，新版會把舊版標成
     `disabled` + `superseded_by`（避免新舊答案打架，設計稿 §16.8）。
+
+    ★ 商家歸屬（2026-10-14）：`business_id` 沒給就從知識庫推導；
+      未分組文件也一定要有主人，否則多租戶下不屬於任何人。
     """
     if not content:
         raise IngestError("檔案是空的")
@@ -109,7 +113,9 @@ def save_upload(filename: str, content: bytes, mime: str = "",
                          f"不支援的格式：{os.path.splitext(filename or '')[1] or filename}")
 
     sha = hashlib.sha256(content).hexdigest()
-    dup = kb_db.find_document_by_sha(sha, collection_id)
+    if business_id is None:
+        business_id = kb_db.business_of_collection(collection_id)
+    dup = kb_db.find_document_by_sha(sha, collection_id, business_id=business_id)
 
     folder = os.path.join(rag_config.RAG_KB_DIR, uuid.uuid4().hex)
     os.makedirs(folder, exist_ok=True)
@@ -121,7 +127,7 @@ def save_upload(filename: str, content: bytes, mime: str = "",
     doc = kb_db.create_document(
         filename=_safe_name(filename), title=title, mime=mime or "",
         size_bytes=len(content), sha256=sha, source_path=path,
-        doc_type=dt, collection_id=collection_id,
+        doc_type=dt, collection_id=collection_id, business_id=business_id,
     )
 
     if dup:

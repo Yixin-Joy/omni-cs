@@ -203,6 +203,10 @@ CREATE INDEX IF NOT EXISTS idx_kb_collection_business ON kb_collection(business_
 
 CREATE TABLE IF NOT EXISTS kb_document (
     id            bigserial PRIMARY KEY,
+    -- ★ 商家歸屬（2026-10-14）：文件一定要知道屬於哪個商家 —— 否則「未分組文件」
+    --   （collection_id IS NULL）在多租戶下沒有主人，也會被別的商家撈到。
+    --   有知識庫時由知識庫決定；未分組時直接記在這裡。
+    business_id   bigint REFERENCES crm_business(id) ON DELETE CASCADE,
     collection_id bigint REFERENCES kb_collection(id) ON DELETE SET NULL,
     title         text, filename text, mime text, size_bytes bigint, sha256 text,
     source_path   text, doc_type text, version int DEFAULT 1, superseded_by bigint,
@@ -214,6 +218,9 @@ CREATE TABLE IF NOT EXISTS kb_document (
     created_at    timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_kb_document_collection ON kb_document(collection_id, status);
+-- ⚠️ business_id 的索引只在 MIGRATIONS 建，**不要放這裡** ——
+-- DDL 在遷移之前執行，既有庫還沒有這一欄，這裡建索引會直接 UndefinedColumn
+-- （CREATE TABLE IF NOT EXISTS 不會幫既有表補欄位）。新庫兩邊都會建到，無妨。
 
 CREATE TABLE IF NOT EXISTS kb_chunk (
     id               bigserial PRIMARY KEY,
@@ -238,13 +245,17 @@ CREATE TABLE IF NOT EXISTS kb_job (
 
 CREATE TABLE IF NOT EXISTS kb_param (
     id            bigserial PRIMARY KEY,
+    -- ★ 參數按商家隔離（2026-10-14）：每個商家獨立維護自己的檢索參數與提示詞。
+    --   NULL 只保留給「舊資料尚未歸屬」與測試；正式寫入一律帶 business_id。
+    business_id   bigint REFERENCES crm_business(id) ON DELETE CASCADE,
     collection_id bigint REFERENCES kb_collection(id) ON DELETE CASCADE,
     key           text NOT NULL, value jsonb NOT NULL,
     updated_at    timestamptz DEFAULT now(),
     -- ★ 具名約束：`kb_db.set_params()` 用 `ON CONFLICT ON CONSTRAINT kb_param_scope_key`
     --   （與舊庫同名）。匿名 UNIQUE 的名字是 `kb_param_collection_id_key_key`，對不上。
-    --   `NULLS NOT DISTINCT` 不可省 —— 否則每筆 NULL 都算互不相等，「全域」那批能插無限多筆。
-    CONSTRAINT kb_param_scope_key UNIQUE NULLS NOT DISTINCT (collection_id, key)
+    --   `NULLS NOT DISTINCT` 不可省 —— 否則每筆 NULL 都算互不相等，同一商家的
+    --   「全域」那批（collection_id IS NULL）能插無限多筆。
+    CONSTRAINT kb_param_scope_key UNIQUE NULLS NOT DISTINCT (business_id, collection_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS kb_asset (
@@ -445,6 +456,49 @@ MIGRATIONS = (
     # 階段四：告警已通知（寄過郵件）的時間 —— 沒這欄，同一條告警每輪巡檢都會重寄一次。
     # `notified_at IS NULL` = 還沒通知過（新告警或又累計過次數的告警）。
     "ALTER TABLE crm_alert ADD COLUMN IF NOT EXISTS notified_at timestamptz",
+
+    # ================================================================
+    # 塊C：FAQ／業務表格／知識庫整包遷入 CRM，且**按商家獨立**
+    # （2026-10-14）kb_param 加 business_id —— 檢索參數與提示詞原本是全系統共用一組，
+    # 不符合「每個商家獨立維護自己的參數設置」。
+    # ================================================================
+    "ALTER TABLE kb_param ADD COLUMN IF NOT EXISTS business_id bigint",
+    # 既有全域參數（collection_id IS NULL，全部商家共用）→ 歸給**第一個商家**
+    # （＝最初調通的那個，單商家時期這些值就是它的）。沒有商家時不動作。
+    "UPDATE kb_param SET business_id = (SELECT min(id) FROM crm_business)"
+    " WHERE business_id IS NULL AND (SELECT count(*) FROM crm_business) > 0",
+    # 分塊參數（有 collection_id）本來就屬某個庫 → 跟隨該庫的商家。
+    # 上面那條只處理 collection_id IS NULL 的，這裡補有庫的那些。
+    "UPDATE kb_param p SET business_id = c.business_id"
+    "  FROM kb_collection c"
+    " WHERE p.collection_id = c.id AND p.business_id IS DISTINCT FROM c.business_id",
+    # 外鍵（具名，可重複執行）：商家被清掉時它的參數一起走
+    "ALTER TABLE kb_param DROP CONSTRAINT IF EXISTS kb_param_business_id_fkey;"
+    " ALTER TABLE kb_param ADD CONSTRAINT kb_param_business_id_fkey"
+    "   FOREIGN KEY (business_id) REFERENCES crm_business(id) ON DELETE CASCADE",
+    "CREATE INDEX IF NOT EXISTS idx_kb_param_business ON kb_param(business_id)",
+    # ★ 唯一約束改成含 business_id（同一商家同庫同 key 只能一筆）。
+    #   DROP + ADD 是刻意的：舊約束只有 (collection_id, key)，會讓「A 商家存了參數、
+    #   B 商家想存同一個 key」直接撞唯一鍵。
+    "ALTER TABLE kb_param DROP CONSTRAINT IF EXISTS kb_param_scope_key",
+    "ALTER TABLE kb_param DROP CONSTRAINT IF EXISTS kb_param_collection_id_key_key",
+    "ALTER TABLE kb_param ADD CONSTRAINT kb_param_scope_key"
+    " UNIQUE NULLS NOT DISTINCT (business_id, collection_id, key)",
+
+    # kb_document 加 business_id —— 「未分組文件」（collection_id IS NULL）也要有主人，
+    # 否則多租戶下它不屬於任何商家（工作台看不到、也無法隔離）。
+    "ALTER TABLE kb_document ADD COLUMN IF NOT EXISTS business_id bigint",
+    # 有知識庫的文件跟著知識庫的商家
+    "UPDATE kb_document d SET business_id = c.business_id"
+    "  FROM kb_collection c"
+    " WHERE d.collection_id = c.id AND d.business_id IS DISTINCT FROM c.business_id",
+    # 未分組的舊文件 → 歸給第一個商家（單商家時期就是它的），沒有商家時不動作
+    "UPDATE kb_document SET business_id = (SELECT min(id) FROM crm_business)"
+    " WHERE business_id IS NULL AND (SELECT count(*) FROM crm_business) > 0",
+    "ALTER TABLE kb_document DROP CONSTRAINT IF EXISTS kb_document_business_id_fkey;"
+    " ALTER TABLE kb_document ADD CONSTRAINT kb_document_business_id_fkey"
+    "   FOREIGN KEY (business_id) REFERENCES crm_business(id) ON DELETE CASCADE",
+    "CREATE INDEX IF NOT EXISTS idx_kb_document_business ON kb_document(business_id, status)",
 )
 
 # 運維可配置參數（設計案 §15.3 建議值），首次建庫寫入；已存在不覆蓋。

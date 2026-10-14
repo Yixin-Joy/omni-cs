@@ -50,6 +50,44 @@ def code(res) -> int:
     return int(getattr(res, "status_code", 200) or 200)
 
 
+# ★ 塊C（2026-10-14）：kb_console 端點已加登入身分 + 商家校驗。
+#   自檢是**直接呼叫端點函式**（不走 HTTP，所以 FastAPI 的 Depends 不會生效），
+#   必須自己補上 `sess` 與 `business_id`。這裡統一在模組層包一層，
+#   呼叫點一行都不用改。
+SUPER_SESS = {"active_role": "agent", "roles": ["admin", "agent"],
+              "staff_id": 1, "is_super_agent": True,
+              # ★ 寫入類端點（建/刪庫、改塊、上傳…）要通過 `_kb_edit_guard`
+              "is_kb_editor": True}
+
+
+def _wrap_endpoints(mod, biz):
+    import functools
+    import inspect
+    for name in dir(mod):
+        if name.startswith("_"):
+            continue
+        fn = getattr(mod, name)
+        if not asyncio.iscoroutinefunction(fn):
+            continue
+        sig = inspect.signature(fn)
+        if "sess" not in sig.parameters:
+            continue
+
+        @functools.wraps(fn)
+        async def inner(*a, __fn=fn, __sig=sig, **kw):
+            kw.setdefault("sess", SUPER_SESS)
+            names = list(__sig.parameters)
+            if "business_id" in names and kw.get("business_id") is None:
+                # ⚠️ 呼叫端可能用**位置參數**傳到 business_id 那一格 → 別重複注入
+                if len(a) <= names.index("business_id"):
+                    kw["business_id"] = biz
+            return await __fn(*a, **kw)
+
+        setattr(mod, name, inner)
+
+
+_wrap_endpoints(kb_console, BIZ)
+
 def _call(fn, *a, **kw):
     """呼叫 async 端點函式（`_ok/_err` 回 Starlette Response）。"""
     return body(asyncio.run(fn(*a, **kw)))
@@ -187,19 +225,23 @@ def main() -> int:
 
         # 提示詞缺必需變數要當場擋下（不然使用者會以為「存了卻沒生效」）
         check(_code(kb_console.set_params,
-                    {"values": {"rag_answer_prompt": "這條沒有佔位符"}}) == 400,
+                    {"business_id": BIZ,
+                     "values": {"rag_answer_prompt": "這條沒有佔位符"}}) == 400,
               "提示詞缺必需變數被擋下（400）")
 
         marker = "【自檢】{context} ／ {sentinel}"
-        _call(kb_console.set_params, {"values": {"rag_answer_prompt": marker}})
-        got = kb_search.prompt_of("rag_answer_prompt")
+        _call(kb_console.set_params,
+              {"business_id": BIZ, "values": {"rag_answer_prompt": marker}})
+        # ★ 塊C：提示詞按商家隔離 → 取值要指明是哪個商家的
+        got = kb_search.prompt_of("rag_answer_prompt", business_id=BIZ)
         check(got == marker, "提示詞存進 DB 後執行時立刻取到新值（prompt_of）",
               repr(got[:16]))
     finally:
         # 還原：先清掉自檢寫入的**全部全域項**（檢索參數 + 提示詞），再把原值整批寫回。
         clear_keys = [k for k in rag_config.PARAM_SPECS
                       if kb_db._param_scope(k) == "global"]
-        _call(kb_console.set_params, {"values": {k: None for k in clear_keys}})
+        _call(kb_console.set_params,
+              {"business_id": BIZ, "values": {k: None for k in clear_keys}})
         _call(kb_console.set_params,
               {"collection_id": cid, "values": dict(saved_global, **saved_chunk)})
         kb_search.invalidate()
@@ -250,7 +292,8 @@ def main() -> int:
     d = _call(kb_console.search_get, q="藍牙耳機", collection_id=str(cid))
     check(d.get("hits"), f"GET /search（藍牙耳機）→ top1={d.get('top1')}",
           f"passed={d.get('passed')} threshold={d.get('threshold')}")
-    d = _call(kb_console.search_post, {"query": "退貨", "collection_id": cid, "top_k": 1})
+    d = _call(kb_console.search_post,
+              {"query": "退貨", "collection_id": cid, "top_k": 1, "business_id": BIZ})
     check(len(d.get("hits") or []) == 1, "POST /search top_k=1 只回 1 塊")
     check(bool(d.get("context")), "回傳可餵給模型的 context", f"{len(d.get('context') or '')} 字")
     check(bool(d.get("candidates")), "回傳候選明細（溯源用）",
@@ -296,7 +339,8 @@ def main() -> int:
                  {"name": "端點自檢庫-搬移目標", "business_id": BIZ})["collection"]["id"]
     d = _call(kb_console.document_move, {"id": did, "collection_id": cid2})
     check(d["doc"]["collection_id"] == cid2, f"POST /document/move → 知識庫 #{cid2}")
-    moved = _call(kb_console.documents, str(cid2)).get("documents") or []
+    moved = _call(kb_console.documents,
+                  collection_id=str(cid2)).get("documents") or []
     check(any(x["id"] == did for x in moved), "搬移後出現在新知識庫的文件列表")
     check(_code(kb_console.document_move, {"id": did, "collection_id": 99999999}) == 400,
           "搬到不存在的知識庫被擋")
@@ -313,24 +357,27 @@ def main() -> int:
     with open(os.path.join(TMP, "api_manual.md"), "rb") as f:
         blob = f.read()
     # ⚠️ collection_id 在 DB 是 NULL，用 0 去查會一條都查不到 —— 走 ungrouped=1。
-    saved = kb_ingest.save_upload("api_ungrouped.md", blob, "text/markdown", None)
+    saved = kb_ingest.save_upload("api_ungrouped.md", blob, "text/markdown", None,
+                                  business_id=BIZ)
     ug_id = int(saved["doc"]["id"])
     check(saved["doc"].get("collection_id") is None,
           "造一份未分組文件（collection_id IS NULL）", f"doc#{ug_id}")
-    mine = _call(kb_console.documents, "", "", "1").get("documents") or []
+    mine = _call(kb_console.documents, collection_id="", status="",
+                 ungrouped="1").get("documents") or []
     check(any(x["id"] == ug_id for x in mine), "GET /documents?ungrouped=1 找得到它")
     check(all(not x.get("collection_id") for x in mine),
           "ungrouped 清單裡都沒有 collection_id")
-    all_docs = _call(kb_console.documents).get("documents") or []
+    all_docs = _call(kb_console.documents, collection_id="").get("documents") or []
     check(any(x["id"] == ug_id and not x.get("collection_id") for x in all_docs),
           "「全部」清單裡它也是無歸屬的那一筆")
     ug_cid = _call(kb_console.collection_create,
                    {"name": "端點自檢庫-未分組歸位", "business_id": BIZ})["collection"]["id"]
     check(_code(kb_console.document_move, {"id": ug_id, "collection_id": ug_cid}) == 200,
           "把未分組文件搬進知識庫", f"#{ug_cid}")
-    left = _call(kb_console.documents, "", "", "1").get("documents") or []
+    left = _call(kb_console.documents, collection_id="", status="",
+                 ungrouped="1").get("documents") or []
     check(not any(x["id"] == ug_id for x in left), "搬進知識庫後離開未分組清單")
-    now_in = _call(kb_console.documents, str(ug_cid)).get("documents") or []
+    now_in = _call(kb_console.documents, collection_id=str(ug_cid)).get("documents") or []
     check(any(x["id"] == ug_id for x in now_in), "搬進去後出現在新知識庫的清單")
 
     # ---------------------------------------------------------------- [8]

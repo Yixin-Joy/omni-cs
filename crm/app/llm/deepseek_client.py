@@ -136,12 +136,15 @@ def masked_key() -> str:
 
 # ---------- 提示詞（可在工作台編輯；DB 覆寫優先） ----------
 
-def _db_prompt(name: str, fallback: str) -> str:
-    """取提示詞的執行時值：DB（`kb_param` 全域）有覆寫就用，否則用 `fallback`。
+def _db_prompt(name: str, fallback: str, business_id: int | None = None) -> str:
+    """取提示詞的執行時值：DB（該商家的 `kb_param`）有覆寫就用，否則用 `fallback`。
 
     ★ 2026-10-08 起提示詞是**參數**（知識庫 → 參數配置 → C. 提示詞 可直接編輯），
     所以不能在 import 期就把字串定死 —— 否則改了頁面不會生效。
     取值走 `kb_search.prompt_of()`（共用參數快取，5 秒 TTL）。
+
+    ★ 2026-10-14 起**按商家隔離**：`business_id` 決定讀誰的提示詞，
+      每個商家可以有自己的問答風格與改寫規則。
 
     ⚠️ 用 lazy import 是刻意的：`kb_search` 會拉進 psycopg2 / numpy，
     「LLM 客戶端」不該在 import 期就扛這些依賴（單獨跑測試腳本也不會踩到 DB）。
@@ -149,7 +152,7 @@ def _db_prompt(name: str, fallback: str) -> str:
     """
     try:
         from app.rag import kb_search
-        return kb_search.prompt_of(name) or fallback
+        return kb_search.prompt_of(name, business_id=business_id) or fallback
     except Exception as e:
         log.debug("讀取提示詞覆寫失敗（用內建預設）: %s", e)
         return fallback
@@ -276,7 +279,8 @@ class DeepSeekClient:
 
     async def rewrite_queries(self, question: str, history_text: str = "",
                               count: int = 2, faq_questions: list | None = None,
-                              post_context: str = "") -> list[str]:
+                              post_context: str = "",
+                              business_id: int | None = None) -> list[str]:
         """**一次改寫、三層共用**：依上下文改寫出 `count` 條查詢句。
 
         這是整個自動回復流程裡**唯一**的改寫呼叫（2026-10-08 定案）——
@@ -307,7 +311,8 @@ class DeepSeekClient:
             hint = _fill(rag_config.RAG_REWRITE_FAQ_HINT,
                          faq_list="\n".join(f"- {q}" for q in shown) + more)
 
-        template = _db_prompt("rewrite_prompt", rag_config.RAG_REWRITE_PROMPT)
+        template = _db_prompt("rewrite_prompt", rag_config.RAG_REWRITE_PROMPT,
+                              business_id=business_id)
         prompt = _fill(template,
                        n=str(max(1, int(count or 1))),
                        faq_hint=hint,
@@ -323,10 +328,12 @@ class DeepSeekClient:
         return clean_rewrite_list(out, limit=count, exclude=[question])
 
     async def rewrite_rag_queries(self, question: str, history_text: str = "",
-                                  count: int = 2, post_context: str = "") -> list[str]:
+                                  count: int = 2, post_context: str = "",
+                                  business_id: int | None = None) -> list[str]:
         """`rewrite_queries()` 的相容包裝（`/console/kb/search` 調參端點在用）。"""
         return await self.rewrite_queries(question, history_text, count=count,
-                                          post_context=post_context)
+                                          post_context=post_context,
+                                          business_id=business_id)
 
     async def answer_with_table(self, question: str, table_context: str,
                                 flavor: str = "dm", post_context: str = "") -> str:
@@ -354,7 +361,8 @@ class DeepSeekClient:
 
     async def answer_with_rag(self, question: str, rag_context: str,
                               flavor: str = "dm", post_context: str = "",
-                              require_answer: bool = False) -> str:
+                              require_answer: bool = False,
+                              business_id: int | None = None) -> str:
         """把知識庫檢索到的段落當上下文回答；答不出來時回含 NO_ANSWER_SENTINEL 的字串。
 
         ★ 主體指示（`rag_answer_prompt`）是**可以在工作台編輯的參數**
@@ -375,7 +383,8 @@ class DeepSeekClient:
             parts.append(config.DEEPSEEK_COMMENT_PROMPT)
         if post_context:
             parts.append(post_context)
-        main = _db_prompt("rag_answer_prompt", rag_config.RAG_PROMPT)
+        main = _db_prompt("rag_answer_prompt", rag_config.RAG_PROMPT,
+                          business_id=business_id)
         parts.append(_fill(main, context=rag_context, sentinel=NO_ANSWER_SENTINEL))
         if require_answer:
             parts.append(
@@ -393,7 +402,8 @@ class DeepSeekClient:
         return (await self.complete(messages, temperature=0.2)).strip()
 
     async def describe_image(self, image_bytes: bytes, mime: str = "image/png",
-                             hint: str = "", max_tokens: int = 1500) -> str:
+                             hint: str = "", max_tokens: int = 1500,
+                             business_id: int | None = None) -> str:
         """看圖寫描述（知識庫「AI 描述」按鈕用）。
 
         ⚠️ 這是**視覺**呼叫：圖以 base64 data URI 放進 `image_url`。
@@ -411,7 +421,8 @@ class DeepSeekClient:
         if not image_bytes:
             raise DeepSeekError("圖片是空的")
         b64 = base64.b64encode(image_bytes).decode()
-        prompt = _db_prompt("image_caption_prompt", rag_config.DEFAULT_IMAGE_PROMPT)
+        prompt = _db_prompt("image_caption_prompt", rag_config.DEFAULT_IMAGE_PROMPT,
+                            business_id=business_id)
         if hint:
             prompt = f"{prompt}\n\n補充線索（可能來自檔名或題注，僅供參考）：{hint}"
         messages = [{

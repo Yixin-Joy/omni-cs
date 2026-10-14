@@ -26,6 +26,7 @@ from app.core import db
 from app.internal import connector_client
 from app.internal.router import router as internal_router
 from app.ops.router import router as ops_router
+from app.rag.kb_console import router as kb_console_router
 from app.worker import runner as worker_runner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -48,6 +49,10 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(agent_router)
 app.include_router(agent_console_router)
+# ★ 知識庫管理（塊C，2026-10-14 掛載）：34 條 `/console/kb/*` 路由。
+#   原本是舊單體直接拷來、**沒有權限也沒有商家隔離** —— 掛上前已逐條補上
+#   `deps.require_agent/require_csrf` 與 business_id 校驗（見 kb_console 開頭的說明）。
+app.include_router(kb_console_router)
 app.include_router(ops_router)
 app.include_router(internal_router)
 

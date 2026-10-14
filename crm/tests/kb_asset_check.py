@@ -24,6 +24,7 @@
     PYTHONPATH='<root>\\.venv\\Lib\\site-packages' PYTHONUTF8=1 PYTHONIOENCODING=utf-8 \\
       <底層 python> crm/tests/kb_asset_check.py
 """
+import asyncio
 import json
 import os
 import sys
@@ -51,6 +52,45 @@ def body(res):
         return json.loads(raw.decode("utf-8"))
     except Exception:
         return {}
+
+
+# ★ 塊C（2026-10-14）：kb_console 端點已加登入身分 + 商家校驗。
+#   自檢是**直接呼叫端點函式**（不走 HTTP，所以 FastAPI 的 Depends 不會生效），
+#   必須自己補上 `sess` 與 `business_id`。這裡統一在模組層包一層，
+#   呼叫點一行都不用改。
+SUPER_SESS = {"active_role": "agent", "roles": ["admin", "agent"],
+              "staff_id": 1, "is_super_agent": True,
+              # ★ 寫入類端點（建/刪庫、改塊、上傳…）要通過 `_kb_edit_guard`
+              "is_kb_editor": True}
+
+
+def _wrap_endpoints(mod, biz):
+    import functools
+    import inspect
+    for name in dir(mod):
+        if name.startswith("_"):
+            continue
+        fn = getattr(mod, name)
+        if not asyncio.iscoroutinefunction(fn):
+            continue
+        sig = inspect.signature(fn)
+        if "sess" not in sig.parameters:
+            continue
+
+        @functools.wraps(fn)
+        async def inner(*a, __fn=fn, __sig=sig, **kw):
+            kw.setdefault("sess", SUPER_SESS)
+            names = list(__sig.parameters)
+            if "business_id" in names and kw.get("business_id") is None:
+                # ⚠️ 呼叫端可能用**位置參數**傳到 business_id 那一格 → 別重複注入
+                if len(a) <= names.index("business_id"):
+                    kw["business_id"] = biz
+            return await __fn(*a, **kw)
+
+        setattr(mod, name, inner)
+
+
+_wrap_endpoints(kb_console, BIZ)
 
 
 # ---------- 造檔 ----------
@@ -231,7 +271,6 @@ check(len(kb_db.list_assets(doc_id=did)) == 2,
 # ======================================================================
 
 print("\n[4] 圖片端點函式（列表 / 人工描述 / AI 不覆蓋人工 / 停用不帶出）")
-import asyncio      # noqa: E402
 
 r = asyncio.run(kb_console.list_assets(doc_id=str(did), include_filtered="1"))
 d = body(r)

@@ -498,23 +498,39 @@ def _param_target(name: str, cid: int | None) -> int | None:
     return None if _param_scope(name) == "global" else cid
 
 
-def get_param_overrides(cid: int | None = None, *, scope: str | None = None) -> dict:
-    """取覆寫值。`scope='global'` → 讀全域那批；否則讀「這個知識庫」那批。
+def get_param_overrides(cid: int | None = None, *, scope: str | None = None,
+                        business_id: int | None = None) -> dict:
+    """取覆寫值。`scope='global'` → 讀該商家的全域那批；否則讀「這個知識庫」那批。
+
+    ★ **按商家隔離**（2026-10-14）：`business_id` 有值 → 只讀該商家的參數。
+      每個商家獨立維護自己的檢索參數與提示詞，互不干擾。
+      `business_id=None` 只在「還沒歸屬商家」的舊資料或自檢裡出現。
 
     ⚠️ CRM 側 `kb_param.value` 是 **jsonb**（舊庫是 TEXT），psycopg2 會把它解成
     Python 原生值（int / bool / str），所以回傳的是 `dict[str, Any]` 而不是
     `dict[str, str]`。下游一律走 `rag_config.coerce()`，兩邊都吃得下。
     """
+    biz = "business_id IS NOT DISTINCT FROM %s"
     if scope == "global" or (scope is None and not cid):
-        rows = query("SELECT key, value FROM kb_param WHERE collection_id IS NULL")
+        rows = query(f"SELECT key, value FROM kb_param"
+                     f" WHERE collection_id IS NULL AND {biz}", (business_id,))
     else:
-        rows = query("SELECT key, value FROM kb_param WHERE collection_id=%s", (cid,))
+        rows = query(f"SELECT key, value FROM kb_param"
+                     f" WHERE collection_id=%s AND {biz}", (cid, business_id))
     return {r["key"]: r["value"] for r in rows}
 
 
-def get_global_param_overrides() -> dict[str, str]:
-    """全域那批覆寫（檢索參數 + 未分組文件的分塊預設）。"""
-    return get_param_overrides(None, scope="global")
+def get_global_param_overrides(business_id: int | None = None) -> dict:
+    """某商家「全域」那批覆寫（檢索參數 + 提示詞 + 未分組文件的分塊預設）。"""
+    return get_param_overrides(None, scope="global", business_id=business_id)
+
+
+def business_of_collection(cid: int | None) -> int | None:
+    """知識庫 → 它的商家。呼叫端只拿得到 cid 時，用它補出 business_id。"""
+    if not cid:
+        return None
+    rows = query("SELECT business_id FROM kb_collection WHERE id=%s", (int(cid),))
+    return int(rows[0]["business_id"]) if rows and rows[0]["business_id"] else None
 
 
 def _param_json_text(raw) -> str:
@@ -536,14 +552,20 @@ def _param_json_text(raw) -> str:
         return json.dumps(s, ensure_ascii=False)
 
 
-def set_params(cid: int | None, values: dict) -> int:
+def set_params(cid: int | None, values: dict, *, business_id: int | None = None) -> int:
     """寫入/覆寫參數。值為 None / 空字串 = 刪除覆寫（回到 .env 預設）。
 
-    ⚠️ 檢索參數一律寫到**全域**，所以 `set_params(某個庫, {"top_k": 5})` 改的是
-    所有知識庫共用的那個值（這是刻意的：檢索參數不分庫）。
+    ★ **按商家寫入**（2026-10-14）：`business_id` 決定這筆參數屬於誰。
+      呼叫端沒給時，若有 `cid` 就從該知識庫的商家推導（見 `business_of_collection`）。
+
+    ⚠️ 檢索參數一律寫到**該商家的全域**（collection_id IS NULL），所以
+    `set_params(None, {"top_k": 5}, business_id=1)` 改的是「商家 1 的所有知識庫」
+    共用的那個值（這是刻意的：檢索參數不分庫，但分商家）。
     """
     from app.rag import rag_config
 
+    if business_id is None:
+        business_id = business_of_collection(cid)
     n = 0
     for key, raw in (values or {}).items():
         if key not in rag_config.PARAM_SPECS:
@@ -551,29 +573,34 @@ def set_params(cid: int | None, values: dict) -> int:
         target = _param_target(key, cid)
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             n += execute("DELETE FROM kb_param "
-                         "WHERE collection_id IS NOT DISTINCT FROM %s AND key=%s",
-                         (target, key))
+                         "WHERE business_id IS NOT DISTINCT FROM %s"
+                         "  AND collection_id IS NOT DISTINCT FROM %s AND key=%s",
+                         (business_id, target, key))
             continue
         val = _param_json_text(raw)
         execute("""
-            INSERT INTO kb_param(collection_id, key, value) VALUES (%s, %s, %s)
+            INSERT INTO kb_param(business_id, collection_id, key, value)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT ON CONSTRAINT kb_param_scope_key
             DO UPDATE SET value=EXCLUDED.value, updated_at=now()
-        """, (target, key, val))
+        """, (business_id, target, key, val))
         n += 1
     return n
 
 
-def load_params(cid: int | None = None) -> dict:
+def load_params(cid: int | None = None, *, business_id: int | None = None) -> dict:
     """★ 執行時取值的**唯一入口**：DB 有覆寫用 DB，否則用 .env / 內建預設。
 
-    檢索參數讀全域那批；分塊參數讀該知識庫（cid=None → 讀全域，即未分組文件的預設）。
+    檢索參數與提示詞讀**該商家**的全域那批；分塊參數讀該知識庫
+    （cid=None → 讀該商家的全域，即未分組文件的預設）。
     回傳已轉型別並夾過範圍的 dict（key → value）。
     """
     from app.rag import rag_config
 
-    glob = get_global_param_overrides()
-    own = get_param_overrides(cid) if cid else {}
+    if business_id is None:
+        business_id = business_of_collection(cid)
+    glob = get_global_param_overrides(business_id)
+    own = get_param_overrides(cid, business_id=business_id) if cid else {}
     out: dict = {}
     for name, spec in rag_config.PARAM_SPECS.items():
         src = glob if (_param_scope(name) == "global" or not cid) else own
@@ -584,17 +611,19 @@ def load_params(cid: int | None = None) -> dict:
     return out
 
 
-def effective_param(cid: int | None, name: str):
+def effective_param(cid: int | None, name: str, *, business_id: int | None = None):
     """單一參數的執行時值（檢索路徑用；5 秒快取見 kb_search.params_for）。"""
     from app.rag import rag_config
 
     spec = rag_config.PARAM_SPECS.get(name)
     if not spec:
         return None
+    if business_id is None:
+        business_id = business_of_collection(cid)
     if _param_scope(name) == "global" or not cid:
-        raw = get_global_param_overrides().get(name)
+        raw = get_global_param_overrides(business_id).get(name)
     else:
-        raw = get_param_overrides(cid).get(name)
+        raw = get_param_overrides(cid, business_id=business_id).get(name)
     if raw in (None, ""):
         raw = spec["default"]
     return rag_config.coerce(name, raw)
@@ -604,20 +633,29 @@ def effective_param(cid: int | None, name: str):
 # 文件（kb_document）
 # ======================================================================
 
-_DOC_COLS = """id, collection_id, title, filename, mime, size_bytes, sha256, source_path,
-               doc_type, version, superseded_by, status, progress, chunk_count, char_count,
-               parse_meta, parse_params, error, enabled, created_at, updated_at"""
+_DOC_COLS = """id, business_id, collection_id, title, filename, mime, size_bytes, sha256,
+               source_path, doc_type, version, superseded_by, status, progress,
+               chunk_count, char_count, parse_meta, parse_params, error, enabled,
+               created_at, updated_at"""
 
 
 def create_document(*, filename: str, title: str = "", mime: str = "", size_bytes: int = 0,
                     sha256: str = "", source_path: str = "", doc_type: str = "",
-                    collection_id: int | None = None) -> dict:
+                    collection_id: int | None = None,
+                    business_id: int | None = None) -> dict:
+    """建立文件。
+
+    ★ 商家歸屬（2026-10-14）：`business_id` 沒給就從知識庫推導 ——
+      「未分組文件」也一定要有主人，否則多租戶下它不屬於任何人。
+    """
+    if business_id is None:
+        business_id = business_of_collection(collection_id)
     row = execute_returning("""
-        INSERT INTO kb_document(collection_id, title, filename, mime, size_bytes, sha256,
-                                source_path, doc_type, status)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'draft')
+        INSERT INTO kb_document(business_id, collection_id, title, filename, mime,
+                                size_bytes, sha256, source_path, doc_type, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft')
         RETURNING id
-    """, (collection_id, title or filename, filename, mime, size_bytes, sha256,
+    """, (business_id, collection_id, title or filename, filename, mime, size_bytes, sha256,
           source_path, doc_type))
     return get_document(row[0]) or {}
 
@@ -627,14 +665,29 @@ def get_document(did: int) -> dict | None:
     return rows[0] if rows else None
 
 
+def business_of_document(did: int | None) -> int | None:
+    """文件 → 商家（未分組文件靠自己的 business_id）。"""
+    if not did:
+        return None
+    rows = query("SELECT business_id FROM kb_document WHERE id=%s", (int(did),))
+    return int(rows[0]["business_id"]) if rows and rows[0]["business_id"] else None
+
+
 def list_documents(collection_id: int | None = None, status: str = "",
-                   limit: int = 500, ungrouped: bool = False) -> list[dict]:
+                   limit: int = 500, ungrouped: bool = False,
+                   business_id: int | None = None) -> list[dict]:
     """列文件。ungrouped=True 只列沒有歸屬知識庫的（collection_id IS NULL）。
+
+    ★ `business_id` 有值 → **只列該商家的**（含未分組文件，它們也帶 business_id）。
+      多租戶下前端一律要傳，否則會看到別人的文件。
 
     ⚠ collection_id 不能用 0 代表「未分組」—— DB 存的是 NULL，
        `collection_id=0` 會一條都查不到。
     """
     where, params = [], []
+    if business_id is not None:
+        where.append("d.business_id=%s")
+        params.append(int(business_id))
     if ungrouped:
         where.append("d.collection_id IS NULL")
     elif collection_id is not None:
@@ -657,9 +710,9 @@ def list_documents(collection_id: int | None = None, status: str = "",
 
 
 def update_document(did: int, fields: dict) -> bool:
-    allowed = {"collection_id", "title", "status", "progress", "chunk_count", "char_count",
-               "parse_meta", "parse_params", "error", "enabled", "doc_type", "mime",
-               "size_bytes", "sha256", "source_path", "version", "superseded_by"}
+    allowed = {"business_id", "collection_id", "title", "status", "progress", "chunk_count",
+               "char_count", "parse_meta", "parse_params", "error", "enabled", "doc_type",
+               "mime", "size_bytes", "sha256", "source_path", "version", "superseded_by"}
     sets, params = [], []
     for k in allowed:
         if k in fields:
@@ -682,11 +735,21 @@ def delete_document(did: int) -> bool:
     return execute("DELETE FROM kb_document WHERE id=%s", (did,)) > 0
 
 
-def find_document_by_sha(sha256: str, collection_id: int | None = None) -> dict | None:
-    """同檔重複上傳偵測（同一知識庫內比對）。"""
+def find_document_by_sha(sha256: str, collection_id: int | None = None,
+                         business_id: int | None = None) -> dict | None:
+    """同檔重複上傳偵測（同一知識庫內比對）。
+
+    ★ 未分組文件（collection_id=None）改用 `business_id` 比對 ——
+      否則會把別的商家上傳的同檔當成「自己人的重複」而標成失效。
+    """
     if not sha256:
         return None
     if collection_id is None:
+        if business_id is not None:
+            rows = query(f"SELECT {_DOC_COLS} FROM kb_document"
+                         " WHERE sha256=%s AND collection_id IS NULL AND business_id=%s"
+                         " ORDER BY id DESC LIMIT 1", (sha256, int(business_id)))
+            return rows[0] if rows else None
         rows = query(f"SELECT {_DOC_COLS} FROM kb_document WHERE sha256=%s "
                      "ORDER BY id DESC LIMIT 1", (sha256,))
     else:
@@ -946,9 +1009,20 @@ def get_asset(aid: int) -> dict | None:
 
 def list_assets(*, collection_id: int | None = None, doc_id: int | None = None,
                 enabled_only: bool = False, include_filtered: bool = True,
-                ungrouped: bool = False, limit: int = 500) -> list[dict]:
-    """列圖片。`include_filtered=False` = 只看「像內容圖」的那些。"""
+                ungrouped: bool = False, limit: int = 500,
+                business_id: int | None = None) -> list[dict]:
+    """列圖片。`include_filtered=False` = 只看「像內容圖」的那些。
+
+    ★ `business_id` 有值 → 只列該商家的圖。`kb_asset` 自己沒有 business_id，
+      靠**它掛的知識庫**或**來源文件的知識庫**判斷（見 COALESCE 那段）。
+    """
     where, params = [], []
+    if business_id is not None:
+        # 圖的商家 = 自己知識庫的商家，否則來源文件的商家
+        # ⚠️ 佔位符與參數要**同時**append —— 分開寫會讓 %s 對到錯的值
+        #    （曾經把 doc_id 餵給 business 條件 → 一張圖都查不到）。
+        where.append("COALESCE(c.business_id, d.business_id) = %s")
+        params.append(int(business_id))
     if doc_id is not None:
         where.append("a.doc_id=%s")
         params.append(doc_id)
@@ -971,7 +1045,8 @@ def list_assets(*, collection_id: int | None = None, doc_id: int | None = None,
                COALESCE((SELECT count(*) FROM kb_asset_chunk ac WHERE ac.asset_id = a.id), 0)
                    AS chunk_count
         FROM kb_asset a
-        LEFT JOIN kb_document d ON d.id = a.doc_id
+        LEFT JOIN kb_document d   ON d.id = a.doc_id
+        LEFT JOIN kb_collection c ON c.id = a.collection_id
         {clause}
         ORDER BY a.doc_id NULLS LAST, a.page_no NULLS LAST, a.id
         LIMIT %s

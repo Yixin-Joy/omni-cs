@@ -203,6 +203,10 @@ C:\Users\its-admin\AppData\Local\Python\pythoncore-3.14-64\python.exe -m uvicorn
    命中哪一層、分數多少）。
 2. **自動回覆**：兩層開關（商家 × 平台 × 場景 + 帳號層）、FAQ / 表格 / 知識庫管理、
    檢索參數與提示詞、防護值（冷卻 / 上限）。
+   ⚙ 的**知識庫分頁**是完整內容管理（2026-10-14 塊C）：知識庫清單 → 該庫的文件 →
+   單份文件的分塊微調 / 逐塊編輯、圖片庫（描述可人工或 AI 生成）、參數配置
+   （A 檢索 / B 分塊 / C 提示詞）、檢索測試。**全部按商家隔離**：
+   每個商家各自維護自己的知識庫與參數（檢索參數、提示詞也是每家一組）。
 3. **命中測試**：不發訊息的試跑，看四層引擎對某問句的處置與命中的知識庫 chunk。
 4. **回覆紀錄**：每次自動回覆的處置（命中哪一層、未命中原因、送出結果、命中的 chunk）。
 
@@ -324,6 +328,7 @@ PUBLIC_BASE_URL=https://<你的域名>.ngrok-free.dev
 | GET | `/internal/api/pending-count` | Connector | 單帳號未處理數（平台 tab 紅點） |
 | POST | `/internal/api/sync-history` | Connector | 主動補拉歷史（工作台「重新整理」） |
 | POST | `/console/agent/draft` | CRM | 右鍵「由自動回復引擎產生回覆」（只出草稿、不送出） |
+| * | `/console/kb/*` | CRM | 知識庫管理 34 條路由（塊C，2026-10-14 掛載；全部需登入 + 按商家隔離） |
 
 ---
 
@@ -406,6 +411,10 @@ CRM 側主要自檢：
 | `phase3_rag_schema_check.py` | RAG 表結構完整性（51 項） |
 | `engine_check.py` | 四層引擎 |
 | `kb_check.py` / `kb_search_check.py` / `kb_asset_check.py` / `kb_api_check.py` / `kb_scope_check.py` | 知識庫品質校準 |
+| `kb_console_check.py` | **塊C**：知識庫商家隔離 + 端點權限（53 項） |
+| `account_bind_check.py` | 原生 ID 由憑證推導 + 憑證必填（50 項） |
+| `credential_view_check.py` | 憑證回顯（非敏感明文／敏感遮罩）+ 逐欄合併（32 項） |
+| `draft_check.py` / `sync_history_check.py` / `pending_counts_check.py` | 右鍵草稿 / 補拉歷史 / 未處理計數 |
 | `rag_model_check.py` / `model_check.py` | 本地 embedding / AI 模型連線 |
 | `ui_check.py` / `console_render_check.py` | 前端靜態 / 渲染（Node + 最小 DOM 樁） |
 
@@ -483,10 +492,15 @@ Multi-CS/
   搬到 Connector**（客戶來訊現在由 Connector 收）。
 - ✅ 平台憑證進 DB（多租戶）：業務憑證存 `crm_business_platform_account.credential`，
   admin 後台填；握手 token 留 `.env`。
-- ⚠️ **唯一未完成項：知識庫管理 console（塊C）尚未遷進 CRM** —— 舊單體的「知識庫 / FAQ /
-  業務表格內容管理」那一套 UI + API 還在 8001；CRM 目前只有客服工作台（會話 / 自動回覆配置 /
-  命中測試 / 回覆紀錄），缺內容管理頁。**這塊做完才能安全刪掉舊單體。**
-- 其餘「未接線」為刻意保留：舊 `autoreply_console.py` / `kb_console.py`（改走新的
-  `console_router.py`）、`scripts/backfill.py` 舊簽名。
+- ✅ **塊C（2026-10-14）：FAQ／業務表格／知識庫整包遷進 CRM，且按商家獨立** ——
+  `/console/kb/*` 34 條路由已掛載，前端「設定 → 知識庫」完整接線（UI 與功能與舊版一致）。
+  · **參數也按商家隔離**：`kb_param` 加 `business_id`（檢索參數 + 提示詞原本是全系統共用一組）。
+  · `kb_document` 加 `business_id` —— 「未分組文件」在多租戶下也有主人。
+  · 原本這批路由**沒有任何權限檢查**（`overview()` 連 session 都沒有）→ 已逐條補上
+    登入身分 + 商家校驗，跨商家一律 403。
+- 其餘「未接線」為刻意保留：舊 `autoreply_console.py`（改走新的 `console_router.py`）、
+  `scripts/backfill.py` 舊簽名。
 
 **已知限制**：同舊版（微信需認證公眾號才能回、IG 留言需權限、只處理文字訊息、AI 可能出錯等）。
+⚠️ `phase4_ops_check.py` 有 8 項硬編碼計數斷言（26/27/29…）對着**活表**跑，
+   在有 worker 運轉的環境會因資料漂移而失敗 —— 與程式碼無關（已在 HEAD 版本對照確認）。

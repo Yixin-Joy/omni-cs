@@ -42,9 +42,10 @@ import json
 import logging
 import os
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 
+from app.auth import deps, rbac
 from app.core import config
 from app.llm import deepseek_client
 from app.rag import kb_chunk
@@ -69,6 +70,108 @@ def _ok(data) -> Response:
 def _err(msg: str, status: int = 400) -> Response:
     return Response(content=json.dumps({"error": msg}, ensure_ascii=False),
                     media_type="application/json", status_code=status)
+
+
+# ======================================================================
+# 商家隔離（塊C，2026-10-14）
+#
+# ★ 這個模組原本由舊單體直接拷來 —— **沒有任何權限檢查、沒有商家概念**
+#   （`overview()` 連 session 都沒有）。CRM 是多租戶，兩個缺陷都必須補：
+#     ① 每個端點都要登入身分（客服坐席）；
+#     ② 每一筆資料都要落在「這個商家」底下，跨商家一律 403。
+#
+# 商家來源有兩種：
+#   · 端點自帶 `business_id`（概覽／檢索／參數／上傳）→ 直接查權限；
+#   · 端點只拿得到 collection_id / doc_id / asset_id → 反查它屬於哪個商家再查權限
+#     （`_biz_of_*`）。**務必反查**，不能相信前端傳來的 business_id。
+# ======================================================================
+
+def _biz_guard(sess: dict, business_id) -> Response | None:
+    """有權限回 None（放行），否則回錯誤 Response。
+
+    ⚠️ `business_id` 可能是 FastAPI 的 `Query` 物件（自檢直接呼叫端點函式、
+       沒帶參數時）→ 一律先試著轉 int，轉不動就當「沒帶商家」回 400，
+       不要讓 `int(Query)` 直接 TypeError 炸掉。
+    """
+    try:
+        bid = int(business_id)
+    except (TypeError, ValueError):
+        return _err("缺少 business_id（知識庫資料必須歸屬到一個商家）")
+    if not bid:
+        return _err("缺少 business_id（知識庫資料必須歸屬到一個商家）")
+    if not rbac.can_access_business(sess, bid):
+        return _err("沒有該商家的權限", 403)
+    return None
+
+
+def _kb_edit_guard(sess: dict) -> Response | None:
+    """寫入類操作（建/刪庫、改塊、上傳…）需要知識庫編輯權。"""
+    if not rbac.can_edit_kb_content(sess):
+        return _err("需要知識庫編輯權限（agent + is_kb_editor）", 403)
+    return None
+
+
+def _one(sql: str, params: tuple):
+    rows = kb_db.query(sql, params)
+    return rows[0] if rows else None
+
+
+def _biz_of_collection(cid) -> int | None:
+    """知識庫 → 商家。"""
+    if not cid:
+        return None
+    row = _one("SELECT business_id FROM kb_collection WHERE id=%s", (int(cid),))
+    return int(row["business_id"]) if row and row["business_id"] else None
+
+
+def _biz_of_doc(did) -> int | None:
+    """文件 → 商家。
+
+    ★ 直接讀 `kb_document.business_id`（不是經由知識庫）—— 這樣「未分組文件」
+      （collection_id IS NULL）也有主人，否則它在多租戶下誰都碰不到。
+    """
+    return kb_db.business_of_document(did)
+
+
+def _biz_of_chunk(chid) -> int | None:
+    """知識塊 → 商家（經由它的文件 → 知識庫）。"""
+    if not chid:
+        return None
+    row = _one("SELECT c.business_id AS b FROM kb_chunk k"
+               " JOIN kb_document d ON d.id = k.doc_id"
+               " JOIN kb_collection c ON c.id = d.collection_id WHERE k.id=%s", (int(chid),))
+    return int(row["b"]) if row and row["b"] else None
+
+
+def _biz_of_asset(aid) -> int | None:
+    """圖片 → 商家（優先看它自己的知識庫，其次看來源文件）。"""
+    if not aid:
+        return None
+    row = _one("""
+        SELECT COALESCE(c.business_id, dc.business_id) AS b
+          FROM kb_asset a
+          LEFT JOIN kb_collection c  ON c.id = a.collection_id
+          LEFT JOIN kb_document  d   ON d.id = a.doc_id
+          LEFT JOIN kb_collection dc ON dc.id = d.collection_id
+         WHERE a.id=%s
+    """, (int(aid),))
+    return int(row["b"]) if row and row["b"] else None
+
+
+def _guard_collection(sess: dict, cid) -> Response | None:
+    """操作某個知識庫前：確認它存在且屬於可訪問的商家。"""
+    if not cid:
+        return _err("缺少知識庫 id")
+    biz = _biz_of_collection(cid)
+    if biz is None:
+        return _err(f"找不到知識庫 #{cid}（或它未歸屬任何商家）", 404)
+    return _biz_guard(sess, biz)
+
+
+def _query_biz(sess: dict, business_id) -> Response | None:
+    """帶了 business_id 的端點：驗權限（必填）。"""
+    return _biz_guard(sess, business_id)
+
 
 
 # ---------- 背景任務（同一份文件同時只能跑一個） ----------
@@ -112,16 +215,31 @@ def _doc_payload(doc: dict, *, with_chunks: bool = False, chunks_limit: int = 40
 # ======================================================================
 
 @router.get("/overview")
-async def overview():
-    cols = await asyncio.to_thread(kb_db.list_collections)
+async def overview(business_id: int = Query(...),
+                   sess: dict = Depends(deps.require_agent)):
+    bad = _query_biz(sess, business_id)
+    if bad:
+        return bad
+    biz = int(business_id)
+    cols = await asyncio.to_thread(kb_db.list_collections, business_id=biz)
+    # ★ 統計一定跟著商家走 —— 只算「這個商家的」文件／塊／圖片。
+    #   ⚠️ 文件直接看 `kb_document.business_id`（不 JOIN 知識庫）——
+    #      「未分組文件」也要算進 documents，否則數字對不上工作台看到的清單。
     totals = await asyncio.to_thread(kb_db.query, """
-        SELECT (SELECT count(*) FROM kb_document)                          AS documents,
-               (SELECT count(*) FROM kb_document WHERE status='ready')     AS ready_docs,
-               (SELECT count(*) FROM kb_document WHERE collection_id IS NULL) AS ungrouped_docs,
-               (SELECT count(*) FROM kb_chunk)                             AS chunks,
-               (SELECT count(*) FROM kb_chunk WHERE embedding_status='done') AS embedded
-    """)
+        SELECT (SELECT count(*) FROM kb_document WHERE business_id = %(biz)s)   AS documents,
+               (SELECT count(*) FROM kb_document
+                 WHERE business_id = %(biz)s AND status='ready')                AS ready_docs,
+               (SELECT count(*) FROM kb_document
+                 WHERE business_id = %(biz)s AND collection_id IS NULL)         AS ungrouped_docs,
+               (SELECT count(*) FROM kb_chunk k
+                 JOIN kb_document d ON d.id = k.doc_id
+                WHERE d.business_id = %(biz)s)                                  AS chunks,
+               (SELECT count(*) FROM kb_chunk k
+                 JOIN kb_document d ON d.id = k.doc_id
+                WHERE d.business_id = %(biz)s AND k.embedding_status='done')    AS embedded
+    """, {"biz": biz})
     return _ok({
+        "business_id": biz,
         "collections": cols,
         "totals": totals[0] if totals else {},
         "model": await asyncio.to_thread(kb_embed.model_info),
@@ -131,12 +249,17 @@ async def overview():
 
 
 @router.get("/collections")
-async def collections():
-    return _ok({"collections": await asyncio.to_thread(kb_db.list_collections)})
+async def collections(business_id: int = Query(...),
+                      sess: dict = Depends(deps.require_agent)):
+    bad = _query_biz(sess, business_id)
+    if bad:
+        return bad
+    return _ok({"collections": await asyncio.to_thread(
+        kb_db.list_collections, business_id=int(business_id))})
 
 
 @router.post("/collections/create")
-async def collection_create(body: dict):
+async def collection_create(body: dict, sess: dict = Depends(deps.require_csrf)):
     """新增知識庫。`kind='image'` = **圖片知識庫**（放圖、用描述檢索）。
 
     · `kind='doc'`（預設）：文檔知識庫。
@@ -154,24 +277,34 @@ async def collection_create(body: dict):
     if kind not in ("doc", "image"):
         return _err("kind 只能是 doc（文檔知識庫）或 image（圖片知識庫）")
 
-    image_of = _int_or_none(body.get("image_of"))
     # ★ CRM 側 kb_collection.business_id 是 NOT NULL —— 建庫必須知道屬於哪個商家。
-    #   （階段四會由 auth session 自動注入；現在先從 body 取，缺了就擋。）
     biz = _int_or_none(body.get("business_id"))
-    if not biz:
-        return _err("缺少 business_id（知識庫必須歸屬到一個商家）")
+    bad = (_kb_edit_guard(sess) or _biz_guard(sess, biz))
+    if bad:
+        return bad
+
+    image_of = _int_or_none(body.get("image_of"))
+    # 綁定到的文檔庫也必須是同一商家的（不能拿別人的庫當 image_of）
+    if image_of:
+        bad = _guard_collection(sess, image_of)
+        if bad:
+            return bad
+        if _biz_of_collection(image_of) != int(biz):
+            return _err("image_of 指向別的商家的知識庫", 403)
+
     col = await asyncio.to_thread(kb_db.create_collection, name,
                                   body.get("description") or "",
-                                  business_id=biz, kind=kind, image_of=image_of)
+                                  business_id=int(biz), kind=kind, image_of=image_of)
     kb_search.invalidate()
     return _ok({"collection": col, "image_collection": None})
 
 
 @router.post("/collections/update")
-async def collection_update(body: dict):
+async def collection_update(body: dict, sess: dict = Depends(deps.require_csrf)):
     cid = int(body.get("id") or 0)
-    if not cid:
-        return _err("缺少知識庫 id")
+    bad = _kb_edit_guard(sess) or _guard_collection(sess, cid)
+    if bad:
+        return bad
     # 啟停用要**連動圖片庫**，所以走 set_collection_enabled；其餘欄位照舊。
     if "enabled" in body:
         casc = await asyncio.to_thread(kb_db.set_collection_enabled, cid,
@@ -188,7 +321,7 @@ async def collection_update(body: dict):
 
 
 @router.post("/collections/delete")
-async def collection_delete(body: dict):
+async def collection_delete(body: dict, sess: dict = Depends(deps.require_csrf)):
     """刪知識庫。
 
     · 文檔庫：底下文件會變成「未分組」（資料不消失）；它的**圖片庫會一起被刪**
@@ -196,8 +329,9 @@ async def collection_delete(body: dict):
     · 圖片庫：裡面的圖變成未分組（不會刪檔）。
     """
     cid = int(body.get("id") or 0)
-    if not cid:
-        return _err("缺少知識庫 id")
+    bad = _kb_edit_guard(sess) or _guard_collection(sess, cid)
+    if bad:
+        return bad
     col = await asyncio.to_thread(kb_db.get_collection, cid)
     if not col:
         return _err(f"找不到知識庫 #{cid}", 404)
@@ -221,16 +355,19 @@ async def collection_delete(body: dict):
 # 參數配置
 # ======================================================================
 
-def _params_payload(collection_id: int | None) -> dict:
+def _params_payload(collection_id: int | None, business_id: int | None) -> dict:
     """參數規格 + 目前值。
 
-    ⚠️ 檢索那組（group='retrieval'）與提示詞（group='prompt'）**永遠是全域值**、
+    ⚠️ 檢索那組（group='retrieval'）與提示詞（group='prompt'）是**該商家的全域值**、
     不隨 collection_id 變動；只有分塊那組才是這個知識庫的
-    （collection_id 空 → 未分組文件用的全域預設）。
+    （collection_id 空 → 未分組文件用的、該商家的全域預設）。
     `scope` 欄位讓前端知道「這一項改到哪一層」。
+
+    ★ 2026-10-14：**按商家隔離** —— 每個商家獨立一組，互不干擾。
     """
-    glob = kb_db.get_global_param_overrides()
-    own = kb_db.get_param_overrides(collection_id) if collection_id else {}
+    glob = kb_db.get_global_param_overrides(business_id)
+    own = (kb_db.get_param_overrides(collection_id, business_id=business_id)
+           if collection_id else {})
     items = []
     for key, spec in rag_config.PARAM_SPECS.items():
         is_chunk = spec["group"] == "chunk"
@@ -254,6 +391,7 @@ def _params_payload(collection_id: int | None) -> dict:
         })
     return {
         "collection_id": collection_id,
+        "business_id": business_id,
         "items": items,
         "model": kb_embed.model_info(),
         "retrieval": [i for i in items if i["group"] == "retrieval"],
@@ -263,20 +401,45 @@ def _params_payload(collection_id: int | None) -> dict:
 
 
 @router.get("/params")
-async def get_params(collection_id: str = ""):
+async def get_params(collection_id: str = "", business_id: str = "",
+                     sess: dict = Depends(deps.require_agent)):
     cid = int(collection_id) if str(collection_id).strip().isdigit() else None
-    return _ok(await asyncio.to_thread(_params_payload, cid or None))
+    biz = int(business_id) if str(business_id).strip().isdigit() else None
+    # cid 有給 → 反查它屬於哪個商家（不信前端）；只給 biz → 用 biz。
+    if cid:
+        bad = _guard_collection(sess, cid)
+        if bad:
+            return bad
+        biz = _biz_of_collection(cid)
+    else:
+        bad = _query_biz(sess, biz)
+        if bad:
+            return bad
+    return _ok(await asyncio.to_thread(_params_payload, cid or None, biz))
 
 
 @router.post("/params")
-async def set_params(body: dict):
-    """寫參數。檢索參數與提示詞一律落到全域，分塊參數落到 `collection_id` 那個知識庫。
+async def set_params(body: dict, sess: dict = Depends(deps.require_csrf)):
+    """寫參數。檢索參數與提示詞落到**該商家的全域**，分塊參數落到 `collection_id` 那個知識庫。
 
-    所以 `collection_id` 可以留空 —— 那就是「只改全域的東西（檢索參數／提示詞）」。
+    所以 `collection_id` 可以留空 —— 那就是「只改這個商家的全域東西（檢索參數／提示詞）」。
     """
     raw_cid = body.get("collection_id")
     cid = int(raw_cid) if str(raw_cid if raw_cid is not None else "").strip().isdigit() else None
     cid = cid or None
+
+    # ★ 商家：cid 有給就反查（不信前端），否則用 body 的 business_id。
+    if cid:
+        bad = _kb_edit_guard(sess) or _guard_collection(sess, cid)
+        if bad:
+            return bad
+        biz = _biz_of_collection(cid)
+    else:
+        biz = _int_or_none(body.get("business_id"))
+        bad = _kb_edit_guard(sess) or _biz_guard(sess, biz)
+        if bad:
+            return bad
+
     values = body.get("values") or {}
 
     # ★ 提示詞要先驗「必需佔位符」再寫。
@@ -291,9 +454,10 @@ async def set_params(body: dict):
             return _err(f"「{label}」缺少必要的變數：{'、'.join(miss)}"
                         f"（少了它模型就看不到資料／無法判定，請補回去再存）")
 
-    n = await asyncio.to_thread(kb_db.set_params, cid, values)
+    n = await asyncio.to_thread(kb_db.set_params, cid, values, business_id=biz)
     kb_search.invalidate()   # 參數／提示詞／索引快取立即失效（不用等 5 秒）
-    return _ok({"ok": True, "saved": n, "params": await asyncio.to_thread(_params_payload, cid)})
+    return _ok({"ok": True, "saved": n,
+                "params": await asyncio.to_thread(_params_payload, cid, biz)})
 
 
 # ======================================================================
@@ -303,15 +467,29 @@ async def set_params(body: dict):
 @router.post("/upload")
 async def upload(files: list[UploadFile] = File(...),
                  collection_id: str = Form(""),
-                 auto_start: str = Form("1")):
+                 business_id: str = Form(""),
+                 auto_start: str = Form("1"),
+                 sess: dict = Depends(deps.require_csrf)):
     cid = int(collection_id) if str(collection_id).strip().isdigit() else None
+    biz = int(business_id) if str(business_id).strip().isdigit() else None
+    # ★ 商家：有 cid 就反查（不信前端），否則用表單帶的 business_id。
+    if cid:
+        bad = _kb_edit_guard(sess) or _guard_collection(sess, cid)
+        if bad:
+            return bad
+        biz = _biz_of_collection(cid)
+    else:
+        bad = _kb_edit_guard(sess) or _biz_guard(sess, biz)
+        if bad:
+            return bad
     started_auto = str(auto_start).strip().lower() not in ("0", "false", "no", "")
     results = []
     for f in files:
         raw = await f.read()
         try:
             saved = await asyncio.to_thread(
-                kb_ingest.save_upload, f.filename or "upload.bin", raw, f.content_type or "", cid)
+                kb_ingest.save_upload, f.filename or "upload.bin", raw,
+                f.content_type or "", cid, biz)
         except ParseError as e:
             results.append({"filename": f.filename, "ok": False,
                             "error": kb_parse.describe_error(e.reason), "reason": e.reason})
@@ -331,29 +509,43 @@ async def upload(files: list[UploadFile] = File(...),
 
 
 @router.get("/documents")
-async def documents(collection_id: str = "", status: str = "", ungrouped: str = ""):
+async def documents(business_id: int = Query(...), collection_id: str = "",
+                    status: str = "", ungrouped: str = "",
+                    sess: dict = Depends(deps.require_agent)):
+    bad = _query_biz(sess, business_id)
+    if bad:
+        return bad
     # ungrouped=1 → 只列沒有歸屬知識庫的文件（collection_id IS NULL）
     cid = int(collection_id) if str(collection_id).strip().isdigit() else None
     is_ung = str(ungrouped).strip() not in ("", "0", "false", "False")
-    docs = await asyncio.to_thread(kb_db.list_documents, cid, status, 500, is_ung)
+    docs = await asyncio.to_thread(kb_db.list_documents, cid, status, 500, is_ung,
+                                  int(business_id))
     for d in docs:
         d["running"] = _is_running(int(d["id"]))
     return _ok({"documents": docs})
 
 
 @router.get("/document")
-async def document(id: int, chunks: int = 1, chunks_limit: int = 400):
+async def document(id: int, chunks: int = 1, chunks_limit: int = 400,
+                   sess: dict = Depends(deps.require_agent)):
     doc = await asyncio.to_thread(kb_db.get_document, id)
     if not doc:
         return _err("找不到這份文件", 404)
+    # ★ 反查文件的商家再驗權限（未分組文件靠自己的 business_id）
+    bad = _biz_guard(sess, doc.get("business_id") or _biz_of_doc(id))
+    if bad:
+        return bad
     return _ok(_doc_payload(doc, with_chunks=bool(chunks), chunks_limit=chunks_limit))
 
 
 @router.post("/document/preview")
-async def document_preview(body: dict):
+async def document_preview(body: dict, sess: dict = Depends(deps.require_agent)):
     did = int(body.get("id") or 0)
     if not did:
         return _err("缺少文件 id")
+    bad = _biz_guard(sess, _biz_of_doc(did))
+    if bad:
+        return bad
     try:
         out = await asyncio.to_thread(kb_ingest.preview_chunks, did,
                                       body.get("params") or {}, int(body.get("limit") or 30))
@@ -365,10 +557,13 @@ async def document_preview(body: dict):
 
 
 @router.post("/document/reparse")
-async def document_reparse(body: dict):
+async def document_reparse(body: dict, sess: dict = Depends(deps.require_csrf)):
     did = int(body.get("id") or 0)
     if not did:
         return _err("缺少文件 id")
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz_of_doc(did))
+    if bad:
+        return bad
     if _is_running(did):
         return _err(f"這份文件正在「{_is_running(did)}」，請等它跑完")
     stats = await asyncio.to_thread(kb_db.chunk_stats, did)
@@ -388,10 +583,13 @@ async def document_reparse(body: dict):
 
 
 @router.post("/document/embed")
-async def document_embed(body: dict):
+async def document_embed(body: dict, sess: dict = Depends(deps.require_csrf)):
     did = int(body.get("id") or 0)
     if not did:
         return _err("缺少文件 id")
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz_of_doc(did))
+    if bad:
+        return bad
     if _is_running(did):
         return _err(f"這份文件正在「{_is_running(did)}」，請等它跑完")
     mode = (body.get("mode") or "pending").lower()
@@ -402,8 +600,11 @@ async def document_embed(body: dict):
 
 
 @router.post("/document/activate")
-async def document_activate(body: dict):
+async def document_activate(body: dict, sess: dict = Depends(deps.require_csrf)):
     did = int(body.get("id") or 0)
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz_of_doc(did))
+    if bad:
+        return bad
     try:
         doc = await asyncio.to_thread(kb_ingest.activate_document, did)
     except Exception as e:
@@ -413,16 +614,22 @@ async def document_activate(body: dict):
 
 
 @router.post("/document/enabled")
-async def document_enabled(body: dict):
+async def document_enabled(body: dict, sess: dict = Depends(deps.require_csrf)):
     did = int(body.get("id") or 0)
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz_of_doc(did))
+    if bad:
+        return bad
     doc = await asyncio.to_thread(kb_ingest.set_document_enabled, did, bool(body.get("enabled")))
     kb_search.invalidate()
     return _ok({"doc": doc})
 
 
 @router.post("/document/delete")
-async def document_delete(body: dict):
+async def document_delete(body: dict, sess: dict = Depends(deps.require_csrf)):
     did = int(body.get("id") or 0)
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz_of_doc(did))
+    if bad:
+        return bad
     if _is_running(did):
         return _err(f"這份文件正在「{_is_running(did)}」，請等它跑完再刪")
     ok = await asyncio.to_thread(kb_ingest.delete_document, did)
@@ -431,7 +638,7 @@ async def document_delete(body: dict):
 
 
 @router.post("/document/move")
-async def document_move(body: dict):
+async def document_move(body: dict, sess: dict = Depends(deps.require_csrf)):
     """改放到別的知識庫（`collection_id` 給 null / 0 = 未分組）。
 
     ⚠️ 換知識庫會改變它套用的**分塊參數**（檢索參數是全庫共用的，不受影響），
@@ -443,6 +650,11 @@ async def document_move(body: dict):
     doc = await asyncio.to_thread(kb_db.get_document, did)
     if not doc:
         return _err("找不到這份文件", 404)
+    # ★ 來源文件的商家
+    bad = _kb_edit_guard(sess) or _biz_guard(
+        sess, doc.get("business_id") or _biz_of_doc(did))
+    if bad:
+        return bad
 
     raw = body.get("collection_id")
     cid = None
@@ -453,6 +665,9 @@ async def document_move(body: dict):
         target = await asyncio.to_thread(kb_db.get_collection, cid)
         if not target:
             return _err(f"找不到知識庫 #{cid}")
+        # ★ 目標知識庫必須是**同一個商家**的（不能把文件搬進別人的庫）
+        if int(target.get("business_id") or 0) != int(doc.get("business_id") or 0):
+            return _err("不能把文件搬到別的商家的知識庫", 403)
 
     await asyncio.to_thread(kb_db.update_document, did, {"collection_id": cid})
     # ★ 文件的圖要跟著搬家 —— 它們屬於「新知識庫的圖片庫」。
@@ -527,10 +742,14 @@ def _float_or_none(v):
 
 
 @router.post("/chunk/update")
-async def chunk_update(body: dict):
-    cid = int(body.get("id") or 0)
-    if not cid:
+async def chunk_update(body: dict, sess: dict = Depends(deps.require_csrf)):
+    chid = int(body.get("id") or 0)
+    if not chid:
         return _err("缺少知識塊 id")
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz_of_chunk(chid))
+    if bad:
+        return bad
+    cid = chid
     text = body.get("text")
     enabled = body.get("enabled")
     ok = await asyncio.to_thread(kb_db.update_chunk, cid,
@@ -541,10 +760,14 @@ async def chunk_update(body: dict):
 
 
 @router.post("/chunk/split")
-async def chunk_split(body: dict):
-    cid = int(body.get("id") or 0)
-    if not cid:
+async def chunk_split(body: dict, sess: dict = Depends(deps.require_csrf)):
+    chid = int(body.get("id") or 0)
+    if not chid:
         return _err("缺少知識塊 id")
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz_of_chunk(chid))
+    if bad:
+        return bad
+    cid = chid
     at = int(body.get("at") or 0)
     c = await asyncio.to_thread(kb_db.get_chunk, cid)
     if not c:
@@ -583,10 +806,14 @@ async def chunk_split(body: dict):
 
 
 @router.post("/chunk/merge")
-async def chunk_merge(body: dict):
-    cid = int(body.get("id") or 0)
-    if not cid:
+async def chunk_merge(body: dict, sess: dict = Depends(deps.require_csrf)):
+    chid = int(body.get("id") or 0)
+    if not chid:
         return _err("缺少知識塊 id")
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz_of_chunk(chid))
+    if bad:
+        return bad
+    cid = chid
     c = await asyncio.to_thread(kb_db.get_chunk, cid)
     if not c:
         return _err("找不到知識塊", 404)
@@ -617,8 +844,11 @@ async def chunk_merge(body: dict):
 
 
 @router.post("/chunk/delete")
-async def chunk_delete(body: dict):
+async def chunk_delete(body: dict, sess: dict = Depends(deps.require_csrf)):
     cid = int(body.get("id") or 0)
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz_of_chunk(cid))
+    if bad:
+        return bad
     c = await asyncio.to_thread(kb_db.get_chunk, cid)
     if not c:
         return _err("找不到知識塊", 404)
@@ -685,7 +915,8 @@ async def _search_any(body: dict) -> dict:
         try:
             from app.llm import deepseek_client
             extra = await deepseek_client.DeepSeekClient().rewrite_rag_queries(
-                query, history_text, count=rag_config.RAG_QUERY_REWRITE_N)
+                query, history_text, count=rag_config.RAG_QUERY_REWRITE_N,
+                business_id=_int_or_none(body.get("business_id")))
             queries += extra
         except Exception as e:
             log.warning("查詢改寫失敗（改用原問句）: %s", e)
@@ -696,29 +927,54 @@ async def _search_any(body: dict) -> dict:
 @router.get("/search")
 async def search_get(q: str = "", collection_id: str = "", top_k: str = "",
                      min_score: str = "", candidates: int = 30,
-                     rewrite: str = "", history: str = ""):
+                     rewrite: str = "", history: str = "",
+                     business_id: int = Query(...),
+                     sess: dict = Depends(deps.require_agent)):
+    bad = _query_biz(sess, business_id)
+    if bad:
+        return bad
+    if str(collection_id).strip().isdigit():
+        bad = _guard_collection(sess, int(collection_id))
+        if bad:
+            return bad
     return _ok(await _search_any({
         "query": q, "collection_id": collection_id, "top_k": top_k,
         "min_score": min_score, "candidates": candidates,
         "rewrite": rewrite, "history": history,
+        "business_id": business_id,
     }))
 
 
 @router.post("/search")
-async def search_post(body: dict):
+async def search_post(body: dict, sess: dict = Depends(deps.require_agent)):
+    bad = _query_biz(sess, _int_or_none(body.get("business_id")))
+    if bad:
+        return bad
+    if str(body.get("collection_id") or "").strip().lstrip("-").isdigit():
+        bad = _guard_collection(sess, int(body["collection_id"]))
+        if bad:
+            return bad
     return _ok(await _search_any(body))
 
 
 @router.get("/index-stats")
-async def index_stats(collection_id: str = ""):
+async def index_stats(business_id: int = Query(...), collection_id: str = "",
+                      sess: dict = Depends(deps.require_agent)):
     """索引目前的規模（幾塊 / 幾份文件 / 維度），方便確認「剛上線的搜得到」。"""
+    bad = _query_biz(sess, business_id)
+    if bad:
+        return bad
+    if str(collection_id).strip().isdigit():
+        bad = _guard_collection(sess, int(collection_id))
+        if bad:
+            return bad
     cid = _int_or_none(collection_id)
     stats = await asyncio.to_thread(kb_search.index_stats, cid)
     return _ok({"stats": stats})
 
 
 @router.get("/doc-types")
-async def doc_types():
+async def doc_types(sess: dict = Depends(deps.require_agent)):
     """支援的格式清單（UI 上傳區提示用）。"""
     return _ok({"types": list(kb_parse.DOC_TYPES),
                 "max_upload_mb": kb_ingest.MAX_UPLOAD_MB})
@@ -755,8 +1011,17 @@ def _asset_view(row: dict) -> dict:
 
 
 @router.get("/assets")
-async def list_assets(collection_id: str = "", doc_id: str = "",
-                      include_filtered: str = "1", ungrouped: str = ""):
+async def list_assets(business_id: int = Query(...), collection_id: str = "",
+                      doc_id: str = "", include_filtered: str = "1",
+                      ungrouped: str = "",
+                      sess: dict = Depends(deps.require_agent)):
+    bad = _query_biz(sess, business_id)
+    if bad:
+        return bad
+    if str(collection_id).strip().isdigit():
+        bad = _guard_collection(sess, int(collection_id))
+        if bad:
+            return bad
     """列圖片（可依知識庫／文件過濾）+ 統計。
 
     `include_filtered=0` → 只看「像內容圖」的（預設含被啟發式判為裝飾的，
@@ -777,7 +1042,8 @@ async def list_assets(collection_id: str = "", doc_id: str = "",
 
     def _run():
         rows = kb_db.list_assets(collection_id=cid, doc_id=did,
-                                 include_filtered=inc, ungrouped=ungr)
+                                 include_filtered=inc, ungrouped=ungr,
+                                 business_id=int(business_id))
         return {"assets": [_asset_view(r) for r in rows],
                 "stats": kb_db.asset_stats(collection_id=cid, doc_id=did),
                 "include_filtered": inc, "no_image_lib": False,
@@ -788,7 +1054,19 @@ async def list_assets(collection_id: str = "", doc_id: str = "",
 
 @router.post("/asset/upload")
 async def upload_assets(files: list[UploadFile] = File(...),
-                        collection_id: str = Form("")):
+                        collection_id: str = Form(""),
+                        business_id: str = Form(""),
+                        sess: dict = Depends(deps.require_csrf)):
+    biz = _int_or_none(business_id)
+    if str(collection_id).strip().isdigit():
+        bad = _kb_edit_guard(sess) or _guard_collection(sess, int(collection_id))
+        if bad:
+            return bad
+        biz = _biz_of_collection(int(collection_id))
+    else:
+        bad = _kb_edit_guard(sess) or _biz_guard(sess, biz)
+        if bad:
+            return bad
     """單獨上傳圖片（不屬於任何文件，只掛在知識庫底下）。
 
     `collection_id` 給文檔知識庫時 → 落進它的「<名>_圖片庫」；這個圖片庫還不存在
@@ -814,7 +1092,11 @@ async def upload_assets(files: list[UploadFile] = File(...),
 
 
 @router.post("/asset/caption")
-async def set_asset_caption(body: dict):
+async def set_asset_caption(body: dict, sess: dict = Depends(deps.require_csrf)):
+    bad = _kb_edit_guard(sess) or _biz_guard(
+        sess, _biz_of_asset(_int_or_none(body.get("id"))))
+    if bad:
+        return bad
     """人工寫／改描述（source 固定 manual —— 之後 AI 按鈕不會覆蓋它）。
 
     ★ 寫完立刻向量化 + 讓檢索索引失效 —— 這樣「改完描述馬上就查得到」，
@@ -850,7 +1132,16 @@ def _embed_one_asset(aid: int) -> None:
 
 
 @router.post("/asset/caption/ai")
-async def ai_asset_caption(body: dict):
+async def ai_asset_caption(body: dict, sess: dict = Depends(deps.require_csrf)):
+    _first = None
+    for _x in (body.get("ids") or ([body.get("id")] if body.get("id") else [])):
+        _first = _int_or_none(_x)
+        if _first:
+            break
+    _biz = _biz_of_asset(_first)
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz)
+    if bad:
+        return bad
     """按鈕觸發：用視覺模型看圖寫描述。
 
     ⚠️ **不會覆蓋人工寫的**（`caption_source='manual'`）—— 除非帶 `force=1`。
@@ -884,7 +1175,7 @@ async def ai_asset_caption(body: dict):
         hint = " ｜ ".join(x for x in (row.get("caption"), row.get("filename")) if x)
         try:
             text = await deepseek_client.DeepSeekClient().describe_image(
-                data, row.get("mime") or "image/png", hint=hint)
+                data, row.get("mime") or "image/png", hint=hint, business_id=_biz)
         except Exception as e:
             await asyncio.to_thread(kb_db.update_asset, aid,
                                    caption_status="failed")
@@ -903,7 +1194,13 @@ async def ai_asset_caption(body: dict):
 
 
 @router.post("/asset/embed")
-async def embed_assets(body: dict):
+async def embed_assets(body: dict, sess: dict = Depends(deps.require_csrf)):
+    _biz = _biz_of_collection(_int_or_none(body.get("collection_id")))
+    if _biz is None and body.get("doc_id"):
+        _biz = _biz_of_doc(_int_or_none(body.get("doc_id")))
+    bad = _kb_edit_guard(sess) or _biz_guard(sess, _biz)
+    if bad:
+        return bad
     """批次把「有描述但還沒向量化」的圖送進 embedding。
 
     正常不需要手動按 —— 寫描述 / AI 描述 / 文件向量化時都會自動連帶做。
@@ -919,7 +1216,11 @@ async def embed_assets(body: dict):
 
 
 @router.post("/asset/update")
-async def update_asset(body: dict):
+async def update_asset(body: dict, sess: dict = Depends(deps.require_csrf)):
+    bad = _kb_edit_guard(sess) or _biz_guard(
+        sess, _biz_of_asset(_int_or_none(body.get("id"))))
+    if bad:
+        return bad
     """啟用 / 停用（被誤判成裝飾圖時，這裡可以把它救回來）。"""
     aid = _int_or_none(body.get("id"))
     if not aid:
@@ -945,7 +1246,11 @@ async def update_asset(body: dict):
 
 
 @router.post("/asset/delete")
-async def delete_asset(body: dict):
+async def delete_asset(body: dict, sess: dict = Depends(deps.require_csrf)):
+    bad = _kb_edit_guard(sess) or _biz_guard(
+        sess, _biz_of_asset(_int_or_none(body.get("id"))))
+    if bad:
+        return bad
     aid = _int_or_none(body.get("id"))
     if not aid:
         return _err("缺少圖片 id")
@@ -962,7 +1267,7 @@ async def delete_asset(body: dict):
 
 
 @router.get("/asset/file/{asset_id}")
-async def asset_file(asset_id: int):
+async def asset_file(asset_id: int, sess: dict = Depends(deps.require_agent)):
     """取圖片檔。
 
     刻意**走這條**而不是公開的 `/files/...`：一是可以統一換成有鑑權的讀法，
@@ -971,6 +1276,9 @@ async def asset_file(asset_id: int):
     row = await asyncio.to_thread(kb_db.get_asset, asset_id)
     if not row:
         return _err(f"圖片不存在：#{asset_id}", 404)
+    bad = _biz_guard(sess, _biz_of_asset(asset_id))
+    if bad:
+        return bad
     path = _asset_path(row)
     if not os.path.exists(path):
         return _err("圖檔遺失（可能已被刪除）", 404)
@@ -979,7 +1287,11 @@ async def asset_file(asset_id: int):
 
 
 @router.post("/asset/rebind")
-async def rebind_assets(body: dict):
+async def rebind_assets(body: dict, sess: dict = Depends(deps.require_csrf)):
+    bad = _kb_edit_guard(sess) or _biz_guard(
+        sess, _biz_of_doc(_int_or_none(body.get("doc_id"))))
+    if bad:
+        return bad
     """重新綁定某份文件的圖（重跑分塊後、或綁定看起來不對時用）。"""
     did = _int_or_none(body.get("doc_id"))
     if not did:
