@@ -119,13 +119,22 @@ _COMMENTS = {
 }
 
 
+def _latest_time(thread_id: str) -> str:
+    """該會話最新一則的時間（模擬 Graph 回的 updated_time）。"""
+    return max(((m.get("created_time") or "") for m in (_MSGS.get(thread_id) or [])),
+               default="") or None
+
+
 def _patch_graph() -> None:
     async def convs(page_id, token, limit=25):
+        # ⚠️ 一定要帶 updated_time —— 會話級增量預篩靠它（沒有它就得每次都拉 thread）
         return [
-            {"id": f"{MARK}_t1", "participants": {"data": [
-                {"id": FB_NATIVE}, {"id": SENDER_A, "name": "小明"}]}},
-            {"id": f"{MARK}_t2", "participants": {"data": [
-                {"id": FB_NATIVE}, {"id": SENDER_B, "name": "小華"}]}},
+            {"id": f"{MARK}_t1", "updated_time": _latest_time(f"{MARK}_t1"),
+             "participants": {"data": [
+                 {"id": FB_NATIVE}, {"id": SENDER_A, "name": "小明"}]}},
+            {"id": f"{MARK}_t2", "updated_time": _latest_time(f"{MARK}_t2"),
+             "participants": {"data": [
+                 {"id": FB_NATIVE}, {"id": SENDER_B, "name": "小華"}]}},
         ]
 
     async def msgs(thread_id, token, limit=30):
@@ -212,11 +221,49 @@ def main() -> int:
     check(res["dm_handled"] == 1 and res["dm_pending"] == 3,
           f"統計 handled=1 / pending=3（實得 {res['dm_handled']}/{res['dm_pending']}）")
 
-    print("\n[5] 冪等：再跑一次不會重複入庫")
+    print("\n[5] ★ 增量：只從「最後一則之後」開始拉")
     res2 = asyncio.run(history_sync.sync_account("fb", FB_NATIVE))
     check(res2["dm_new"] == 0 and res2["dm_out"] == 0, "第二次 dm_new=0 / dm_out=0")
     check(len(db("SELECT 1 FROM igfb_dm WHERE platform_business_account_id=%s",
                  (FB_NATIVE,), fetch=True)) == 5, "igfb_dm 仍是 5 列")
+    check(res2["skipped_conversations"] == 2,
+          f"兩個會話都不比水位新 → 整個跳過（實得 {res2['skipped_conversations']}）")
+    # 會話級已攔下 → 連 thread messages 都不用打，訊息層自然是 0（更省）
+    check(res2["skipped_messages"] == 0,
+          f"會話級就攔住了，訊息層不需再篩（實得 {res2['skipped_messages']}）")
+
+    print("\n[5b] ★ 已標記的狀態不得被翻回")
+    # 模擬客服把 m1（本來就會被算成 handled）與 m3（補了紅點）都標成已處理
+    db("UPDATE igfb_dm SET is_handled = true WHERE platform_business_account_id=%s",
+       (FB_NATIVE,))
+    # 再跑一次（無新消息）→ 不得有任何變動
+    res3 = asyncio.run(history_sync.sync_account("fb", FB_NATIVE))
+    check(res3["dm_new"] == 0 and res3["dm_handled"] == 0, "沒有新消息 → 不重算")
+    still = db("SELECT count(*) AS n FROM igfb_dm"
+               " WHERE platform_business_account_id=%s AND is_handled = false",
+               (FB_NATIVE,), fetch=True)[0]["n"]
+    check(still == 0, f"★ 手動標的已處理全部保留（剩下的未處理 = {still}）")
+
+    # 只追加一則「新」入站消息 → 只影響它自己，不影響其他列
+    _MSGS[f"{MARK}_t1"] = [
+        {"id": f"{MARK}_m6", "from": {"id": SENDER_A}, "message": "還有嗎",
+         "created_time": "2026-10-14T10:20:00+0000"},
+    ] + _MSGS[f"{MARK}_t1"]
+    res4 = asyncio.run(history_sync.sync_account("fb", FB_NATIVE))
+    check(res4["dm_new"] == 1, f"只新增 1 則新消息（實得 {res4['dm_new']}）")
+    check(res4["skipped_conversations"] == 1,
+          f"t2 沒新消息 → 跳過（實得 {res4['skipped_conversations']}）")
+    # t1 因為有新消息必須拉，但拉回來的舊消息（m1/m2/m3）被消息級水位擋掉
+    check(res4["skipped_messages"] == 3,
+          f"t1 的舊消息被消息級水位擋掉 3 則（實得 {res4['skipped_messages']}）")
+    check(res4["dm_pending"] == 1 and res4["dm_handled"] == 0,
+          f"新消息後面沒有回覆 → 補紅點（實得 handled={res4['dm_handled']} pending={res4['dm_pending']}）")
+    kept = db("SELECT is_handled FROM igfb_dm WHERE platform_business_account_id=%s"
+              " AND message_id = %s", (FB_NATIVE, f"{MARK}_m3"), fetch=True)
+    check(kept and kept[0]["is_handled"] is True,
+          "★ 之前標的已處理（m3）沒有被新一輪翻回未處理")
+    check(len(db("SELECT 1 FROM igfb_dm WHERE platform_business_account_id=%s",
+                 (FB_NATIVE,), fetch=True)) == 6, "總共 6 列")
 
     print("\n[6] FB「留言轉私訊」系統通知被濾掉")
     check(f"{MARK}_noise" not in by_mid, "系統通知沒有入庫")
@@ -238,6 +285,42 @@ def main() -> int:
     check(by_cid[f"{MARK}_c2"]["is_handled"] is True, "c2 is_handled=true")
     check(by_cid[f"{MARK}_c1"]["business_id"] == BIZ, "留言帶 business_id")
     check(res["posts"] == 1, f"統計 posts=1（實得 {res['posts']}）")
+
+    print("\n[7b] ★ 留言：已忽略不得被翻回 / 只重算有新留言的討論串")
+    # 模擬客服把 c1 討論串標成「已忽略」（replied=false + is_handled=true）
+    db("UPDATE igfb_comment SET replied=false, is_handled=true"
+       " WHERE platform_business_account_id=%s AND comment_id=%s", (FB_NATIVE, f"{MARK}_c1"))
+    res_r = asyncio.run(history_sync.sync_account("fb", FB_NATIVE))
+    check(res_r["comments_new"] == 0, "沒有新留言 → 不新增")
+    check(res_r["threads_recomputed"] == 0, "★ 沒重算任何討論串（不會翻掉人工標記）")
+    kept_c1 = db("SELECT replied, is_handled FROM igfb_comment WHERE comment_id=%s",
+                 (f"{MARK}_c1",), fetch=True)[0]
+    check(kept_c1["is_handled"] is True and kept_c1["replied"] is False,
+          "★ c1 的「已忽略」原封不動")
+
+    # 追加一則**新**留言到 c1 討論串（客戶發的）→ 只有 c1 被重算，c2 不動。
+    # ⚠️ fb_comments 回的是「頂層 + 巢狀 replies」，c4 是 c1 的子留言 → 要掛進 c1 的 comments
+    _COMMENTS[f"{MARK}_p1"] = [
+        {**c,
+         "comments": {"data": (c.get("comments", {}).get("data") or []) + (
+             [{"id": f"{MARK}_c4", "message": "那我明天去",
+               "from": {"id": SENDER_A, "name": "小明"},
+               "created_time": "2026-10-14T08:30:00+0000"}]
+             if c.get("id") == f"{MARK}_c1" else [])}}
+        for c in _COMMENTS[f"{MARK}_p1"] if not c.get("parent_id")
+    ]
+    res_n = asyncio.run(history_sync.sync_account("fb", FB_NATIVE))
+    check(res_n["comments_new"] == 1, f"只新增 1 則新留言（實得 {res_n['comments_new']}）")
+    check(res_n["skipped_comments"] == 3, f"舊的 3 則被水位跳過（實得 {res_n['skipped_comments']}）")
+    check(res_n["threads_recomputed"] == 1,
+          f"★ 只重算 c1 一個討論串（實得 {res_n['threads_recomputed']}）")
+    c1n = db("SELECT replied, is_handled FROM igfb_comment WHERE comment_id=%s",
+             (f"{MARK}_c1",), fetch=True)[0]
+    check(c1n["is_handled"] is False, "★ 有新客戶留言 → c1 重新亮紅點（預期）")
+    c2n = db("SELECT replied, is_handled FROM igfb_comment WHERE comment_id=%s",
+             (f"{MARK}_c2",), fetch=True)[0]
+    check(c2n["replied"] is True and c2n["is_handled"] is True,
+          "★ c2 討論串完全沒被碰（仍為已回）")
 
     print("\n[8] 批次 sync_many：彙總 + 容錯")
     # 讓 ig 的 conversations 爆錯 → 只影響 ig 自己

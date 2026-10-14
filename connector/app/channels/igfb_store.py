@@ -214,12 +214,26 @@ def _touch_thread_root(cur, platform: str, me: str, comment_id: str,
         (created_at, is_self, is_self, platform, root_id))
 
 
-def land_comment(platform: str, ev: dict, account: dict | None) -> None:
-    """一則 IG/FB 留言 → `igfb_comment`（並確保 `igfb_post` 有佔位）。"""
+def land_comment(platform: str, ev: dict, account: dict | None, *,
+                 touch: bool = True) -> dict | None:
+    """一則 IG/FB 留言 → `igfb_comment`（並確保 `igfb_post` 有佔位）。
+
+    `touch=True`（webhook 即時收訊）：順手用 `_touch_thread_root` 更新討論串狀態。
+    `touch=False`（**歷史補拉**）：不逐則推進 —— 歷史回來的順序是新→舊，逐則推進會
+      依錯的順序決定狀態；改由呼叫端對「這次真的新增的討論串」做一次
+      `recompute_comment_threads`。
+
+    回 `{"comment_id", "inserted", "root_id"}`；沒有 comment_id 回 `None`。
+    `inserted=True` 代表**這次是新插進來的**（不是更新既有列）——
+      呼叫端據此決定要不要重算該討論串（避免把人工標的「已忽略」翻回未處理）。
+    """
     acc_native, biz_id, bp_id = _account_cols(account)
     me = self_id(platform, account)
     post_id = ev.get("post_id") or ""
     created_at = ev.get("created_at")
+    cid = ev.get("comment_id") or ""
+    if not cid:
+        return None
     conn = db.connect()
     try:
         with conn.cursor() as cur:
@@ -257,17 +271,24 @@ def land_comment(platform: str, ev: dict, account: dict | None) -> None:
                                      igfb_comment.platform_business_account_id),
                       business_id = COALESCE(EXCLUDED.business_id, igfb_comment.business_id),
                       bp_account_id = COALESCE(EXCLUDED.bp_account_id, igfb_comment.bp_account_id)
+                RETURNING (xmax = 0) AS inserted
                 """,
-                (platform, post_id, ev.get("comment_id") or "", ev.get("parent_id"),
+                (platform, post_id, cid, ev.get("parent_id"),
                  ev.get("from_id") or "", ev.get("from_name") or "", ev.get("text") or "",
                  int(ev.get("like_count") or 0), created_at, created_at,
                  acc_native, biz_id, bp_id),
             )
-            _touch_thread_root(cur, platform, me, ev.get("comment_id") or "",
-                               ev.get("from_id") or "", created_at)
+            row = cur.fetchone()
+            # ⚠️ 順序要緊：先寫入再算 root（新留言的 parent_id 才在圖裡）
+            root_id = _thread_root(cur, platform, cid)
+            if touch:
+                _touch_thread_root(cur, platform, me, cid, ev.get("from_id") or "", created_at)
         conn.commit()
+        # ⚠️ PG 的 `xmax = 0` 判斷「這列是本次 INSERT 進去的」還是「被 UPDATE 的」
+        return {"comment_id": cid, "inserted": bool(row and row[0]), "root_id": root_id}
     except Exception as e:  # noqa: BLE001
         log.warning("寫入 igfb_comment 失敗: %s", e)
+        return None
     finally:
         conn.close()
 
@@ -325,16 +346,26 @@ def upsert_post(platform: str, account: dict | None, post: dict) -> None:
         conn.close()
 
 
-def recompute_comment_threads(platform: str, post_id: str, self_id: str) -> int:
-    """重算該貼文所有討論串的「已回／未回」（歷史補拉後跑一次）。
+def recompute_comment_threads(platform: str, post_id: str, self_id: str,
+                              roots: list[str] | None = None) -> int:
+    """重算討論串的「已回／未回」（歷史補拉後跑一次）。
 
     ★ 為什麼不靠 `_touch_thread_root` 逐則推進：歷史拉回來的順序是
       **新→舊**（Graph API 慣例），逐則推進會依錯的順序決定狀態。
       這裡直接算「討論串（頂層 + 所有子孫）中最後一則是誰發的」：
         我方（`from_id` == `self_id`）→ `replied/is_handled = true`（不亮紅點）
         客戶 → `false`（亮紅點）
+
+    ★★ `roots`：**只重算這些討論串**（＝這次真的新插入留言的那些）。
+      這是「已忽略不得被翻回未處理」的關鍵 —— 傳 `None` 會重算整篇貼文
+      的所有討論串，那會把客服手動標的「已忽略」蓋掉（舊版就是這樣）。
+      新留言進來的討論串本來就該重新亮紅點（有新消息要看），這是預期的。
+
     回傳更新的討論串數。
     """
+    only = set(roots) if roots is not None else None
+    if only is not None and not only:
+        return 0
     conn = db.connect()
     try:
         with conn.cursor() as cur:
@@ -364,6 +395,8 @@ def recompute_comment_threads(platform: str, post_id: str, self_id: str) -> int:
             for r in rows:
                 cid, from_id = r[1], r[3]
                 rid = root_of(cid)
+                if only is not None and rid not in only:
+                    continue
                 cand = (r[4], r[0], from_id or "")
                 if rid not in latest or (cand[0], cand[1]) > (latest[rid][0], latest[rid][1]):
                     latest[rid] = cand
@@ -381,6 +414,56 @@ def recompute_comment_threads(platform: str, post_id: str, self_id: str) -> int:
     except Exception as e:  # noqa: BLE001
         log.warning("重算留言討論串失敗 %s/%s: %s", platform, post_id, e)
         return 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------- 增量水位
+
+def dm_watermarks(platform: str, account_id: str) -> dict[str, datetime]:
+    """每個私訊會話「我們收到的最後一則」的時間 —— 增量補拉的水位。
+
+    ★ 為什麼用 DB 算而不是另存一張水位表：**冪等、自愈**，不會出現
+      「水位存了但資料沒落」的不一致。水位＝`max(COALESCE(created_at, inserted_at))`，
+      比它舊的消息一律不處理 → 只拉「最後一則之後」的新消息。
+
+    key 與會話鍵一致：`COALESCE(NULLIF(sender_id,''), conversation_key)`。
+    """
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(NULLIF(sender_id, ''), conversation_key) AS ckey,"
+                "       max(COALESCE(created_at, inserted_at))"
+                "  FROM igfb_dm"
+                " WHERE platform = %s AND platform_business_account_id = %s"
+                " GROUP BY 1",
+                (platform, account_id))
+            return {r[0]: r[1] for r in cur.fetchall() if r[0]}
+    except Exception as e:  # noqa: BLE001 —— 取不到水位就退回全量（保守）
+        log.warning("取私訊水位失敗 %s/%s: %s", platform, account_id, e)
+        return {}
+    finally:
+        conn.close()
+
+
+def comment_watermarks(platform: str, post_ids: list[str]) -> dict[str, datetime]:
+    """每篇貼文「已有留言的最後時間」—— 留言增量補拉的水位。"""
+    ids = [str(p) for p in (post_ids or []) if p]
+    if not ids:
+        return {}
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT post_id, max(COALESCE(created_at, inserted_at))"
+                "  FROM igfb_comment WHERE platform = %s AND post_id = ANY(%s)"
+                " GROUP BY post_id",
+                (platform, ids))
+            return {r[0]: r[1] for r in cur.fetchall() if r[0]}
+    except Exception as e:  # noqa: BLE001
+        log.warning("取留言水位失敗 %s: %s", platform, e)
+        return {}
     finally:
         conn.close()
 

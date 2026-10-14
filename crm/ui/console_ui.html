@@ -1873,6 +1873,13 @@ function refreshHistory() {
   apiJson('/console/agent/sync-history', {}).then(function (res) {
     if (!guard(res)) return;
     var t = res.data.totals || {};
+    // ★ 增量：沒有新消息時明確說「已是最新」，不要讓客服以為按了沒反應
+    if (!(t.dm_new || 0) && !(t.comments_new || 0)) {
+      var none = '已是最新（沒有新訊息）';
+      if (t.accounts_unsupported) none += '；' + t.accounts_unsupported + ' 個帳號不支援補拉';
+      showToast(none, 5000);
+      return;
+    }
     var parts = ['新增私訊 ' + (t.dm_new || 0) + ' 則',
                  '補紅點 ' + (t.dm_pending || 0) + ' 則',
                  '已回覆不補 ' + (t.dm_handled || 0) + ' 則'];

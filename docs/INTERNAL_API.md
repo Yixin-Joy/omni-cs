@@ -363,21 +363,34 @@ CRM 自己也會產生告警（不必等 Connector 上報）：
                "supported": true, "failed": false,
                "conversations": 3, "dm_new": 4, "dm_out": 1,
                "dm_handled": 1, "dm_pending": 3,
-               "posts": 1, "comments_new": 2, "errors": [] } ],
+               "skipped_conversations": 0, "skipped_messages": 0,
+               "posts": 1, "comments_new": 2, "threads_recomputed": 1,
+               "skipped_comments": 31, "errors": [] } ],
   "totals": { "accounts": 1, "accounts_synced": 1, "accounts_unsupported": 0,
               "accounts_failed": 0, "dm_new": 4, "dm_out": 1,
-              "dm_handled": 1, "dm_pending": 3, "posts": 1, "comments_new": 2,
+              "dm_handled": 1, "dm_pending": 3, "skipped_messages": 0,
+              "posts": 1, "comments_new": 2, "skipped_comments": 31,
               "errors": [] } }
 ```
 
 - `supported`：**平台有沒有歷史 API**。只有 `fb` / `ig` 為 true；
   `whatsapp`（Cloud API 無此端點）與 `wechat` 為 false，並附 `reason`。
 - `failed`：這次跑有沒有炸（與 `supported` 無關）。
+- ★★ **增量（水位）**：水位取自**資料庫現有的最後一則**，不另存水位表（冪等、自愈）。
+  - `skipped_conversations`：會話的 `updated_time` 不比水位新 → **整個會話跳過**
+    （連 `thread/messages` 都不打，省最多）。
+  - `skipped_messages`：拉回來的訊息 `created_at` 不比水位新 → 不處理。
+  - `skipped_comments`：留言舊於貼文水位 → 不處理。
+  - 效果：**只從「我們收到的最後一則」之後拉**，不會全量重刷；
+    **已標「已處理／已忽略」的不會被翻回未處理**（舊列根本不進入處理範圍）。
 - **紅點規則**：新入庫的入站私訊，其後（同會話、時間更晚）已有我方回覆
   → `is_handled=true`（不補紅點），否則 `false`（補紅點）。
   只對**這次新插入**的列套用，不重算整個會話（否則會覆蓋客服手動標的「已處理」）。
-- 留言：補拉後重算討論串「最後一則是我方發的嗎」→ `replied`/`is_handled`。
-  不逐則推進（Graph 回的是新→舊，順序會算錯）。
+- **留言**：只重算「這次真的**新增**留言」的討論串（`roots=[...]`）。
+  - `threads_recomputed`：這次重算了幾個討論串。
+  - ⚠️ 傳 `None` 會重算整篇貼文 → 把客服手動標的「已忽略」蓋掉（舊版就是這樣）。
+  - 已存在的留言完全不觸發重算；有新留言進來的討論串本來就該重新亮紅點。
+  - 不逐則推進（Graph 回的是新→舊，順序會算錯）。
 - 批次冪等：已存在的訊息 `ON CONFLICT DO NOTHING`，重按不會產生重複列。
 - 逐帳號容錯 + 每帳號時間上限，單一壞帳號不會拖垮整批。
 
