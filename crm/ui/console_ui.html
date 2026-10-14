@@ -415,7 +415,7 @@
         g.textContent = String(pendingTotal());
         b.appendChild(g);
       }
-      b.onclick = function () { state.tab = t.key; render(); };
+      b.onclick = function () { state.tab = t.key; loadTab(); };   // ★ loadTab() 才會載入該分頁的資料
       nav.appendChild(b);
     });
     var cur = TABS.filter(function (t) { return t.key === state.tab; })[0] || TABS[0];
@@ -477,9 +477,9 @@
     $('selPlat').onchange = function () {
       state.platform = this.value;
       if (state.platform === 'wechat' || state.platform === 'whatsapp') state.scope = 'dm';
-      state.activeKey = null; state.convs = []; render();
+      state.activeKey = null; state.convs = []; loadTab();   // ★ loadTab() 才會去抓資料；render() 只重繪
     };
-    $('selScope').onchange = function () { state.scope = this.value; state.activeKey = null; render(); };
+    $('selScope').onchange = function () { state.scope = this.value; state.activeKey = null; loadTab(); };
     $('swPending').onclick = function () { state.onlyPending = !state.onlyPending; render(); };
 
     renderActs([]);

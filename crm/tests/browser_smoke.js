@@ -110,6 +110,68 @@ function check(cond, msg, extra) {
     await shot('shot' + (n++) + '_' + role + '.png');
   }
 
+  // ★ 客服工作台：平台切換 + 分頁切換必須「真的去抓資料」
+  //   （曾真實發生：onchange 只呼叫 render() 重繪、不呼叫 loadTab() 載入 →
+  //     切平台/切分頁畫面清空、卻不發請求。）
+  await page.click('#whoBox');
+  await page.waitForSelector('#roleMenu.open', { timeout: 5000 });
+  await page.click('#roleList .roleitem[data-role="agent"]');
+  await waitTitle('客服工作台');
+  await settle();
+
+  const convReqs = [];
+  page.on('response', r => { if (r.url().includes('/conversations')) convReqs.push(r.url()); });
+
+  for (const plat of ['ig', 'fb', 'wechat', 'whatsapp']) {
+    const before = convReqs.length;
+    await page.selectOption('#selPlat', plat);
+    await page.waitForTimeout(1500);
+    check(convReqs.length > before, '切到 ' + plat + ' → 有發出 /conversations 請求');
+  }
+  // IG 的「貼文留言」scope
+  await page.selectOption('#selPlat', 'ig');
+  await page.waitForTimeout(1200);
+  await page.selectOption('#selScope', 'comment');
+  await page.waitForTimeout(1500);
+  const cmt = await page.$$eval('.conv-item', els => els.length).catch(() => 0);
+  check(cmt > 0, 'IG 貼文留言 scope 有會話項', String(cmt));
+  await shot('shot' + (n++) + '_ig_comment.png');
+
+  // 分頁「回覆紀錄」要有內容
+  await page.selectOption('#selPlat', 'whatsapp');
+  await page.waitForTimeout(1200);
+  const tab = await page.$('#nav >> text=回覆紀錄');
+  if (tab) {
+    await tab.click();
+    await page.waitForTimeout(1800);
+    const has = await page.evaluate(() => {
+      const t = (document.querySelector('.page') || document.body).innerText;
+      return t.includes('時間') || t.includes('層級');
+    });
+    check(has, '分頁「回覆紀錄」有載入內容');
+    await shot('shot' + (n++) + '_logs.png');
+  } else {
+    check(false, '找得到「回覆紀錄」分頁');
+  }
+
+  // ★ admin 審計日誌分頁：資料不在 reloadAll 裡，切分頁才載入
+  //   （曾真實發生：切到此分頁顯示「暫無紀錄」，其實 DB 有紀錄。）
+  await page.click('#whoBox');
+  await page.waitForSelector('#roleMenu.open', { timeout: 5000 });
+  await page.click('#roleList .roleitem[data-role="admin"]');
+  await waitTitle('管理員後台');
+  await settle();
+  const aTab = await page.$('#nav >> text=審計日誌');
+  if (aTab) {
+    await aTab.click();
+    await page.waitForTimeout(1800);
+    const hasTable = await page.evaluate(() => !!document.querySelector('#view table'));
+    check(hasTable, 'admin「審計日誌」分頁有載入紀錄（非「暫無紀錄」）');
+    await shot('shot' + (n++) + '_admin_audit.png');
+  } else {
+    check(false, '找得到「審計日誌」分頁');
+  }
+
   await browser.close();
 
   check(errors.length === 0, '全程零 JS 錯誤', errors.join(' | ').slice(0, 300));

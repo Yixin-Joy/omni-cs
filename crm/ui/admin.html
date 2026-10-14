@@ -447,7 +447,12 @@
       var b = document.createElement('button');
       b.textContent = t.label;
       if (state.tab === t.key) b.className = 'active';
-      b.onclick = function () { state.tab = t.key; render(); };
+      b.onclick = function () {
+        state.tab = t.key;
+        // 審計日誌的資料不在 reloadAll() 裡（避免每次登入都拉），切到此分頁才載入
+        if (state.tab === 'audit') loadAudit().then(render);
+        else render();
+      };
       nav.appendChild(b);
     });
     var cur = TABS.filter(function (t) { return t.key === state.tab; })[0] || TABS[0];
