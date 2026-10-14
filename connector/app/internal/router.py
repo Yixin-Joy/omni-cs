@@ -1,6 +1,8 @@
 """Connector 內網 API 端點 —— 供 CRM 呼叫（設計案 §4.2）。"""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -9,6 +11,8 @@ from app import account_map, media
 from app.core import config
 from app.core import db
 from app.internal.auth import require_internal
+
+log = logging.getLogger("connector")
 
 router = APIRouter(
     prefix="/internal/api",
@@ -156,6 +160,64 @@ def _msg_text(raw, payload) -> str:
     return (_pick(raw) or _pick(payload) or "").strip()
 
 
+_IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+
+
+def _files_of(raw, payload, attachments) -> list[dict]:
+    """把訊息裡的附件正規化成工作台渲染用的 `files`（沿用舊單體的欄位約定）。
+
+    - wechat / whatsapp：從 `forwarded_payload.uploadedFiles` 取（`raw_content` 備援）
+    - ig / fb：從 `igfb_dm.attachments` 取
+    """
+    import json as _json
+
+    def _load(v):
+        if isinstance(v, (list, dict)):
+            return v
+        if isinstance(v, str) and v.strip()[:1] in ("{", "["):
+            try:
+                return _json.loads(v)
+            except Exception:
+                return None
+        return None
+
+    items: list = []
+    a = _load(attachments)
+    if isinstance(a, list) and a:
+        for x in a:
+            if not isinstance(x, dict):
+                continue
+            url = x.get("url") or ((x.get("payload") or {}).get("url") if isinstance(x.get("payload"), dict) else "") or ""
+            typ = x.get("type") or "file"
+            items.append({
+                "url": url,
+                "filename": url.split("/")[-1].split("?")[0] or typ or "檔案",
+                "fileSize": int(x.get("fileSize") or 0),
+                "isImage": typ == "image" or url.lower().endswith(_IMG_EXT),
+                "sticker": typ == "sticker",
+                "sticker_id": str(x.get("sticker_id") or ""),
+            })
+        return items
+
+    for src in (payload, raw):
+        d = _load(src)
+        if isinstance(d, dict) and isinstance(d.get("uploadedFiles"), list):
+            for x in d["uploadedFiles"]:
+                if not isinstance(x, dict):
+                    continue
+                url = x.get("url") or ""
+                items.append({
+                    "url": url,
+                    "filename": x.get("filename") or (url.split("/")[-1].split("?")[0] or "檔案"),
+                    "fileSize": int(x.get("fileSize") or 0),
+                    "isImage": bool(x.get("isImage")) or url.lower().endswith(_IMG_EXT),
+                    "sticker": bool(x.get("sticker")),
+                    "sticker_id": str(x.get("sticker_id") or ""),
+                })
+            return items
+    return []
+
+
 @router.get("/messages/query")
 def messages_query(
     platform: str = Query(...),
@@ -174,7 +236,9 @@ def messages_query(
     if platform in ("wechat", "whatsapp"):
         sql = (
             "SELECT id, platform, direction, message_id, sender_id, message_type,"
-            "       raw_content, forwarded_payload, message_time AS ts"
+            "       raw_content, forwarded_payload, message_time AS ts,"
+            "       COALESCE(is_handled, false), auto_reply_state, auto_reply_tier,"
+            "       auto_reply_detail, NULL::jsonb AS attachments, NULL::text AS sender_name"
             "  FROM forward_log"
             " WHERE platform = %s AND platform_business_account_id = %s AND sender_id = %s"
             "   AND (%s IS NULL OR message_time < %s::timestamptz)"
@@ -184,7 +248,9 @@ def messages_query(
     elif platform in ("ig", "fb"):
         sql = (
             "SELECT id, platform, direction, message_id, sender_id, message_type,"
-            "       COALESCE(text, '') AS raw_content, NULL AS forwarded_payload, created_at AS ts"
+            "       COALESCE(text, '') AS raw_content, NULL AS forwarded_payload, created_at AS ts,"
+            "       COALESCE(is_handled, false), auto_reply_state, auto_reply_tier,"
+            "       auto_reply_detail, attachments, COALESCE(sender_name, '')"
             "  FROM igfb_dm"
             " WHERE platform = %s AND platform_business_account_id = %s"
             "   AND (sender_id = %s OR conversation_key = %s)"
@@ -210,7 +276,13 @@ def messages_query(
             {"id": r[0], "platform": r[1], "direction": r[2], "message_id": r[3],
              "sender_id": r[4], "message_type": r[5], "content": r[6],
              "text": _msg_text(r[6], r[7]),
-             "ts": r[8].isoformat() if r[8] else None}
+             "ts": r[8].isoformat() if r[8] else None,
+             "is_handled": bool(r[9]),
+             "auto_reply_state": r[10] or "",
+             "auto_reply_tier": r[11] or "",
+             "auto_reply_detail": r[12] or "",
+             "files": _files_of(r[6], r[7], r[13]),
+             "sender_name": r[14] or ""}
             for r in rows
         ],
     }
@@ -428,6 +500,237 @@ def conversations(
         except Exception:  # noqa: BLE001 —— 單列壞掉不拖垮整份清單
             continue
     return {"ok": True, "items": items, "scope": scope, "platform": platform}
+
+
+# ---------------------------------------------------------------- 貼文 / 留言（工作台）
+
+_POST_LIMIT_MAX = 50
+
+
+def _iso(v) -> str | None:
+    return v.isoformat() if v else None
+
+
+@router.get("/posts")
+def posts(
+    platform: str = Query(...),
+    platform_business_account_id: str = Query(...),
+    limit: int = Query(default=10),
+    offset: int = Query(default=0),
+):
+    """工作台「貼文留言」列表（設計案 §4.2）——**以貼文為單位**（不是每則留言一條）。
+
+    每筆帶：
+    - `new_comments`：頂層、未回、未忽略、且**非我方自己發的**留言數（= 列表「N 新」紅標）。
+    - `comments_count`：頂層留言數（以 DB 實算為準，Meta API 的 comments_count 不可靠）。
+
+    ⚠️ 與 `conversations(scope=comment)` 的差異：那支是「每則留言一個會話」，
+    這支是「每篇貼文一列 + 其留言統計」，工作台貼文列表用這支。
+    """
+    if platform not in ("ig", "fb"):
+        return _err(400, f"貼文只支援 ig / fb（收到 {platform}）")
+    n = max(1, min(int(limit or 10), _POST_LIMIT_MAX))
+    off = max(0, int(offset or 0))
+    self_id = platform_business_account_id  # fb=page_id / ig=ig_user_id，就是這欄
+
+    sql = (
+        "SELECT p.post_id, p.name, p.media_type, p.media_url, p.permalink, p.like_count,"
+        "       p.comments_count, p.created_at,"
+        "       (SELECT count(*) FROM igfb_comment c"
+        "         WHERE c.platform = p.platform AND c.post_id = p.post_id"
+        "           AND c.parent_id IS NULL AND COALESCE(c.replied, false) = false"
+        "           AND COALESCE(c.is_handled, false) = false"
+        "           AND (c.from_id IS NULL OR c.from_id = '' OR c.from_id <> %s)) AS new_comments,"
+        "       (SELECT count(*) FROM igfb_comment c"
+        "         WHERE c.platform = p.platform AND c.post_id = p.post_id"
+        "           AND c.parent_id IS NULL) AS top_comments"
+        "  FROM igfb_post p"
+        " WHERE p.platform = %s AND p.platform_business_account_id = %s"
+        " ORDER BY p.created_at DESC NULLS LAST"
+        " LIMIT %s OFFSET %s"
+    )
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (self_id, platform, platform_business_account_id, n, off))
+            rows = cur.fetchall()
+            cur.execute(
+                "SELECT count(*) FROM igfb_post"
+                " WHERE platform = %s AND platform_business_account_id = %s",
+                (platform, platform_business_account_id),
+            )
+            total = int(cur.fetchone()[0])
+    except Exception as e:  # noqa: BLE001 —— 查詢失敗回結構化錯誤，不 500
+        return _err(500, f"貼文查詢失敗: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+    items = [
+        {
+            "post_id": r[0],
+            "name": r[1] or "",
+            "media_type": r[2] or "",
+            "media_url": r[3] or "",
+            "permalink": r[4] or "",
+            "like_count": int(r[5] or 0),
+            "comments_count": int(r[9] or 0),   # 頂層實算，比 API 的可靠
+            "created_at": _iso(r[7]),
+            "new_comments": int(r[8] or 0),
+            "top_comments": int(r[9] or 0),
+        }
+        for r in rows
+    ]
+    return {"ok": True, "platform": platform, "items": items,
+            "has_more": (off + len(items)) < total}
+
+
+def _build_comment_tree(rows: list) -> list[dict]:
+    """把扁平留言列組成巢狀樹（與舊單體 `igfb_db.list_comments` 同一套規則）。
+
+    頂層：後發的在前；子留言：先發的在前；最多 3 級（第 3 級攤平所有後代）。
+    """
+    children: dict[str, list] = {}
+    for r in rows:
+        children.setdefault(r[1] or "", []).append(r)   # r[1] = parent_id
+
+    def ct(r):
+        return r[8] or r[9] or r[10]    # created_at / last_activity_at / inserted_at
+
+    def _json(r) -> dict:
+        return {
+            "comment_id": r[0], "parent_id": r[1], "from_id": r[2], "from_name": r[3],
+            "text": r[4] or "", "like_count": int(r[5] or 0),
+            "replied": bool(r[6]), "is_handled": bool(r[7]),
+            "time": _iso(r[8]),
+            "auto_reply_state": r[11] or "",
+            "auto_reply_tier": r[12] or "",
+            "auto_reply_detail": r[13] or "",
+        }
+
+    def descendants(node) -> list:
+        out = []
+        for k in children.get(node[0], []):
+            out.append(k)
+            out.extend(descendants(k))
+        return out
+
+    def build(node, level: int) -> dict:
+        item = _json(node)
+        if level == 1:
+            item["replies"] = [build(k, 2) for k in sorted(children.get(node[0], []), key=ct)]
+        elif level == 2:
+            item["replies"] = [_json(k) for k in sorted(descendants(node), key=ct)]
+        else:
+            item["replies"] = []
+        return item
+
+    ids = {r[0] for r in rows}
+    tops = [r for r in rows if not r[1] or r[1] not in ids]
+    return [build(t, 1) for t in sorted(tops, key=ct, reverse=True)]
+
+
+@router.get("/post")
+def post_detail(
+    platform: str = Query(...),
+    platform_business_account_id: str = Query(...),
+    post_id: str = Query(...),
+):
+    """單篇貼文詳情 + 留言樹（工作台貼文詳情頁用）。找不到回 404。"""
+    if platform not in ("ig", "fb"):
+        return _err(400, f"貼文只支援 ig / fb（收到 {platform}）")
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT post_id, name, media_type, media_url, permalink, like_count,"
+                "       comments_count, created_at"
+                "  FROM igfb_post"
+                " WHERE platform = %s AND platform_business_account_id = %s AND post_id = %s",
+                (platform, platform_business_account_id, post_id),
+            )
+            p = cur.fetchone()
+            if not p:
+                return _err(404, "找不到貼文")
+            cur.execute(
+                "SELECT comment_id, parent_id, from_id, from_name, text, like_count,"
+                "       replied, is_handled, created_at, last_activity_at, inserted_at,"
+                "       auto_reply_state, auto_reply_tier, auto_reply_detail"
+                "  FROM igfb_comment"
+                " WHERE platform = %s AND platform_business_account_id = %s AND post_id = %s",
+                (platform, platform_business_account_id, post_id),
+            )
+            rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        return _err(500, f"貼文詳情查詢失敗: {type(e).__name__}: {e}")
+    finally:
+        conn.close()
+
+    comments = _build_comment_tree(rows)
+    return {
+        "ok": True,
+        "post_id": p[0], "name": p[1] or "", "media_type": p[2] or "",
+        "media_url": p[3] or "", "permalink": p[4] or "",
+        "like_count": int(p[5] or 0), "comments_count": len(comments),
+        "created_at": _iso(p[7]), "platform": platform,
+        "comments": comments,
+    }
+
+
+class MerchantStatsIn(BaseModel):
+    accounts: list[dict] = []   # [{platform, platform_business_account_id}, ...]
+
+
+@router.post("/merchant-stats")
+def merchant_stats(payload: MerchantStatsIn):
+    """一次算出多個帳號的「未處理數 + 最近訊息時間」（工作台頂部商家列紅點/排序用）。
+
+    `pending` = 來訊且未 `is_handled` 的筆數（私訊＋留言都算）；
+    `last_ts` = 該帳號最後一則訊息的時間（排序：最近有訊息的商家排前面）。
+
+    ⚠️ 逐帳號容錯：任一帳號查詢失敗只讓它回 0/None，不影響其他。
+    """
+    out = []
+    conn = db.connect()
+    try:
+        for a in payload.accounts or []:
+            plat = (a.get("platform") or "").strip()
+            acc = (a.get("platform_business_account_id") or "").strip()
+            item = {"platform": plat, "platform_business_account_id": acc,
+                    "pending": 0, "last_ts": None}
+            if plat and acc:
+                try:
+                    with conn.cursor() as cur:
+                        if plat in ("wechat", "whatsapp"):
+                            cur.execute(
+                                "SELECT count(*) FILTER (WHERE direction = 'inbound'"
+                                "                          AND COALESCE(is_handled, false) = false),"
+                                "       max(message_time) FROM forward_log"
+                                " WHERE platform = %s AND platform_business_account_id = %s",
+                                (plat, acc))
+                        else:
+                            cur.execute(
+                                "SELECT (SELECT count(*) FROM igfb_dm"
+                                "         WHERE platform = %s AND platform_business_account_id = %s"
+                                "           AND direction = 'inbound'"
+                                "           AND COALESCE(is_handled, false) = false)"
+                                "     + (SELECT count(*) FROM igfb_comment"
+                                "         WHERE platform = %s AND platform_business_account_id = %s"
+                                "           AND COALESCE(is_handled, false) = false),"
+                                "       GREATEST("
+                                "         (SELECT max(created_at) FROM igfb_dm"
+                                "           WHERE platform = %s AND platform_business_account_id = %s),"
+                                "         (SELECT max(created_at) FROM igfb_comment"
+                                "           WHERE platform = %s AND platform_business_account_id = %s))",
+                                (plat, acc, plat, acc, plat, acc, plat, acc))
+                        row = cur.fetchone()
+                    item["pending"] = int(row[0] or 0)
+                    item["last_ts"] = _iso(row[1])
+                except Exception as e:  # noqa: BLE001 —— 單帳號失敗不拖垮整批
+                    log.warning("merchant-stats %s/%s 失敗: %s", plat, acc, e)
+            out.append(item)
+    finally:
+        conn.close()
+    return {"ok": True, "items": out}
 
 
 @router.get("/ping")

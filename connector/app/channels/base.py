@@ -50,6 +50,9 @@ def _module(platform: str):
     if platform == "whatsapp":
         from app.channels import whatsapp as m
         return m
+    if platform in ("ig", "fb"):
+        from app.channels import igfb as m
+        return m
     return None
 
 
@@ -60,6 +63,8 @@ async def send_text(platform: str, target_id: str, text: str,
     m = _module(platform)
     if m is None:
         return SendResult(ok=False, error=f"平台 {platform} 的發送尚未搬入 Connector（階段三）")
+    if platform in ("ig", "fb"):
+        return await m.send_text(platform, target_id, text, credential or {})
     return await m.send_text(target_id, text, credential or {})
 
 
@@ -71,4 +76,17 @@ async def send_asset(platform: str, target_id: str, media_path: str,
     m = _module(platform)
     if m is None:
         return SendResult(ok=False, error=f"平台 {platform} 的發送尚未搬入 Connector（階段三）")
+    if platform in ("ig", "fb"):
+        return await m.send_asset(target_id, media_path, caption, filename, credential or {})
     return await m.send_asset(target_id, media_path, caption, filename, credential or {})
+
+
+async def reply_comment(platform: str, comment_id: str, text: str,
+                        credential: dict | None = None) -> SendResult:
+    """回覆貼文留言（只有 ig / fb 有）。"""
+    if is_mock():
+        return SendResult(ok=True, platform_msg_id=f"mock-c-{abs(hash((platform, comment_id, text))) % 10**10}")
+    if platform not in ("ig", "fb"):
+        return SendResult(ok=False, error=f"平台 {platform} 不支援留言回覆")
+    from app.channels import igfb as m
+    return await m.reply_comment(platform, comment_id, text, credential or {})

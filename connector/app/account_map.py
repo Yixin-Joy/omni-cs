@@ -23,7 +23,7 @@ CREDENTIAL_KEYS = {
     "wechat": ("appid", "appsecret", "encoding_aes_key"),
     "whatsapp": ("access_token", "phone_number_id"),
     "fb": ("page_id", "page_access_token"),
-    "ig": ("ig_user_id", "ig_access_token"),
+    "ig": ("ig_user_id", "ig_access_token", "page_access_token"),
 }
 
 

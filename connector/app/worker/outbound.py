@@ -83,7 +83,13 @@ def _record_attempt(task_id: int, sub_seq: int, platform: str, target: str,
 # ---------------------------------------------------------------- 發送
 
 async def _send_one(platform: str, target: str, item: dict,
-                    credential: dict | None = None) -> base.SendResult:
+                    credential: dict | None = None, scope: str = "dm") -> base.SendResult:
+    # ★ 留言回覆（scope=comment）：target 是 comment_id，走 Graph API 的留言端點
+    if scope == "comment":
+        if item["kind"] != "text":
+            return base.SendResult(ok=False, error="留言回覆不支援附件")
+        return await base.reply_comment(platform, target, item["text"], credential)
+
     if item["kind"] == "text":
         return await base.send_text(platform, target, item["text"], credential)
 
@@ -116,10 +122,31 @@ def record_outbound_message(task: dict, items: list[dict]) -> None:
     mtype = "text" if not assets else ("image" if len(assets) == 1 else "mixed")
     payload = json.dumps({"text": text, "assets": assets}, ensure_ascii=False)
 
+    scope = (task.get("message_content") or {}).get("scope") or "dm"
+
     conn = db.connect()
     try:
         with conn.cursor() as cur:
-            if platform in ("wechat", "whatsapp"):
+            if scope == "comment" and platform in ("ig", "fb"):
+                # ★ 留言回覆：寫進 igfb_comment（我方回覆），讓留言串即時顯示
+                cur.execute(
+                    "INSERT INTO igfb_comment"
+                    " (platform, post_id, comment_id, parent_id, from_id, from_name, text,"
+                    "  like_count, replied, is_handled, created_at, last_activity_at,"
+                    "  platform_business_account_id, business_id, bp_account_id)"
+                    " VALUES (%s,"
+                    "   (SELECT post_id FROM igfb_comment WHERE platform = %s AND comment_id = %s),"
+                    "   %s, %s, %s, '客服', %s, 0, false, true, now(), now(), %s, %s, %s)"
+                    " ON CONFLICT (platform, comment_id) DO UPDATE SET text = EXCLUDED.text",
+                    (platform, platform, target, mid, target, native, text, native, bid, bp),
+                )
+                # 被回覆的那則標為已回
+                cur.execute(
+                    "UPDATE igfb_comment SET replied = true"
+                    " WHERE platform = %s AND comment_id = %s",
+                    (platform, target),
+                )
+            elif platform in ("wechat", "whatsapp"):
                 cur.execute(
                     "INSERT INTO forward_log"
                     " (platform, message_id, sender_id, conversation_id, message_type,"
@@ -169,10 +196,16 @@ async def process_task(task: dict) -> str:
     target = task.get("end_user_sender_id") or ""
     native_id = task.get("platform_business_account_id") or ""
 
+    mc = task.get("message_content") if isinstance(task.get("message_content"), dict) else {}
+    scope = (mc or {}).get("scope") or "dm"   # dm（預設）| comment
+
     # ★ 多租戶：發送憑證從帳號映射快取讀（真相在 CRM），不再讀 config/.env
     cred = account_map.credential_of(platform, native_id) if native_id else {}
 
     items = build_sub_items(task.get("message_content"))
+    if scope == "comment":
+        # 留言回覆只發文字；附件子項丟棄，避免整任務失敗
+        items = [i for i in items if i["kind"] == "text"]
     if not items:
         await _report(task_id, "failed", "任務沒有可發送的內容", False)
         return "failed"
@@ -183,7 +216,7 @@ async def process_task(task: dict) -> str:
     for item in items:
         if item["sub_seq"] in done:
             continue                      # ★ 冪等：已成功的不重發
-        res = await _send_one(platform, target, item, cred)
+        res = await _send_one(platform, target, item, cred, scope)
         _record_attempt(task_id, item["sub_seq"], platform, target, res)
         if not res.ok:
             failure = res
