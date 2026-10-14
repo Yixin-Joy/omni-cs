@@ -50,7 +50,15 @@ DEEPSEEK_API_KEY = _get("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = _get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL = _get("DEEPSEEK_MODEL", "deepseek-flash")
 DEEPSEEK_TIMEOUT = float(_get("DEEPSEEK_TIMEOUT", "30") or 30)
-DEEPSEEK_AUX_TIMEOUT = float(_get("DEEPSEEK_AUX_TIMEOUT", "5") or 5)
+# 輔助呼叫（改寫問句）的逾時（秒）：比主呼叫短，但仍要**放得下模型實際的思考時間**。
+# ⚠️ 原本是 5 秒（2026-10-08 定案），當時的前提是「快模型、改寫一兩秒就回來」。
+#    但現在的 `deepseek-flash` 是 **reasoning 模型**（effort 預設 `high`），
+#    實測一次改寫要 **6~10 秒（中位 9.1 秒）** → 5 秒會 **每次都逾時**，
+#    改寫等於從未生效，RAG 只剩單一原問句檢索，分數明顯掉一截
+#    （實測「报错e003」0.5162 → 0.3925、「你们这个产品是做什么的」0.4590 → 0.2899），
+#    邊緣問句還會因此掉到門檻以下直接降級人工。25 秒留約 2.5 倍餘裕。
+#    ★ 仍然**不重試**（retries=0）—— 理由不變：改寫失敗沿用原問句即可。
+DEEPSEEK_AUX_TIMEOUT = float(_get("DEEPSEEK_AUX_TIMEOUT", "25") or 25)
 DEEPSEEK_MAX_CONCURRENCY = int(_get("DEEPSEEK_MAX_CONCURRENCY", "2") or 2)
 DEEPSEEK_VISION_TIMEOUT = float(_get("DEEPSEEK_VISION_TIMEOUT", "90") or 90)
 
