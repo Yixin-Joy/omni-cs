@@ -195,6 +195,65 @@ def fetch_history(platform: str, end_user_sender_id: str, *,
         return None
 
 
+def fetch_posts(platform: str, platform_account_id=0, *, limit: int = 10,
+                offset: int = 0) -> dict | None:
+    """貼文列表（走 Connector `posts`，設計案 §4.2）——回 `{items, has_more}`；連不上回 None。"""
+    try:
+        native = _native_account_id(platform, platform_account_id)
+        if not native:
+            return {"items": [], "has_more": False}
+        params = {"platform": platform, "platform_business_account_id": native,
+                  "limit": int(limit), "offset": int(offset)}
+        with _client() as c:
+            r = c.get("/internal/api/posts", params=params)
+            if r.status_code != 200:
+                log.warning("取貼文列表失敗 status=%s", r.status_code)
+                return None
+            d = r.json() or {}
+            return {"items": d.get("items") or [], "has_more": bool(d.get("has_more"))}
+    except Exception as e:  # noqa: BLE001
+        log.warning("取貼文列表異常: %s", e)
+        return None
+
+
+def fetch_post(platform: str, platform_account_id, post_id: str) -> dict | None:
+    """單篇貼文詳情 + 留言樹（走 Connector `post`）。找不到 / 連不上回 None。"""
+    try:
+        native = _native_account_id(platform, platform_account_id)
+        if not native:
+            return None
+        params = {"platform": platform, "platform_business_account_id": native,
+                  "post_id": post_id}
+        with _client() as c:
+            r = c.get("/internal/api/post", params=params)
+            if r.status_code != 200:
+                log.warning("取貼文詳情失敗 status=%s", r.status_code)
+                return None
+            return r.json()
+    except Exception as e:  # noqa: BLE001
+        log.warning("取貼文詳情異常: %s", e)
+        return None
+
+
+def fetch_merchant_stats(accounts: list[dict]) -> list[dict] | None:
+    """一次算多帳號的「未處理數 + 最近訊息時間」（工作台頂部商家列）。連不上回 None。
+
+    `accounts` = `[{platform, platform_business_account_id}, ...]`。
+    """
+    if not accounts:
+        return []
+    try:
+        with _client() as c:
+            r = c.post("/internal/api/merchant-stats", json={"accounts": accounts})
+            if r.status_code != 200:
+                log.warning("取商家統計失敗 status=%s", r.status_code)
+                return None
+            return (r.json() or {}).get("items") or []
+    except Exception as e:  # noqa: BLE001
+        log.warning("取商家統計異常: %s", e)
+        return None
+
+
 def mark_message(platform: str, *, message_ids=None, message_id: str = "",
                  comment_id: str = "", conversation_id: str = "",
                  end_user_sender_id: str = "", state: str = "",

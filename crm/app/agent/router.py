@@ -167,8 +167,160 @@ def reply(payload: ReplyIn, sess: dict = Depends(deps.require_csrf)):
     res = repo.create_manual_reply(
         sess, business_id=int(payload.business_id), platform=plat,
         bp_account_id=int(payload.bp_account_id), sender_id=sender,
-        text=text, assets=assets, extend_history=(payload.scope == "dm"))
+        text=text, assets=assets, extend_history=(payload.scope == "dm"),
+        scope=("comment" if payload.scope == "comment" else "dm"))
     return {"ok": True, **res}
+
+
+# ---------------------------------------------------------------- 貼文 / 留言
+
+@router.get("/posts")
+def posts(business_id: int = Query(...), platform: str = Query(...),
+          bp_account_id: int = Query(default=0), limit: int = Query(default=10),
+          offset: int = Query(default=0), sess: dict = Depends(deps.require_agent)):
+    """貼文列表（以貼文為單位；走 Connector）。`bp_account_id=0` = 該平台全部帳號合併。"""
+    bad = _guard(sess, business_id)
+    if bad:
+        return bad
+    plat = _clean_platform(platform)
+    if plat not in ("ig", "fb"):
+        return _err(400, "貼文只有 ig / fb")
+    accounts_ = repo.list_accounts(int(business_id), plat)
+    if bp_account_id:
+        accounts_ = [a for a in accounts_ if int(a["id"]) == int(bp_account_id)]
+    if not accounts_:
+        return {"ok": True, "items": [], "has_more": False,
+                "reason": "該商家在此平台沒有可用帳號"}
+
+    merged: list[dict] = []
+    has_more = False
+    unreachable = False
+    for a in accounts_:
+        got = connector_client.fetch_posts(plat, a["id"], limit=int(limit), offset=int(offset))
+        if got is None:
+            unreachable = True
+            continue
+        for it in got.get("items", []):
+            it["bp_account_id"] = a["id"]
+            it["account_name"] = a.get("display_name") or a.get("platform_business_account_id")
+        merged.extend(got.get("items", []))
+        has_more = has_more or bool(got.get("has_more"))
+    merged.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    if unreachable and not merged:
+        return _err(502, "連不上 Connector，暫時取不到貼文")
+    return {"ok": True, "items": merged, "has_more": has_more}
+
+
+@router.get("/post")
+def post(business_id: int = Query(...), platform: str = Query(...),
+         bp_account_id: int = Query(...), post_id: str = Query(...),
+         sess: dict = Depends(deps.require_agent)):
+    """單篇貼文詳情 + 留言樹（走 Connector）。"""
+    bad = _guard(sess, business_id)
+    if bad:
+        return bad
+    plat = _clean_platform(platform)
+    if not plat:
+        return _err(400, f"不支援的平台: {platform}")
+    acc_ids = {int(a["id"]) for a in repo.list_accounts(int(business_id), plat)}
+    if int(bp_account_id) not in acc_ids:
+        return _err(400, "平台帳號不屬於該商家")
+    data = connector_client.fetch_post(plat, int(bp_account_id), post_id)
+    if not data:
+        return _err(502, "連不上 Connector 或找不到貼文")
+    data.pop("ok", None)
+    data["bp_account_id"] = int(bp_account_id)
+    return {"ok": True, **data}
+
+
+@router.post("/comment/reply")
+def comment_reply(payload: "CommentReplyIn", sess: dict = Depends(deps.require_csrf)):
+    """回覆貼文留言 → 建任務（scope=comment）→ Connector 認領送出。"""
+    if not rbac.can_view_conversation(sess):
+        return _err(403, "需要客服坐席權限")
+    bad = _guard(sess, payload.business_id)
+    if bad:
+        return bad
+    plat = _clean_platform(payload.platform)
+    if plat not in ("ig", "fb"):
+        return _err(400, "留言回覆只有 ig / fb")
+    cid = (payload.comment_id or "").strip()
+    if not cid:
+        return _err(400, "缺少 comment_id")
+    text = (payload.text or "").strip()
+    if not text:
+        return _err(400, "回覆內容不能為空")
+    acc_ids = {int(a["id"]) for a in repo.list_accounts(int(payload.business_id), plat)}
+    if int(payload.bp_account_id) not in acc_ids:
+        return _err(400, "平台帳號不屬於該商家")
+    res = repo.create_manual_reply(
+        sess, business_id=int(payload.business_id), platform=plat,
+        bp_account_id=int(payload.bp_account_id), sender_id=cid,
+        text=text, assets=[], extend_history=False, scope="comment")
+    return {"ok": True, **res}
+
+
+@router.post("/comment/handle")
+def comment_handle(payload: "CommentHandleIn", sess: dict = Depends(deps.require_csrf)):
+    """把某則留言標為已處理（不回覆，直接忽略），消除「N 新」標記。"""
+    if not rbac.can_view_conversation(sess):
+        return _err(403, "需要客服坐席權限")
+    bad = _guard(sess, payload.business_id)
+    if bad:
+        return bad
+    plat = _clean_platform(payload.platform)
+    if plat not in ("ig", "fb"):
+        return _err(400, "留言只有 ig / fb")
+    cid = (payload.comment_id or "").strip()
+    if not cid:
+        return _err(400, "缺少 comment_id")
+    n = connector_client.mark_message(plat, comment_id=cid, handled=True)
+    audit.log_standalone(sess, "comment_handle", business_id=int(payload.business_id),
+                         platform=plat, bp_account_id=int(payload.bp_account_id),
+                         payload={"comment_id": cid, "updated": n})
+    return {"ok": True, "updated": n}
+
+
+@router.get("/merchant-stats")
+def merchant_stats(sess: dict = Depends(deps.require_agent)):
+    """工作台頂部商家列用：每個商家「未處理數 + 最近訊息時間」。
+
+    跨平台帳號彙總（走 Connector 一次算完）。回 `{items: {business_id: {pending, last_ts}}}`。
+    """
+    items = repo.list_businesses()
+    if not rbac.is_super_agent(sess):
+        allowed = set(rbac.allowed_business_ids(sess))
+        items = [b for b in items if b["id"] in allowed]
+
+    all_accounts: list[dict] = []
+    biz_acc: dict[int, list[dict]] = {}
+    for b in items:
+        accs = repo.list_accounts(b["id"], "")
+        biz_acc[b["id"]] = accs
+        for a in accs:
+            all_accounts.append({"platform": a["platform"],
+                                 "platform_business_account_id": a["platform_business_account_id"],
+                                 "_biz": b["id"]})
+    stats = connector_client.fetch_merchant_stats(
+        [{"platform": a["platform"],
+          "platform_business_account_id": a["platform_business_account_id"]}
+         for a in all_accounts]) or []
+    # 把回來的統計按 (platform, native) 對回商家
+    by_key = {(s["platform"], s["platform_business_account_id"]): s for s in stats}
+    out: dict[str, dict] = {}
+    for b in items:
+        pending = 0
+        last_ts = None
+        for a in biz_acc[b["id"]]:
+            s = by_key.get((a["platform"], a["platform_business_account_id"]))
+            if not s:
+                continue
+            pending += int(s.get("pending") or 0)
+            ts = s.get("last_ts")
+            if ts and (last_ts is None or ts > last_ts):
+                last_ts = ts
+        out[str(b["id"])] = {"pending": pending, "last_ts": last_ts}
+    return {"ok": True, "items": out}
 
 
 class ReadIn(BaseModel):
@@ -177,6 +329,21 @@ class ReadIn(BaseModel):
     bp_account_id: int
     key: str
     scope: str = "dm"
+
+
+class CommentReplyIn(BaseModel):
+    business_id: int
+    platform: str
+    bp_account_id: int
+    comment_id: str
+    text: str = ""
+
+
+class CommentHandleIn(BaseModel):
+    business_id: int
+    platform: str
+    bp_account_id: int
+    comment_id: str
 
 
 @router.post("/read")

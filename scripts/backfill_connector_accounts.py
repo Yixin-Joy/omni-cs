@@ -39,7 +39,7 @@ sys.path.insert(0, str(ROOT / ".venv" / "Lib" / "site-packages"))
 import psycopg2  # noqa: E402
 from psycopg2 import sql  # noqa: E402
 
-TABLES = ("forward_log", "igfb_dm", "igfb_comment")
+TABLES = ("forward_log", "igfb_dm", "igfb_comment", "igfb_post")
 
 
 # ---------------------------------------------------------------- 環境

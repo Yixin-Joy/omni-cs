@@ -147,7 +147,8 @@ CREDENTIAL_FIELDS = {
     ],
     "ig": [
         ("ig_user_id", "IG 專業帳號 ID", False),
-        ("ig_access_token", "IG Access Token（IGAA…）", True),
+        ("ig_access_token", "IG Access Token（IGAA…，私訊用）", True),
+        ("page_access_token", "粉專 Page Token（留言回覆用）", True),
     ],
 }
 

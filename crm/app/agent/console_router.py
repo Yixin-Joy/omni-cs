@@ -371,6 +371,216 @@ def collections(business_id: int = Query(...), sess: dict = Depends(deps.require
     return {"ok": True, "items": kb_db.list_collections(business_id=int(business_id))}
 
 
+# ================================================================ FAQ 編輯（塊C）
+
+def _refresh_engine() -> None:
+    """改完資料要讓引擎快取失效，否則要等 TTL 才生效。"""
+    try:
+        reply_engine.invalidate_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+class FaqIn(BaseModel):
+    business_id: int
+    question: str = ""
+    answer: str = ""
+    keywords: str = ""
+    enabled: bool = True
+
+
+@router.post("/faq")
+def faq_create(payload: FaqIn, sess: dict = Depends(deps.require_csrf)):
+    """新增 FAQ（該商家）。"""
+    bad = _biz_guard(sess, payload.business_id) or _kb_edit_guard(sess)
+    if bad:
+        return bad
+    q = (payload.question or "").strip()
+    a = (payload.answer or "").strip()
+    if not q or not a:
+        return _err(400, "問題與答案都不可為空")
+    row = autoreply_db.create_faq(int(payload.business_id), q, a,
+                                  (payload.keywords or "").strip(), bool(payload.enabled))
+    _refresh_engine()
+    audit.log_standalone(sess, "faq_create", business_id=int(payload.business_id),
+                         payload={"faq_id": row.get("id") if isinstance(row, dict) else None})
+    return {"ok": True, "faq": row}
+
+
+class FaqUpdateIn(BaseModel):
+    business_id: int
+    id: int
+    question: str | None = None
+    answer: str | None = None
+    keywords: str | None = None
+    enabled: bool | None = None
+
+
+@router.post("/faq-update")
+def faq_update(payload: FaqUpdateIn, sess: dict = Depends(deps.require_csrf)):
+    bad = _biz_guard(sess, payload.business_id) or _kb_edit_guard(sess)
+    if bad:
+        return bad
+    fields = {k: getattr(payload, k) for k in ("question", "answer", "keywords", "enabled")
+              if getattr(payload, k) is not None}
+    if not fields:
+        return _err(400, "沒有可更新欄位")
+    if not autoreply_db.update_faq(int(payload.id), fields):
+        return _err(404, "找不到該 FAQ")
+    _refresh_engine()
+    return {"ok": True}
+
+
+class FaqDeleteIn(BaseModel):
+    business_id: int
+    ids: list[int] = []
+
+
+@router.post("/faq-delete")
+def faq_delete(payload: FaqDeleteIn, sess: dict = Depends(deps.require_csrf)):
+    bad = _biz_guard(sess, payload.business_id) or _kb_edit_guard(sess)
+    if bad:
+        return bad
+    ids = [int(i) for i in (payload.ids or [])]
+    if not ids:
+        return _err(400, "缺少 ids")
+    # 只刪屬於該商家的（避免跨商家刪除）
+    owned = {int(f["id"]) for f in autoreply_db.list_faqs(int(payload.business_id))}
+    n = 0
+    for i in ids:
+        if i in owned and autoreply_db.delete_faq(i):
+            n += 1
+    _refresh_engine()
+    return {"ok": True, "deleted": n}
+
+
+# ================================================================ 業務表格編輯（塊C）
+
+@router.get("/table")
+def table_detail(business_id: int = Query(...), table_id: int = Query(...),
+                 sess: dict = Depends(deps.require_agent)):
+    """單張業務表格 + 其資料列。"""
+    bad = _biz_guard(sess, business_id)
+    if bad:
+        return bad
+    t = next((x for x in autoreply_db.list_tables(int(business_id)) if int(x["id"]) == int(table_id)), None)
+    if not t:
+        return _err(404, "找不到該表")
+    t["rows"] = autoreply_db.list_rows(int(table_id))
+    return {"ok": True, "table": t}
+
+
+class TableIn(BaseModel):
+    business_id: int
+    name: str = ""
+    description: str = ""
+    columns: list[str] = []
+    enabled: bool = True
+
+
+@router.post("/table-create")
+def table_create(payload: TableIn, sess: dict = Depends(deps.require_csrf)):
+    bad = _biz_guard(sess, payload.business_id) or _kb_edit_guard(sess)
+    if bad:
+        return bad
+    name = (payload.name or "").strip()
+    if not name:
+        return _err(400, "請填表名")
+    cols = [str(c).strip() for c in (payload.columns or []) if str(c).strip()]
+    t = autoreply_db.create_table(int(payload.business_id), name,
+                                  (payload.description or "").strip(), cols, bool(payload.enabled))
+    _refresh_engine()
+    return {"ok": True, "table": t}
+
+
+class TableUpdateIn(BaseModel):
+    business_id: int
+    id: int
+    name: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    columns: list[str] | None = None
+
+
+@router.post("/table-update")
+def table_update(payload: TableUpdateIn, sess: dict = Depends(deps.require_csrf)):
+    bad = _biz_guard(sess, payload.business_id) or _kb_edit_guard(sess)
+    if bad:
+        return bad
+    owned = {int(x["id"]) for x in autoreply_db.list_tables(int(payload.business_id))}
+    if int(payload.id) not in owned:
+        return _err(404, "找不到該表")
+    fields = {k: getattr(payload, k) for k in ("name", "description", "enabled", "columns")
+              if getattr(payload, k) is not None}
+    if "columns" in fields:
+        fields["columns"] = [str(c).strip() for c in (fields["columns"] or []) if str(c).strip()]
+    if not fields or not autoreply_db.update_table(int(payload.id), fields):
+        return _err(404, "沒有可更新欄位或找不到該表")
+    _refresh_engine()
+    return {"ok": True}
+
+
+class TableDeleteIn(BaseModel):
+    business_id: int
+    id: int
+
+
+@router.post("/table-delete")
+def table_delete(payload: TableDeleteIn, sess: dict = Depends(deps.require_csrf)):
+    bad = _biz_guard(sess, payload.business_id) or _kb_edit_guard(sess)
+    if bad:
+        return bad
+    owned = {int(x["id"]) for x in autoreply_db.list_tables(int(payload.business_id))}
+    if int(payload.id) not in owned:
+        return _err(404, "找不到該表")
+    autoreply_db.delete_table(int(payload.id))
+    _refresh_engine()
+    return {"ok": True}
+
+
+class TableRowIn(BaseModel):
+    business_id: int
+    table_id: int
+    action: str = "create"          # create | update | delete
+    id: int | None = None
+    data: dict | None = None
+    enabled: bool | None = None
+
+
+@router.post("/table-row")
+def table_row(payload: TableRowIn, sess: dict = Depends(deps.require_csrf)):
+    bad = _biz_guard(sess, payload.business_id) or _kb_edit_guard(sess)
+    if bad:
+        return bad
+    owned = {int(x["id"]) for x in autoreply_db.list_tables(int(payload.business_id))}
+    if int(payload.table_id) not in owned:
+        return _err(404, "找不到該表")
+    action = (payload.action or "create").lower()
+    if action == "create":
+        data = {k: str(v) for k, v in (payload.data or {}).items()}
+        if not any(str(v).strip() for v in data.values()):
+            return _err(400, "資料列不可全空")
+        row = autoreply_db.create_row(int(payload.table_id), data)
+        _refresh_engine()
+        return {"ok": True, "row": row}
+    if action == "update":
+        if not payload.id:
+            return _err(400, "缺少 id")
+        data = None if payload.data is None else {k: str(v) for k, v in payload.data.items()}
+        if not autoreply_db.update_row(int(payload.id), data, payload.enabled):
+            return _err(404, "找不到該列")
+        _refresh_engine()
+        return {"ok": True}
+    if action == "delete":
+        if not payload.id:
+            return _err(400, "缺少 id")
+        if not autoreply_db.delete_row(int(payload.id)):
+            return _err(404, "找不到該列")
+        _refresh_engine()
+        return {"ok": True}
+    return _err(400, "action 必須是 create / update / delete")
+
+
 # ================================================================ 紀錄
 
 @router.get("/logs")

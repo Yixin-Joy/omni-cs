@@ -58,6 +58,8 @@ PLATFORM_MAP = {
         "cred": {
             "ig_user_id": "META_IG_USER_ID",
             "ig_access_token": "META_IG_ACCESS_TOKEN",
+            # 留言回覆走 graph.facebook.com，用粉專 token（與舊單體 ig_reply_comment 一致）
+            "page_access_token": "META_PAGE_ACCESS_TOKEN",
         },
     },
 }

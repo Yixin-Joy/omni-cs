@@ -81,10 +81,13 @@ def ai_switch_row(business_id: int, platform: str, scope: str) -> bool:
 
 def create_manual_reply(sess: dict, *, business_id: int, platform: str, bp_account_id: int,
                         sender_id: str, text: str = "", assets: list[dict] | None = None,
-                        extend_history: bool = False) -> dict:
+                        extend_history: bool = False, scope: str = "dm") -> dict:
     """建一筆人工回覆任務（設計案 §10.2 步驟 2）——**建任務與審計同一事務**。
 
     Connector 之後靠 claim 認領送出。回傳 `{task_id}`。
+
+    `scope='dm'`（預設）＝私訊回覆；`scope='comment'`＝貼文留言回覆
+    （此時 `sender_id` 是 `comment_id`，Connector 走 Graph API 留言端點）。
     """
     cfg, _ = internal_repo.ops_config()
     mr = int(cfg.get("outbound.max_retry", 3))
@@ -93,6 +96,7 @@ def create_manual_reply(sess: dict, *, business_id: int, platform: str, bp_accou
         "text": (text or "").strip(),
         "assets": [a for a in (assets or []) if isinstance(a, dict) and a.get("media_key")],
         "source": "manual",
+        "scope": scope,
     }
     with tx() as cur:
         cur.execute(
