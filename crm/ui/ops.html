@@ -837,7 +837,7 @@
       $('meRole').textContent = (state.me.roles || []).map(function (r) {
         return ROLE_LABEL[r] || r; }).join(' · ');
       if (window.TopUser) {
-        window.TopUser.init({ me: state.me, onError: function (m) { toast(m, true); } });
+        window.TopUser.init({ me: state.me, csrf: state.csrf, onError: function (m) { toast(m, true); } });
       }
       return true;
     });

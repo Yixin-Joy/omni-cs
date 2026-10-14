@@ -120,6 +120,7 @@
     if (window.TopUser) {
       window.TopUser.init({
         me: s,
+        csrf: d.csrf_token || '',
         onError: function (m) { msg.textContent = m; msg.classList.add('show'); }
       });
     }
