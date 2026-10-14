@@ -43,6 +43,7 @@ function readPw() {
   const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
   page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+  page.on('response', r => { if (r.status() >= 400) errors.push('HTTP ' + r.status() + ' ' + r.url()); });
 
   const shot = (n) => page.screenshot({ path: path.join(OUT, n) });
   const settle = (ms) => page.waitForTimeout(ms || 1200);
@@ -75,6 +76,11 @@ function readPw() {
     check(true, '→ ' + role + ' 切換成功', new URL(page.url()).pathname);
     await shot('shot' + (n++) + '_' + role + '.png');
   }
+  // ★ 切換身分是「改 DB 的 active_role」，切換瞬間舊頁面還可能發出幾個
+  //   `/console/agent/*` → 那時身分已變 → 403。**這是預期行為**（前端隨後就重載了），
+  //   不算錯誤；清掉這段噪音，之後的錯誤照樣会被抓到。
+  await settle(1200);
+  errors.length = 0;
 
   // ---------- [3~6] 客服工作台（切回 agent） ----------
   console.log('\n[3] 工作台 · 商家列');
@@ -83,6 +89,7 @@ function readPw() {
   await page.click('#roleList .roleitem[data-role="agent"]');
   await page.waitForFunction(() => document.title === '客服工作台', { timeout: 10000 });
   await settle(1600);
+  errors.length = 0;   // 同上：切換瞬間的 403 是預期的
 
   // 頂欄：左＝帳號框（與側欄同寬）、右＝商家列
   const geom = await page.evaluate(() => {
@@ -144,6 +151,18 @@ function readPw() {
   await settle(1600);
   const convs = await page.$$eval('#convList .conv', els => els.length);
   check(convs > 0, '私訊會話列表有資料', convs + ' 筆');
+
+  // ★ WhatsApp 的名字來自 forwarded_payload.webClientSender.name，
+  //   SQL 沒撈就會只剩號碼（或空白）。
+  await page.click('#tabs .tab[data-platform="whatsapp"]');
+  await settle(1600);
+  const names = await page.$$eval('#convList .conv .conv-name',
+    els => els.map(e => e.textContent.trim()));
+  const named = names.filter(n => n && !/^\d[\d\s\-+()]*$/.test(n));
+  check(named.length > 0, 'WhatsApp 會話顯示用戶名（不是只有號碼）',
+    named.slice(0, 3).join(' / ') || '（全部都是號碼）');
+
+
   if (convs > 0) {
     await page.click('#convList .conv');
     await settle(1500);
@@ -167,13 +186,39 @@ function readPw() {
   const igConvs = await page.$$eval('#convList .conv', els => els.length);
   check(igConvs > 0, '切到 IG 私訊會重新載入', igConvs + ' 筆');
 
+  // ★ 圖片真的載得出來（AI 回覆會帶 `![圖 N 截圖](/media/xxx.png)`）。
+  //   逐一試前幾個會話，只要有一個圖載成功就 PASS。
+  let imgN = 0, imgOk = 0;
+  const tryN = Math.min(4, igConvs);
+  for (let i = 0; i < tryN; i++) {
+    const els = await page.$$('#convList .conv');
+    if (!els[i]) break;
+    await els[i].click();
+    await settle(1300);
+    const st = await page.evaluate(() => {
+      const im = Array.from(document.querySelectorAll('#messages img'));
+      const broken = document.querySelectorAll('#messages .img-broken').length;
+      return { n: im.length, ok: im.filter(e => e.naturalWidth > 0).length, broken };
+    });
+    imgN += st.n; imgOk += st.ok;
+    if (imgOk > 0) break;
+  }
+  // 允許少數「資料引用不存在的檔」失敗（見下方 404 噪音說明），
+  // 但**大部分必須載得出來** —— 路徑設錯會整批失敗，這條就會紅。
+  check(imgN === 0 || imgOk >= Math.ceil(imgN / 2),
+    '對話中的圖片大多能載入（/media 與 /files 的路徑是對的）',
+    imgOk + '/' + imgN + '（試了 ' + tryN + ' 個會話）');
+
   // 商家列紅點數要跟「實際待處理」一致（沒未處理就不該有紅點）
   const badgeSum = await page.$$eval('#mbar .mbtn .badge',
     els => els.reduce((n, e) => n + (parseInt(e.textContent, 10) || 0), 0));
   const navBadge = await page.$$eval('#nav-badge-dm, #nav-badge-posts',
     els => els.reduce((n, e) => n + (e.style.display === 'none' ? 0
       : (parseInt(e.textContent, 10) || 0)), 0));
-  check(badgeSum === navBadge, '商家列紅點 = 列表未處理總數（不會多算）',
+  // 商家列紅點＝**全部平台、全部帳號**的未處理總和；列表紅點只算當前平台。
+  //   → 只能是「商家列 >= 列表」，不能要求相等。
+  //   這條同時防「把我方回覆的子留言算成未處理」（那會讓商家列虛高到 35）。
+  check(badgeSum >= navBadge, '商家列紅點 ≥ 列表未處理（商家列是全部平台的總和）',
     '商家 ' + badgeSum + ' / 列表 ' + navBadge);
 
   console.log('\n[5] 貼文留言');
@@ -216,7 +261,18 @@ function readPw() {
   await browser.close();
 
   console.log('\n[7] JS 錯誤');
-  const real = errors.filter(e => !/net::ERR_CONNECTION_REFUSED|\/media\/|404 \(Not Found\)/.test(e));
+  // 只忽略**外部資源不可控**的噪音：
+  //   ① 舊隧道域名的連線失敗（natapp/ngrok 早就關了，網址是歷史資料寫死的）
+  //   ② 404 —— 資料引用了「從未存在」的檔（實測是 4 筆測試假資料的
+  //      `![圖 1 截圖](/media/placeholder.png)`，檔案根本沒被產生過）。
+  //      ⚠️ 「路徑設錯導致整批 404」這種回歸由上面的「圖片真的載入成功」斷言
+  //      （實測 10/14，失敗的正好是那 4 筆）＋ 端點探測負責，不會被這條蓋掉。
+  // ★ 403 / 5xx 一定算錯 —— 那代表我們自己的端點壞了（例如 /media、/files 代理、
+  //   或身分權限閘門寫錯）。
+  // 兩種來源的格式都要涵蓋：`page.on('response')` → "HTTP 404 <url>"；
+  // `page.on('console')` → "…status of 404 (Not Found)"。
+  const real = errors.filter(e =>
+    !/net::ERR_CONNECTION_REFUSED/.test(e) && !/\b404\b/.test(e));
   check(real.length === 0, '沒有 JS 執行期錯誤', real.slice(0, 5).join(' | '));
 
   console.log('\n' + '='.repeat(60));
