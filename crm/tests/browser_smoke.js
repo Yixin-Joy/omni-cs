@@ -180,6 +180,59 @@ function readPw() {
       '交替段數=' + runs + ' / 共 ' + dirs.length + ' 則');
     await shot('shot6_dm_thread.png');
   }
+  // ★ 右鍵選單：**只**出現在「還沒被處理的單條客戶訊息氣泡」上，
+  //   會話項（用戶聊天框）上**不能**有。只驗出現/不出現，不點菜單項（不改資料）。
+  const ctx = await page.evaluate(() => {
+    const fire = (el) => {
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true,
+        clientX: Math.round(r.left + 5), clientY: Math.round(r.top + 5),
+      }));
+    };
+    const menu = document.getElementById('ctxMenu');
+    const shown = () => menu && getComputedStyle(menu).display !== 'none';
+    const items = () => Array.from(menu.querySelectorAll('.ctx-item'))
+      .map(e => e.textContent.trim());
+
+    const bubble = document.querySelector('#messages .msg-row[oncontextmenu]');
+    let bubbleShown = false, bubbleItems = [];
+    if (bubble) {
+      fire(bubble);
+      bubbleShown = shown();
+      bubbleItems = items();
+      document.dispatchEvent(new MouseEvent('click', { bubbles: true }));  // 關閉
+    }
+    const anyBubble = document.querySelectorAll('#messages .msg-row').length;
+    const armed = document.querySelectorAll('#messages .msg-row[oncontextmenu]').length;
+
+    const conv = document.querySelector('#convList .conv');
+    let convShown = false;
+    if (conv) {
+      fire(conv);
+      convShown = shown();
+      document.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    }
+    return { bubbleShown, bubbleItems, convShown, anyBubble, armed,
+             convHasHandler: !!(conv && conv.getAttribute('oncontextmenu')) };
+  });
+  if (ctx.anyBubble === 0) {
+    check(true, '右鍵選單：目前會話沒有訊息可測（跳過）');
+  } else {
+    check(!ctx.convHasHandler && !ctx.convShown,
+      '★ 會話（用戶聊天框）上沒有右鍵選單');
+    if (ctx.armed === 0) {
+      check(true, '右鍵選單：目前沒有「未處理」的客戶氣泡（跳過）',
+        ctx.anyBubble + ' 則訊息，' + ctx.armed + ' 則可右鍵');
+    } else {
+      check(ctx.bubbleShown, '★ 右鍵「未處理的客戶訊息氣泡」→ 選單出現');
+      check(ctx.bubbleItems.length === 2, '選單兩項', ctx.bubbleItems.join(' / '));
+      check(ctx.bubbleItems.some(t => t.indexOf('自動回復引擎') >= 0),
+        '選單有「由自動回復引擎…」');
+      check(ctx.bubbleItems.some(t => t.indexOf('標記這一則已處理') >= 0),
+        '選單有「標記這一則已處理」');
+    }
+  }
   // 切平台必須重新載入
   await page.click('#tabs .tab[data-platform="ig"]');
   await settle(1800);

@@ -168,6 +168,36 @@ def check_md_images(html: str, js: str) -> None:
           f"可疑 {len(leak)} 處" if leak else "")
 
 
+def check_context_menu(html: str, js: str) -> None:
+    """工作台右鍵選單閘門（迴歸）。
+
+    ★ 需求：右鍵**只能**作用在「還沒被處理的單條訊息氣泡」或「留言內容框」上，
+      **不能**掛在會話（用戶聊天框）上。兩處各要有兩個動作：
+      由自動回復引擎產生回覆 + 標記已處理。
+    """
+    if "ctxMenu" not in html:
+        return
+    check("function showMsgMenu(" in js, "有私訊氣泡的右鍵選單 showMsgMenu()")
+    check("function showCommentMenu(" in js, "有留言內容框的右鍵選單 showCommentMenu()")
+    check("function hideCtxMenu(" in js, "有 hideCtxMenu()")
+    # 掛載點
+    check('oncontextmenu="showMsgMenu(event,' in js, "右鍵掛在單條私訊氣泡上")
+    check("' oncontextmenu=\"showCommentMenu(event," in js, "右鍵掛在留言內容框（.comment-text）上")
+    # ★ 不得掛在會話項（用戶聊天框）上
+    check("showConvMenu" not in js, "★ 沒有會話項（聊天框）層級的右鍵選單")
+    # 資格判斷（只有未處理的可右鍵）
+    check("function msgReplyable(" in js and "is_handled === false" in js,
+          "私訊右鍵限「未處理客戶來訊」")
+    check("function commentReplyable(" in js, "留言右鍵限「未處理的頂層留言」")
+    # 兩個動作都在
+    check("標記這一則已處理" in js, "私訊氣泡選單有「標記這一則已處理」")
+    check("標記為已處理（忽略）" in js, "留言選單有「標記為已處理（忽略）」")
+    check("由自動回復引擎" in js, "選單有「由自動回復引擎…」")
+    # 後端接線
+    check("/console/agent/draft" in js, "引擎產生草稿打 /console/agent/draft")
+    check("message_id" in js, "單條標記帶 message_id（只標這一則）")
+
+
 def check_refresh_button(html: str, js: str) -> None:
     """「重新整理」（補拉歷史）按鈕閘門。
 
@@ -252,6 +282,9 @@ def main():
 
         # [9] 重新整理（補拉歷史）按鈕
         check_refresh_button(html, js_all)
+
+        # [10] 右鍵選單（只在單條氣泡 / 留言框上）
+        check_context_menu(html, js_all)
 
         # [5] 身分切換元件有載入
         has_switch_ui = 'id="roleMenu"' in html or 'id="whoBox"' in html

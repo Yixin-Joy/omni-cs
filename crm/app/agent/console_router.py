@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
@@ -21,8 +22,11 @@ from app.agent import repo
 from app.auth import deps, rbac
 from app.autoreply import autoreply_db
 from app.core import config
+from app.internal import connector_client
 from app.llm import reply_engine
 from app.rag import kb_db
+
+log = logging.getLogger("crm")
 
 router = APIRouter(prefix="/console/agent", tags=["agent-console"])
 
@@ -650,6 +654,101 @@ async def test_engine(payload: TestIn, sess: dict = Depends(deps.require_agent))
             "matched": ans.matched_rows, "assets": ans.assets,
             "rewrote": ans.rewrote, "rewritten_query": ans.rewritten_query,
             "elapsed_ms": ans.elapsed_ms, "llm_calls": ans.llm_calls,
+            "scope_set": {"faq": len(ss.get("faq") or []), "table": len(ss.get("table") or []),
+                          "kb": len(ss.get("kb") or []), "source": ss.get("source"),
+                          "layers": ss.get("layers")}}
+
+
+# ================================================================ 由引擎產生草稿（右鍵）
+
+class DraftIn(BaseModel):
+    business_id: int
+    platform: str
+    scope: str = "dm"
+    text: str = ""              # 被右鍵那一則的原文（前端一定有）
+    message_id: str = ""        # 私訊：錨定「就回這一則」
+    comment_id: str = ""        # 留言
+    conversation_key: str = ""  # 私訊：會話鍵（＝end_user_sender_id）
+    post_config_id: int = 0     # 貼文留言：帶入該貼文的特殊配置
+
+
+@router.post("/draft")
+async def draft_reply(payload: DraftIn, sess: dict = Depends(deps.require_agent)):
+    """★ 工作台右鍵「由自動回復引擎給出回覆」——**只產生草稿、不發送**。
+
+    與自動回復正式流程的差別（與舊單體一致）：
+      * **不檢查自動回復開關**（關著也要能用），**不套冷卻與每日上限**（人工判斷優先）
+      * 命中時**不寫任何標記或日誌**；等客服真的按送出，才由回覆端點標成
+        「人工確認的引擎回覆」（`autoreply.mark_manual_reply`）
+      * 未命中時寫一筆 `manual_no_match` 紀錄 —— 紀錄頁才看得出「這一則人工試過、答不出來」
+
+    走同一套四層引擎（FAQ → 業務表格 → 知識庫 → 人工），所以在命中測試頁看到的結果
+    與這裡一致。**回傳只給前端填進回覆框，不會自動送出。**
+    """
+    bad = _biz_guard(sess, payload.business_id)
+    if bad:
+        return bad
+    plat = (payload.platform or "").strip()
+    if plat not in PLATFORMS:
+        return _err(400, f"不支援的平台: {plat}")
+    scope = (payload.scope or "dm").strip()
+    if (plat, scope) not in config.AUTOREPLY_SCOPES:
+        return _err(400, f"不支援的場景: {plat}/{scope}")
+
+    question = (payload.text or "").strip()
+    key = (payload.conversation_key or "").strip()
+
+    # 私訊：拿對話上下文（以被右鍵那一則為界，往前取最近幾則）
+    history: list[dict] = []
+    if scope == "dm" and key:
+        turns = int(config.TABLE_REWRITE_HISTORY_TURNS or 0)
+        if turns > 0:
+            raw = await asyncio.to_thread(
+                connector_client.fetch_history, plat, key,
+                platform_account_id=0, limit=turns + 20, scope="dm")
+            # ⚠️ Connector 回 DESC（新→舊）→ 轉正序，才能當「這一則之前」的上下文
+            msgs = list(reversed(raw or []))
+            if payload.message_id:
+                cut = next((i for i, m in enumerate(msgs)
+                            if str(m.get("message_id") or "") == payload.message_id), None)
+                if cut is not None:
+                    msgs = msgs[:cut]
+            msgs = msgs[-turns:] if turns else []
+            history = [{"direction": m.get("direction"), "text": m.get("text") or ""}
+                       for m in msgs if (m.get("text") or "").strip()]
+            if not question and payload.message_id:
+                # 前端沒給原文 → 從歷史裡把那一則撈出來當問句
+                for m in reversed(msgs):
+                    if str(m.get("message_id") or "") == payload.message_id:
+                        question = (m.get("text") or "").strip()
+                        break
+    if not question:
+        return _err(400, "找不到要回覆的內容（請重新整理後再試）")
+
+    ss = await asyncio.to_thread(
+        autoreply_db.resolve_scope_set, int(payload.business_id),
+        scope=scope, post_config_id=int(payload.post_config_id))
+    ans = await reply_engine.answer(
+        question, business_id=int(payload.business_id), channel=plat, scope=scope,
+        history=history, scope_set=ss)
+
+    if not ans.tier or ans.tier == reply_engine.TIER_MISS:
+        # 未命中 → 留一筆紀錄（命中的那半由「送出」時的 mark_manual_reply 記）
+        try:
+            from app.autoreply import autoreply
+            await asyncio.to_thread(
+                autoreply.log_manual_miss, int(payload.business_id), plat, scope,
+                text=question, detail=(ans.detail or ans.reason or ""),
+                message_id=payload.message_id, comment_id=payload.comment_id,
+                conversation_key=key, matched_rows=ans.matched_rows)
+        except Exception as e:  # noqa: BLE001 —— 記錄失敗不該擋住草稿
+            log.warning("寫入人工未命中紀錄失敗: %s", e)
+
+    return {"ok": True, "question": question, "would_send": bool(ans.text),
+            "tier": ans.tier, "answer": ans.text, "detail": ans.detail, "reason": ans.reason,
+            "matched": ans.matched_rows, "assets": ans.assets,
+            "rewrote": ans.rewrote, "rewritten_query": ans.rewritten_query,
+            "history_used": len(history),
             "scope_set": {"faq": len(ss.get("faq") or []), "table": len(ss.get("table") or []),
                           "kb": len(ss.get("kb") or []), "source": ss.get("source"),
                           "layers": ss.get("layers")}}

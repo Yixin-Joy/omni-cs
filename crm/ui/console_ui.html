@@ -1322,12 +1322,23 @@ function renderChatHead(data) {
 
 function renderMessages(list, forceBottom) {
   var box = $('messages');
-  box.innerHTML = list.length ? list.map(function (m) { return msgHtml(m); }).join('')
+  // 記住目前畫面上這串訊息，供「右鍵某一則 → 只處理那一則」取用
+  state.thread = list || [];
+  box.innerHTML = list.length
+    ? list.map(function (m, i) { return msgHtml(m, i); }).join('')
     : '<div class="empty">尚無訊息</div>';
   if (forceBottom) box.scrollTop = box.scrollHeight;
 }
 
-function msgHtml(m) {
+/* 這一則能否右鍵：客戶來訊、還沒被處理、有 message_id、渠道支援私訊。
+   ⚠️ 這是唯一的入口 —— 我方回覆氣泡與已處理的訊息都不掛右鍵。 */
+function msgReplyable(m) {
+  return !!m && (m.direction === 'inbound' || m.direction === 'in')
+    && !!m.message_id && m.is_handled === false
+    && engineSupported(state.platform, 'dm');
+}
+
+function msgHtml(m, idx) {
   var inbound = !(m.direction === 'outbound' || m.direction === 'out');
   var content = '';
   var files = m.files || [];
@@ -1358,7 +1369,12 @@ function msgHtml(m) {
   var fail = (!inbound && m.status === 'failed') ? '<span class="status-fail">● 發送失敗</span>' : '';
   var at = inbound ? autoTag(m) : '';
   var meta = '<div class="meta">' + fail + at + '<span>' + fmtTime(m.ts) + '</span></div>';
-  return '<div class="msg-row ' + (inbound ? 'inbound' : 'outbound') + '">'
+  // ★ 右鍵只掛在「還沒被處理的客戶來訊氣泡」上（不是整個會話框）
+  var ctx = msgReplyable(m)
+    ? ' oncontextmenu="showMsgMenu(event,' + idx + ')"'
+      + ' title="右鍵：回覆或標記這一則"'
+    : '';
+  return '<div class="msg-row ' + (inbound ? 'inbound' : 'outbound') + '"' + ctx + '>'
     + '<div class="bubble">' + content + meta + '</div></div>';
 }
 
@@ -1375,6 +1391,157 @@ function markRead() {
     openConversation(state.activeKey);
   });
 }
+
+/* ==========================================================================
+   右鍵選單 —— **只作用在「還沒被處理的單條訊息氣泡」或「留言內容框」**，
+   不掛在會話（用戶聊天框）上。
+     私訊氣泡：由自動回復引擎回覆這一則 / 標記這一則已處理
+     留言內容框：由自動回復引擎給出回覆 / 標記為已處理（忽略）
+   ========================================================================== */
+
+// 引擎支援的渠道＋場景（與後端 config.AUTOREPLY_SCOPES 一致；微信沒有客服消息權限故不支援）
+var ENGINE_SUPPORTED = { whatsapp: ['dm'], ig: ['dm', 'comment'], fb: ['dm', 'comment'] };
+
+function engineSupported(platform, scope) {
+  return (ENGINE_SUPPORTED[platform] || []).indexOf(scope) >= 0;
+}
+
+function hideCtxMenu() {
+  var m = $('ctxMenu');
+  if (m) m.style.display = 'none';
+}
+
+function _openCtxMenu(event, items, minW) {
+  event.preventDefault();
+  event.stopPropagation();
+  var menu = $('ctxMenu');
+  if (!menu) return;
+  menu.style.minWidth = (minW || 0) + 'px';
+  menu.innerHTML = items.map(function (it) {
+    return '<div class="ctx-item" data-act="' + it.act + '">' + esc(it.label) + '</div>';
+  }).join('');
+  Array.prototype.forEach.call(menu.querySelectorAll('.ctx-item'), function (el) {
+    el.onclick = function () {
+      var fn = items.filter(function (x) { return x.act === el.getAttribute('data-act'); })[0];
+      if (fn && fn.run) fn.run();
+    };
+  });
+  menu.style.display = 'block';
+  var x = Math.min(event.clientX, window.innerWidth - (minW || 200) - 16);
+  var y = Math.min(event.clientY, window.innerHeight - 100);
+  menu.style.left = Math.max(8, x) + 'px';
+  menu.style.top = Math.max(8, y) + 'px';
+}
+
+// ---- 私訊氣泡 ----
+function showMsgMenu(event, idx) {
+  var m = (state.thread || [])[idx];
+  if (!msgReplyable(m)) return;
+  _openCtxMenu(event, [
+    { act: 'gen', label: '由自動回復引擎回覆這一則', run: function () { engineReplyForMessage(idx); } },
+    { act: 'handled', label: '標記這一則已處理', run: function () { markMessageHandled(m); } },
+  ], 210);
+}
+
+function markMessageHandled(m) {
+  hideCtxMenu();
+  if (!m || !m.message_id) { showToast('這一則沒有可標記的訊息 ID'); return; }
+  apiJson('/console/agent/read', {
+    business_id: state.bizId, platform: state.platform, bp_account_id: state.activeAcc,
+    key: state.activeKey, scope: 'dm', message_id: m.message_id
+  }).then(function (res) {
+    if (!guard(res)) return;
+    if (!res.data.updated) { showToast('這一則無法標記（找不到對應訊息）'); return; }
+    showToast('已標記這一則為處理');
+    loadAllCounts();
+    openConversation(state.activeKey);
+    loadConversations();
+  });
+}
+
+function engineReplyForMessage(idx) {
+  hideCtxMenu();
+  var m = (state.thread || [])[idx];
+  if (!msgReplyable(m)) return;
+  var ta = $('textInput');
+  if (!ta) return;
+  var prevPh = ta.placeholder;
+  ta.disabled = true;
+  ta.placeholder = '自動回復引擎產生中…（不會自動送出）';
+  engineDraft({
+    scope: 'dm', text: m.text || '', message_id: m.message_id,
+    conversation_key: state.activeKey
+  }).then(function (d) {
+    ta.disabled = false;
+    ta.placeholder = prevPh;
+    if (d && d.would_send && d.answer) {
+      ta.value = d.answer;
+      ta.focus();
+      showToast('已產生回覆草稿（' + (TIER_LABEL[d.tier] || d.tier || '') + '）——確認後再送出');
+    } else {
+      ta.value = '';
+      showToast('引擎答不出這一則：' + ((d && (d.detail || d.reason)) || '未命中'), 6000);
+    }
+  }).catch(function (e) {
+    ta.disabled = false;
+    ta.placeholder = prevPh;
+    showToast('引擎產生失敗：' + ((e && e.message) || e), 6000);
+  });
+}
+
+// ---- 留言內容框 ----
+function showCommentMenu(event, commentId) {
+  if (!state.activePost || !commentId) return;
+  _openCtxMenu(event, [
+    { act: 'gen', label: '由自動回復引擎給出回覆',
+      run: function () { engineReplyForComment(commentId); } },
+    { act: 'handled', label: '標記為已處理（忽略）',
+      run: function () { markCommentHandled(commentId); } },
+  ], 210);
+}
+
+function engineReplyForComment(commentId) {
+  hideCtxMenu();
+  var acc = state.activePost ? state.activePost.bp_account_id : 0;
+  var postId = state.activePost ? state.activePost.post_id : '';
+  showReplyBox(commentId, '', true);
+  var box = $('rb_' + commentId);
+  var ta = box ? box.querySelector('textarea') : null;
+  if (ta) { ta.disabled = true; ta.placeholder = '自動回復引擎產生中…（不會自動送出）'; }
+  engineDraft({
+    scope: 'comment', comment_id: commentId,
+    post_config_id: 0
+  }).then(function (d) {
+    if (ta) { ta.disabled = false; ta.placeholder = '回覆這則留言…'; }
+    if (d && d.would_send && d.answer) {
+      if (ta) { ta.value = d.answer; ta.focus(); }
+      showToast('已產生回覆草稿（' + (TIER_LABEL[d.tier] || d.tier || '') + '）——確認後再送出');
+    } else {
+      if (ta) ta.value = '';
+      showToast('引擎答不出這一則：' + ((d && (d.detail || d.reason)) || '未命中'), 6000);
+    }
+  }).catch(function (e) {
+    if (ta) { ta.disabled = false; ta.placeholder = '回覆這則留言…'; }
+    showToast('引擎產生失敗：' + ((e && e.message) || e), 6000);
+  });
+}
+
+/* 引擎草稿（只產生、不發送）；後端會依登入者做商家隔離 */
+function engineDraft(payload) {
+  return apiJson('/console/agent/draft', Object.assign({
+    business_id: state.bizId, platform: state.platform
+  }, payload)).then(function (res) {
+    if (res.status === 401) { window.location.href = '/login'; return null; }
+    if (res.status >= 400 || !res.data || !res.data.ok) {
+      throw new Error((res.data && res.data.error) || ('HTTP ' + res.status));
+    }
+    return res.data;
+  });
+}
+
+// 點別處 / 捲動 → 關閉選單
+document.addEventListener('click', hideCtxMenu);
+document.addEventListener('scroll', hideCtxMenu, true);
 
 /* ---------------------------------------------------------------- 貼文留言 */
 function loadPosts() {
@@ -1507,13 +1674,25 @@ function commentHtml(c, isRoot) {
   } else {
     foot = '<div class="comment-replies">' + replies + '</div>';
   }
+  // ★ 右鍵只掛在「還沒被處理的客戶留言內容框」上（不是整個貼文框）
+  var ctx = commentReplyable(c, isRoot)
+    ? ' oncontextmenu="showCommentMenu(event,\'' + esc(c.comment_id) + '\')"'
+      + ' title="右鍵：回覆或標記這一則留言"'
+    : '';
   return '<div class="comment" data-cid="' + esc(c.comment_id) + '">'
     + '<div class="comment-head"><div class="avatar">' + esc(avatarChar(c.from_name)) + '</div>'
     + '<div class="c-name">' + esc(c.from_name || '用戶') + '</div>'
     + '<div class="c-time">' + fmtTime(c.time) + '</div>'
     + '<div class="spacer"></div>' + tag + '</div>'
-    + '<div class="comment-text">' + esc(c.text || '') + '</div>'
+    + '<div class="comment-text"' + ctx + '>' + esc(c.text || '') + '</div>'
     + foot + '</div>';
+}
+
+/* 這一則留言能否右鍵：頂層、未回、未忽略、渠道支援留言場景。
+   （子留言不掛 —— 要回的是這個討論串，不是某條回覆。） */
+function commentReplyable(c, isRoot) {
+  return !!isRoot && !!c && !c.replied && !c.is_handled
+    && engineSupported(state.platform, 'comment');
 }
 
 function showReplyBox(commentId, value, focus) {

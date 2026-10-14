@@ -208,6 +208,21 @@ C:\Users\its-admin\AppData\Local\Python\pythoncore-3.14-64\python.exe -m uvicorn
 
 貼文留言另有**貼文特殊配置**：對單一貼文覆寫自動回覆開關（全開 / 全關 / 自訂勾選層級）。
 
+### 右鍵：只作用在「單條」訊息 / 留言上
+
+右鍵**只掛在還沒被處理的那一則**上，**不會**掛在會話（用戶聊天框）上：
+
+| 右鍵位置 | 選單 |
+|---|---|
+| 私訊的一則**客戶來訊氣泡**（未處理、有 message_id） | 由自動回復引擎回覆這一則 ／ **標記這一則已處理** |
+| 貼文留言的**留言內容框**（頂層、未回、未忽略） | 由自動回復引擎給出回覆 ／ 標記為已處理（忽略） |
+
+- 「由自動回復引擎…」＝ `POST /console/agent/draft`：**只產生草稿填進回覆框、不自動送出**。
+  不檢查自動回復開關、不套冷卻與每日上限（人工判斷優先）；未命中會留一筆 `manual_no_match` 紀錄。
+- 「標記這一則已處理」＝ `POST /console/agent/read` 帶 `message_id` → **只標這一則**，
+  不會順手清掉整個會話的紅點。
+- 我方回覆氣泡、已處理過的訊息、子留言都不掛右鍵。微信不掛（未認證號發不出客服消息）。
+
 ### 重新整理（補拉歷史）
 
 「客服工作台」標題旁有一顆 **⟳** 按鈕。公網隧道（ngrok）斷掉時 webhook 推不進來，
@@ -300,6 +315,7 @@ PUBLIC_BASE_URL=https://<你的域名>.ngrok-free.dev
 | GET | `/internal/api/conversations` | Connector | CRM 查會話列表（工作台） |
 | GET | `/internal/api/pending-count` | Connector | 單帳號未處理數（平台 tab 紅點） |
 | POST | `/internal/api/sync-history` | Connector | 主動補拉歷史（工作台「重新整理」） |
+| POST | `/console/agent/draft` | CRM | 右鍵「由自動回復引擎產生回覆」（只出草稿、不送出） |
 
 ---
 

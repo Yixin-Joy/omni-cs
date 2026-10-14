@@ -402,6 +402,9 @@ class ReadIn(BaseModel):
     bp_account_id: int
     key: str
     scope: str = "dm"
+    # ★ 單條訊息定位（工作台右鍵「標記這一則已處理」用）。
+    #   有值時**只**標這一則，不擴大到整個會話 —— 前端右鍵只出現在單條氣泡上。
+    message_id: str = ""
 
 
 class CommentReplyIn(BaseModel):
@@ -433,13 +436,19 @@ def mark_read(payload: ReadIn, sess: dict = Depends(deps.require_csrf)):
 
     if payload.scope == "comment":
         n = connector_client.mark_message(plat, comment_id=payload.key, handled=True)
+    elif payload.message_id:
+        # ★ 單條：只標這一則（右鍵在「未處理的單條訊息氣泡」上）。
+        #   ⚠️ 不可在這裡 fallback 到整個會話 —— 那會把使用者只想標一則的意圖
+        #   變成一次清掉整個會話的紅點。
+        n = connector_client.mark_message(plat, message_id=payload.message_id, handled=True)
     else:
         n = connector_client.mark_message(plat, end_user_sender_id=payload.key, handled=True)
     audit.log_standalone(sess, "conversation_read", business_id=int(payload.business_id),
                          platform=plat, bp_account_id=int(payload.bp_account_id),
                          end_user_sender_id=payload.key,
-                         payload={"scope": payload.scope, "updated": n})
-    return {"ok": True, "updated": n}
+                         payload={"scope": payload.scope, "updated": n,
+                                  "message_id": payload.message_id})
+    return {"ok": True, "updated": n, "message_id": payload.message_id}
 
 
 @router.post("/upload")
