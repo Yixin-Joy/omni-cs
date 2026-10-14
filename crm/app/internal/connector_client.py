@@ -86,6 +86,9 @@ def push_account_map(items: list[dict] | None = None) -> bool:
                 "business_id": it.get("business_id"),
                 "bp_account_id": it.get("bp_account_id"),
                 "enabled": bool(it.get("enabled", True)),
+                "credential": it.get("credential"),
+                # ★ 平台業務憑證（多租戶）—— 漏帶的話 Connector 快取就沒有憑證、
+                #   收發只能用 .env fallback。與「定時拉取」路徑的欄位必須一致。
             }
             for it in items
         ]
