@@ -232,6 +232,30 @@ def check_platform_badges(html: str, js: str) -> None:
           "一級紅點不再只靠當前平台會話算（renderBadges 不用 state.convs）")
 
 
+def check_badge_consistency(html: str, js: str) -> None:
+    """紅點一致性閘門（迴歸）。
+
+    ★ 曾發生的 bug：商家列鈕上的紅點只在啟動時拉一次 `merchant-stats`，
+      標為已處理 / 新訊息進來後就與工作台下面的數字對不上。
+      修法＝把 `loadMerchantStats()` 併進**唯一刷新入口** `loadAllCounts()`，
+      並加紅點輪詢（webhook 不會主動通知前端）。
+    """
+    if "merchant-stats" not in js:
+        return
+    check("function loadMerchantStats(" in js, "有 loadMerchantStats()（商家列紅點）")
+    # 唯一刷新入口：loadAllCounts 必須同時刷新兩邊
+    i = js.find("function loadAllCounts(")
+    seg = js[i:i + 400] if i >= 0 else ""
+    check("loadMerchantStats()" in seg,
+          "★ loadAllCounts() 同時刷新商家列與工作台紅點（唯一入口）")
+    check("function renderMerchantBar(" in js and "_mbarSig" in js,
+          "renderMerchantBar() 有簽名比較（輪詢時數字沒變就不重繪）")
+    # 輪詢存在且會暫停
+    check("setInterval(" in js and "COUNT_POLL_MS" in js, "有紅點輪詢")
+    check("document.hidden" in js, "輪詢在頁面切到背景時暫停")
+    check("visibilitychange" in js, "切回前景立刻補一次")
+
+
 def main():
     pages = sorted(UI_DIR.glob("*.html"))
     js_files = sorted(UI_DIR.glob("*.js"))
@@ -285,6 +309,9 @@ def main():
 
         # [10] 右鍵選單（只在單條氣泡 / 留言框上）
         check_context_menu(html, js_all)
+
+        # [11] 紅點一致性（商家列 ↔ 工作台）
+        check_badge_consistency(html, js_all)
 
         # [5] 身分切換元件有載入
         has_switch_ui = 'id="roleMenu"' in html or 'id="whoBox"' in html

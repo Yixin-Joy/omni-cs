@@ -45,6 +45,14 @@ function readPw() {
   page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
   page.on('response', r => { if (r.status() >= 400) errors.push('HTTP ' + r.status() + ' ' + r.url()); });
 
+  // ★ 紅點一致性用：確認兩個紅點端點都真的被同一個刷新入口打過
+  const badgeHits = new Set();
+  page.on('response', r => {
+    const u = r.url();
+    if (u.includes('/console/agent/pending-counts')) badgeHits.add('pending-counts');
+    if (u.includes('/console/agent/merchant-stats')) badgeHits.add('merchant-stats');
+  });
+
   const shot = (n) => page.screenshot({ path: path.join(OUT, n) });
   const settle = (ms) => page.waitForTimeout(ms || 1200);
   const title = () => page.title();
@@ -262,17 +270,41 @@ function readPw() {
     '對話中的圖片大多能載入（/media 與 /files 的路徑是對的）',
     imgOk + '/' + imgN + '（試了 ' + tryN + ' 個會話）');
 
-  // 商家列紅點數要跟「實際待處理」一致（沒未處理就不該有紅點）
-  const badgeSum = await page.$$eval('#mbar .mbtn .badge',
-    els => els.reduce((n, e) => n + (parseInt(e.textContent, 10) || 0), 0));
-  const navBadge = await page.$$eval('#nav-badge-dm, #nav-badge-posts',
-    els => els.reduce((n, e) => n + (e.style.display === 'none' ? 0
-      : (parseInt(e.textContent, 10) || 0)), 0));
-  // 商家列紅點＝**全部平台、全部帳號**的未處理總和；列表紅點只算當前平台。
-  //   → 只能是「商家列 >= 列表」，不能要求相等。
-  //   這條同時防「把我方回覆的子留言算成未處理」（那會讓商家列虛高到 35）。
-  check(badgeSum >= navBadge, '商家列紅點 ≥ 列表未處理（商家列是全部平台的總和）',
-    '商家 ' + badgeSum + ' / 列表 ' + navBadge);
+  // ★ 紅點一致性：**當前商家鈕上的數字**必須等於一級導覽兩個紅點的和
+  //   （商家列 = 該商家全部平台 dm + 留言；一級導覽 = dm 欄目 + 留言欄目）。
+  //   曾發生「商家鈕只在啟動時拉一次 → 標為已處理後兩處對不上」。
+  const bd = await page.evaluate(() => {
+    const num = (el) => (el && el.style.display !== 'none'
+      ? (parseInt(el.textContent, 10) || 0) : 0);
+    const active = document.querySelector('#mbar .mlist .mbtn.active');
+    const bizBadge = active ? num(active.querySelector('.badge')) : null;
+    const navDm = num(document.getElementById('nav-badge-dm'));
+    const navPosts = num(document.getElementById('nav-badge-posts'));
+    const bizBtns = document.querySelectorAll('#mbar .mlist .mbtn').length;
+    return { bizBadge, navDm, navPosts, navSum: navDm + navPosts, bizBtns };
+  });
+  check(bd.bizBadge === bd.navSum,
+    '★ 商家列紅點 == 一級導覽紅點總和（dm + 留言）— 兩處必須一致',
+    '商家 ' + bd.bizBadge + ' / 導覽 ' + bd.navDm + '+' + bd.navPosts + '=' + bd.navSum);
+
+  // 二級平台 tab 的紅點總和也要等於導覽對應欄目（同一組數字來源）
+  const tabBd = await page.evaluate(() => {
+    const num = (el) => (el && el.style.display !== 'none'
+      ? (parseInt(el.textContent, 10) || 0) : 0);
+    let dm = 0;
+    ['wechat', 'whatsapp', 'ig', 'fb'].forEach(p => {
+      dm += num(document.getElementById('badge-' + p));
+    });
+    return { dm, navDm: num(document.getElementById('nav-badge-dm')) };
+  });
+  check(tabBd.dm === tabBd.navDm, '★ 二級平台 tab 紅點總和 == 一級「私訊」紅點',
+    '平台合計 ' + tabBd.dm + ' / 導覽 ' + tabBd.navDm);
+
+  // ★ 兩處的數字來自不同端點（merchant-stats / pending-counts），
+  //   必須由同一個刷新入口一起拉，否則標為已處理後就會有一邊停在舊值。
+  check(badgeHits.has('pending-counts') && badgeHits.has('merchant-stats'),
+    '★ 兩個紅點端點都經由同一刷新入口打過（不會一邊更新一邊不更新）',
+    Array.from(badgeHits).join(' + ') || '（都沒打）');
 
   console.log('\n[5] 貼文留言');
   await page.click('#nav-posts');

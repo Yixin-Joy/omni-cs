@@ -919,6 +919,8 @@ var PLATFORM_TAG_CLASS = { wechat: 'wechat', whatsapp: 'whatsapp', ig: 'ig', fb:
 var DM_PLATFORMS = ['wechat', 'whatsapp', 'ig', 'fb'];
 var POST_PLATFORMS = ['ig', 'fb'];
 var ROLE_LABEL = { admin: '管理員', agent: '客服坐席', ops: '運維' };
+// ★ 紅點輪詢間隔：兩處數字（商家列 / 工作台）必須一起更新才不會對不上
+var COUNT_POLL_MS = 20000;
 var TIER_LABEL = { faq: 'FAQ 命中', table: '表格命中', rag: '知識庫命中', miss: '未命中' };
 
 var state = {
@@ -1084,25 +1086,51 @@ function guard(res) {
 
 /* ---------------------------------------------------------------- 頂部商家列 */
 function loadBusinesses() {
+  // ⚠️ 這支的 Promise **必須 resolve 成 true/false** —— boot() 用
+  //   `.then(function (ok) { if (!ok) return; ... })` 決定要不要繼續載會話與紅點。
+  //   少寫 `return true` 會讓登入後整個工作台「停在半路」：商家列有數字、
+  //   但下面的列表與紅點全是空的。（曾誤改成 `return loadMerchantStats()`，
+  //   它回 undefined → ok 為 falsy → boot 直接中斷。）
   return api('/console/agent/businesses').then(function (res) {
-    if (!guard(res)) return;
+    if (!guard(res)) return false;
     state.businesses = res.data.items || [];
     if (!state.bizId && state.businesses.length) state.bizId = state.businesses[0].id;
-    return api('/console/agent/merchant-stats').then(function (r2) {
-      state.bizStats = (r2.data && r2.data.ok) ? (r2.data.items || {}) : {};
-      renderMerchantBar();
-      return true;
-    });
+    return loadMerchantStats().then(function () { return true; });
   });
 }
 
+/* ★ 商家列紅點（該商家**全部平台**的未處理總和）。
+   ⚠️ 這支一定要跟 `loadCounts()` 一起刷新（見 `loadAllCounts()`）——
+   曾只在啟動時拉一次，導致「標為已處理 / 新訊息進來」後
+   商家鈕上的數字與工作台下面的數字對不上。 */
+function loadMerchantStats() {
+  return api('/console/agent/merchant-stats').then(function (r2) {
+    if (!r2.data || !r2.data.ok) return;
+    state.bizStats = r2.data.items || {};
+    renderMerchantBar();
+  }).catch(function () { /* 取不到就保留上一次的數字，不清空 */ });
+}
+
 function statOf(bid) { return state.bizStats[String(bid)] || {}; }
+
+var _mbarSig = '';
 
 function renderMerchantBar() {
   // ★ 只重建 #mrest（商家列）；#mbar 左邊的帳號區是靜態節點，
   //   重建會讓 TopUser 的 addEventListener 綁定失效。
   var bar = $('mrest');
   if (!bar) return;
+
+  // ★ 簽名沒變就不動 DOM —— 輪詢每 30 秒會呼叫這裡一次，
+  //   無條件重建會把使用者正開著的「⋯」溢出選單關掉、也讓畫面閃動。
+  var sig = state.businesses.map(function (b) {
+    var st = statOf(b.id);
+    return [b.id, b.business_name, st.pending || 0, st.last_ts || '',
+            String(b.id) === String(state.bizId) ? 1 : 0].join(':');
+  }).join('|');
+  if (sig === _mbarSig) return;
+  _mbarSig = sig;
+
   bar.innerHTML = '<span class="mtitle">商家</span>';
   var wrap = document.createElement('div');
   wrap.className = 'mlist'; wrap.id = 'mlist';
@@ -1855,8 +1883,10 @@ function loadCounts(scope) {
     }).catch(function () { /* 輪詢/載入失敗不影響畫面 */ });
 }
 
+/* ★ 紅點數字的**唯一刷新入口** —— 工作台下面的數字（一級導覽 + 二級平台 tab）
+   與商家列鈕上的數字必須一起更新，否則兩處會對不上。 */
 function loadAllCounts() {
-  return Promise.all([loadCounts('dm'), loadCounts('comment')]);
+  return Promise.all([loadCounts('dm'), loadCounts('comment'), loadMerchantStats()]);
 }
 
 /* ---------------------------------------------------------------- 重新整理（補拉歷史） */
@@ -2559,6 +2589,18 @@ function boot() {
   });
 
   window.addEventListener('resize', function () { fitMerchantBar(); });
+
+  // ★ 紅點輪詢：新訊息是 webhook 推給 Connector 的，**不會主動通知前端** ——
+  //   沒有輪詢就只能靠手動刷新頁面，商家列與列表的數字也會各自留在舊值。
+  //   只更新數字（`loadAllCounts` 走簽名比較，不會亂重繪），切到背景時暫停。
+  setInterval(function () {
+    if (document.hidden) return;
+    loadAllCounts();
+  }, COUNT_POLL_MS);
+  // 從背景切回來 → 立刻補一次（不然要等一輪才更新）
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) loadAllCounts();
+  });
 }
 
 boot();
