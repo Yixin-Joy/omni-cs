@@ -6,1064 +6,2397 @@
 <title>客服工作台</title>
 <style>
   :root {
-    --bg: #f4f6f8; --panel: #ffffff; --border: #e5e9f0; --text: #1f2a37; --text-soft: #6b7280;
-    --accent: #1a7f5c; --accent-dark: #116a4b; --accent-soft: #e6f4ee;
-    --red: #e02020; --red-soft: #fdecec; --amber: #b45309; --amber-soft: #fdf3e3;
-    --blue: #1e40af; --blue-soft: #e7eefc;
+    --bg: #f4f6f8;
+    --panel: #ffffff;
+    --border: #e5e9f0;
+    --text: #1f2a37;
+    --text-soft: #6b7280;
+    --accent: #1a7f5c;
+    --accent-dark: #116a4b;
+    --accent-soft: #e6f4ee;
+    --red: #e02020;
+    --bubble-in: #ffffff;
+    --bubble-out: #d9f0e4;
     --shadow: 0 1px 3px rgba(15, 30, 50, 0.06);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang TC", sans-serif;
-    background: var(--bg); color: var(--text); font-size: 14px; -webkit-font-smoothing: antialiased; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang TC", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
   .app { display: flex; height: 100vh; overflow: hidden; }
 
-  /* ---------- 側邊欄 ---------- */
-  .sidebar { width: 236px; background: var(--panel); border-right: 1px solid var(--border);
-    display: flex; flex-direction: column; flex-shrink: 0; }
+  .sidebar {
+    width: 340px; min-width: 300px; background: var(--panel);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+  }
   .sidebar-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--border); }
-  .brand { display: flex; align-items: center; gap: 10px; }
-  .brand .logo { width: 34px; height: 34px; border-radius: 9px; background: var(--accent); color: #fff;
-    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; }
-  .brand h1 { font-size: 16px; font-weight: 700; }
-  .brand span { display: block; font-size: 11.5px; color: var(--text-soft); font-weight: 400; }
-  .nav { padding: 10px; flex: 1; overflow-y: auto; }
-  .nav button { width: 100%; text-align: left; padding: 10px 12px; margin-bottom: 4px; border: 1px solid transparent;
-    border-radius: 9px; background: transparent; color: var(--text); font-size: 13.5px; font-weight: 600;
-    cursor: pointer; transition: all .12s; font-family: inherit; display: flex; align-items: center; }
-  .nav button:hover { background: #f6f8fa; }
-  .nav button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
-  .nav .badge { margin-left: auto; background: var(--red); color: #fff; font-size: 10.5px; font-weight: 700;
-    border-radius: 999px; padding: 1px 7px; }
-  .sidebar-foot { padding: 12px 14px; border-top: 1px solid var(--border); font-size: 12.5px; position: relative; }
-  .who { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
-  .who .ava { width: 30px; height: 30px; border-radius: 50%; background: #e2e8f0; color: #475569;
-    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0; }
-  .who .nm { font-weight: 600; }
-  .who .rl { color: var(--text-soft); font-size: 11.5px; }
-  .who.clickable { cursor: pointer; border-radius: 9px; padding: 5px 6px; margin: -5px -6px 4px; transition: background .12s; }
-  .who.clickable:hover { background: #f6f8fa; }
-  .who .caret { margin-left: auto; color: var(--text-soft); font-size: 10px; }
-  .rolemenu { display: none; position: absolute; left: 10px; right: 10px; bottom: calc(100% - 4px);
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .brand .logo {
+    width: 34px; height: 34px; border-radius: 9px; background: var(--accent);
+    color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;
+  }
+  .brand h1 { font-size: 17px; font-weight: 700; }
+  .brand span { font-size: 12px; color: var(--text-soft); }
+
+  /* 一級導覽：私訊 / 貼文留言 */
+  .nav-main { display: flex; gap: 8px; margin-bottom: 10px; }
+  .nav-main .nav {
+    flex: 1; padding: 9px 10px; border-radius: 9px; border: 1px solid var(--border);
+    background: #fafbfc; color: var(--text-soft); cursor: pointer; text-align: center;
+    font-weight: 700; font-size: 14px; transition: all .15s;
+    position: relative; /* 讓未讀紅點固定定位到右上角 */
+  }
+  .nav-main .nav:hover { border-color: var(--accent); color: var(--accent); }
+  .nav-main .nav.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* 導覽紅點：與平台 tab 同款，固定右上角、大小一致 */
+  .nav-main .nav .nav-badge {
+    position: absolute; top: -6px; right: -6px;
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px;
+    background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
+    text-align: center; padding: 0 5px; box-shadow: 0 0 0 2px #fff;
+    z-index: 2;
+  }
+
+  /* 二級導覽：平台 tab */
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tab {
+    flex: 1; min-width: 0; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border);
+    background: #fafbfc; color: var(--text-soft); cursor: pointer; text-align: center;
+    font-weight: 600; font-size: 12.5px; transition: all .15s;
+    position: relative; /* 讓未讀紅點固定定位到右上角 */
+  }
+  .tab:hover { border-color: var(--accent); color: var(--accent); }
+  .tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
+  .tab .badge {
+    position: absolute; top: -6px; right: -6px;
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px;
+    background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
+    text-align: center; padding: 0 5px; box-shadow: 0 0 0 2px #fff;
+    z-index: 2;
+  }
+
+  .search { padding: 10px 16px; }
+  .search input {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px;
+    background: #fafbfc; font-size: 13px; outline: none; color: var(--text);
+  }
+  .search input:focus { border-color: var(--accent); background: #fff; }
+  .conv-list { flex: 1; overflow-y: auto; }
+  .conv {
+    display: flex; align-items: center; gap: 12px; padding: 13px 16px; cursor: pointer;
+    border-bottom: 1px solid #f0f2f5; transition: background .12s;
+    position: relative; /* 讓未讀紅點固定定位到右上角 */
+  }
+  .conv:hover { background: #f6f8fa; }
+  .conv.active { background: var(--accent-soft); }
+  /* 統一的未讀紅點：固定右上角、大小一致 */
+  .conv-badge {
+    position: absolute; top: 6px; right: 8px;
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px;
+    background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
+    text-align: center; padding: 0 5px; box-shadow: 0 0 0 2px #fff;
+    z-index: 2;
+  }
+  .avatar {
+    width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0;
+    background: #e2e8f0; color: #475569; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 17px;
+  }
+  .conv-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .conv-row1 { display: flex; align-items: center; gap: 8px; }
+  .conv-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .conv-row2 { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
+  .conv-preview { font-size: 12.5px; color: var(--text-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .conv-time { font-size: 11px; color: var(--text-soft); flex-shrink: 0; align-self: flex-end; margin-top: 3px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); flex-shrink: 0; box-shadow: 0 0 0 2px #fff; }
+  .unread-num {
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px; background: var(--red);
+    color: #fff; font-size: 11px; font-weight: 700; text-align: center; padding: 0 5px; flex-shrink: 0;
+  }
+  .empty { padding: 40px 20px; text-align: center; color: var(--text-soft); font-size: 13px; }
+
+  /* 貼文列表卡片 */
+  .post-card {
+    padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #f0f2f5; transition: background .12s;
+    display: flex; gap: 12px; align-items: center;
+  }
+  .post-card:hover { background: #f6f8fa; }
+  .post-card.active { background: var(--accent-soft); }
+  .post-thumb {
+    width: 48px; height: 48px; border-radius: 9px; background: #eef1f5; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; overflow: hidden; color: var(--text-soft);
+  }
+  .post-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .post-meta { flex: 1; min-width: 0; }
+  .post-name { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .post-sub { font-size: 12px; color: var(--text-soft); margin-top: 3px; display: flex; gap: 10px; }
+  .post-badge {
+    font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 10px; flex-shrink: 0;
+  }
+  .post-badge.new { background: #fdeaea; color: var(--red); }
+
+  .list-foot { padding: 12px 16px; text-align: center; }
+  .load-more {
+    width: 100%; padding: 8px; border: 1px dashed var(--border); border-radius: 9px;
+    background: #fafbfc; color: var(--text-soft); cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  .load-more:hover { border-color: var(--accent); color: var(--accent); }
+
+  .chat { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+  .chat-head {
+    min-height: 60px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; padding: 0 20px; flex-shrink: 0;
+  }
+  .chat-head .avatar { width: 38px; height: 38px; font-size: 15px; }
+  .chat-head .who .name { font-weight: 700; font-size: 15px; }
+  .chat-head .who .sub { font-size: 12px; color: var(--text-soft); }
+  .chat-head .spacer { flex: 1; }
+  .platform-tag { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; letter-spacing: .5px; }
+  .platform-tag.wechat { background: #e8f6ee; color: #1a7f3c; }
+  .platform-tag.whatsapp { background: #e7f5ee; color: #147d51; }
+  .platform-tag.ig { background: #fdeef3; color: #c13584; }
+  .platform-tag.fb { background: #e8f0fe; color: #1877f2; }
+
+  .messages { flex: 1; overflow-y: auto; padding: 22px 24px; }
+  .msg-row { display: flex; margin-bottom: 14px; }
+  .msg-row.inbound { justify-content: flex-start; }
+  .msg-row.outbound { justify-content: flex-end; }
+  .bubble {
+    max-width: 68%; padding: 10px 14px; border-radius: 14px; position: relative;
+    box-shadow: var(--shadow); word-break: break-word;
+  }
+  .msg-row.inbound .bubble { background: var(--bubble-in); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .msg-row.outbound .bubble { background: var(--bubble-out); border-bottom-right-radius: 4px; }
+  .bubble .text { white-space: pre-wrap; line-height: 1.55; font-size: 14px; }
+  .bubble .meta { font-size: 11px; color: var(--text-soft); margin-top: 6px; text-align: right; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+  .bubble .status-fail { color: var(--red); font-weight: 600; }
+  .file-card { display: flex; align-items: center; gap: 10px; }
+  .file-icon { width: 42px; height: 42px; border-radius: 9px; background: #eef1f5; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+  .file-info { min-width: 0; }
+  .file-info .fname { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+  .file-info .fsize { font-size: 11px; color: var(--text-soft); margin-top: 2px; }
+  .file-info a { color: var(--accent-dark); font-size: 12px; text-decoration: none; }
+  .file-info a:hover { text-decoration: underline; }
+  .img-thumb { max-width: 260px; max-height: 260px; border-radius: 10px; display: block; cursor: pointer; }
+  /* chunk / 命中文字裡內嵌的 markdown 圖片（![題注](/media/xxx.png) 渲染出來的） */
+  .md-img { max-width: 100%; max-height: 220px; border-radius: 8px; display: block;
+            margin: 6px 0; border: 1px solid var(--border); background: #fafbfc;
+            cursor: zoom-in; }
+  .img-broken { color: var(--text-soft); font-size: 12px; }
+
+  .composer { background: var(--panel); border-top: 1px solid var(--border); padding: 12px 16px 14px; flex-shrink: 0; }
+  .pending-file {
+    display: flex; align-items: center; gap: 10px; background: #f6f8fa; border: 1px solid var(--border);
+    border-radius: 9px; padding: 8px 12px; margin-bottom: 10px;
+  }
+  .pending-file .pf-name { flex: 1; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pending-file .pf-x { cursor: pointer; color: var(--text-soft); font-size: 16px; font-weight: 700; padding: 0 4px; }
+  .pending-file .pf-x:hover { color: var(--red); }
+  .composer-row { display: flex; align-items: flex-end; gap: 10px; }
+  .attach-btn {
+    width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--border); background: #fafbfc;
+    cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; color: var(--text-soft); flex-shrink: 0;
+  }
+  .attach-btn:hover { border-color: var(--accent); color: var(--accent); background: #fff; }
+  textarea {
+    flex: 1; resize: none; border: 1px solid var(--border); border-radius: 11px; padding: 11px 14px;
+    font-family: inherit; font-size: 14px; outline: none; background: #fafbfc; color: var(--text);
+    min-height: 42px; max-height: 120px; line-height: 1.4;
+  }
+  textarea:focus { border-color: var(--accent); background: #fff; }
+  .send-btn {
+    height: 42px; padding: 0 22px; border-radius: 11px; border: none; background: var(--accent);
+    color: #fff; font-weight: 700; font-size: 14px; cursor: pointer; flex-shrink: 0;
+  }
+  .send-btn:hover { background: var(--accent-dark); }
+  .send-btn:disabled { opacity: .55; cursor: not-allowed; }
+  .chat-placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-soft); }
+  .chat-placeholder .big { font-size: 52px; margin-bottom: 14px; opacity: .6; }
+  .chat-placeholder p { font-size: 14px; }
+
+  /* ---- 貼文詳情頁 ---- */
+  .post-detail { flex: 1; overflow-y: auto; }
+
+  /* 批次補做進度（右下角浮動提示） */
+  .bf-toast {
+    position: fixed; right: 18px; bottom: 18px; z-index: 60;
+    display: flex; align-items: center; gap: 9px;
+    max-width: 460px; padding: 10px 14px;
+    background: #1f2733; color: #f2f5f8; font-size: 13px; line-height: 1.4;
+    border-radius: 10px; box-shadow: 0 8px 24px rgba(15, 20, 26, .28);
+  }
+  .bf-toast .bf-dot {
+    width: 9px; height: 9px; border-radius: 50%; background: #59c07a; flex-shrink: 0;
+    animation: bf-pulse 1s ease-in-out infinite;
+  }
+  @keyframes bf-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+  .post-body { max-width: 720px; margin: 0 auto; padding: 24px 24px 40px; }
+  .post-card-head { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }
+  .post-head { padding: 16px 18px; display: flex; align-items: center; gap: 12px; }
+  .post-head .avatar { width: 40px; height: 40px; font-size: 16px; background: var(--accent); color: #fff; }
+  .post-head .ph-name { font-weight: 700; font-size: 15px; }
+  .post-head .ph-sub { font-size: 12px; color: var(--text-soft); }
+  .post-head .spacer { flex: 1; }
+  .post-media { width: 100%; background: #0f141a; display: flex; align-items: center; justify-content: center; min-height: 120px; }
+  .post-media img { width: 100%; display: block; }
+  .post-media .no-media { color: #fff; padding: 40px; opacity: .6; }
+  .post-caption { padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .post-caption .caption { white-space: pre-wrap; line-height: 1.55; }
+  .post-stats { padding: 12px 18px; display: flex; gap: 18px; color: var(--text-soft); font-size: 13px; border-bottom: 1px solid var(--border); }
+  .post-stats b { color: var(--text); font-weight: 700; }
+  .post-actions { padding: 12px 18px; display: flex; gap: 10px; }
+  .btn-outline {
+    padding: 7px 16px; border-radius: 9px; border: 1px solid var(--border); background: #fafbfc;
+    color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .btn-outline:hover { border-color: var(--accent); color: var(--accent-dark); }
+  .btn-outline.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-outline.primary:hover { background: var(--accent-dark); }
+
+  .comment-section { margin-top: 18px; }
+  .comment-section h3 { font-size: 15px; font-weight: 700; margin-bottom: 12px; }
+  .comment {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 13px 16px; margin-bottom: 10px; box-shadow: var(--shadow);
+  }
+  .comment-head { display: flex; align-items: center; gap: 10px; }
+  .comment-head .avatar { width: 34px; height: 34px; font-size: 14px; }
+  .comment-head .c-name { font-weight: 600; font-size: 13.5px; }
+  .comment-head .c-time { font-size: 11px; color: var(--text-soft); }
+  .comment-head .spacer { flex: 1; }
+  .tag-replied { font-size: 11px; font-weight: 700; color: var(--accent-dark); background: var(--accent-soft); padding: 2px 8px; border-radius: 10px; }
+  .tag-ignored { font-size: 11px; font-weight: 700; color: var(--text-soft); background: #eef1f5; padding: 2px 8px; border-radius: 10px; }
+  .tag-pending { font-size: 11px; font-weight: 700; color: #b42318; background: #fdeaea; padding: 2px 8px; border-radius: 10px; }
+  .comment-text { margin-top: 8px; line-height: 1.55; font-size: 14px; white-space: pre-wrap; }
+  .comment-foot { margin-top: 10px; display: flex; align-items: center; gap: 12px; }
+  .comment-foot .reply-btn {
+    font-size: 12.5px; font-weight: 600; color: var(--text-soft); cursor: pointer; background: none; border: none;
+  }
+  .comment-foot .reply-btn:hover { color: var(--accent); }
+  .comment-replies { margin-top: 10px; padding-left: 16px; border-left: 2px solid var(--border); }
+  .comment-replies .comment { margin-bottom: 8px; border: none; box-shadow: none; background: #fafbfc; }
+  /* 送出中的樂觀回覆（尚未由伺服器確認） */
+  .comment-sending { opacity: .65; border-style: dashed; }
+  .tag-sending { font-size: 11px; font-weight: 700; color: var(--text-soft); background: #eef1f5; padding: 2px 8px; border-radius: 10px; }
+  /* 送出失敗（重試耗盡）的樂觀氣泡：留著讓你看得出是哪一則沒送出去 */
+  .comment-failed { border-style: dashed; border-color: #e3b0b0; background: #fff7f7; }
+  .tag-failed { font-size: 11px; font-weight: 700; color: #b23b3b; background: #fdeaea; padding: 2px 8px; border-radius: 10px; }
+  .reply-box { margin-top: 10px; display: flex; gap: 8px; align-items: flex-end; }
+  .reply-box textarea { min-height: 36px; }
+  .reply-box .send-btn { height: 36px; padding: 0 16px; font-size: 13px; }
+
+  /* 右鍵選單 */
+  .ctx-menu {
+    position: fixed; z-index: 9999; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.12); padding: 4px; min-width: 160px; display: none;
+  }
+  .ctx-menu .ctx-item {
+    padding: 9px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--text);
+  }
+  .ctx-menu .ctx-item:hover { background: var(--accent-soft); color: var(--accent-dark); }
+
+  /* ---------- AI 自動回復 ---------- */
+  /* 側邊欄的自動回復開關列 */
+  .ar-bar {
+    display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 7px 10px;
+    border: 1px solid var(--border); border-radius: 9px; background: #fafbfc;
+  }
+  .ar-bar .ar-label { font-size: 12px; color: var(--text-soft); flex: 1; }
+  .ar-bar.on { border-color: var(--accent); background: var(--accent-soft); }
+  .ar-bar.on .ar-label { color: var(--accent-dark); font-weight: 700; }
+  .ar-btn {
+    padding: 4px 11px; border-radius: 20px; border: 1px solid var(--border); background: #fff;
+    font-size: 12px; font-weight: 700; cursor: pointer; color: var(--text-soft); white-space: nowrap;
+  }
+  .ar-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .ar-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .ar-btn.off:hover { border-color: var(--red); color: var(--red); }
+  .ar-btn[disabled] { opacity: .55; cursor: not-allowed; }
+
+  /* 訊息 / 留言上的自動回復標記 */
+  .tag-auto-faq, .tag-auto-table, .tag-auto-rag, .tag-auto-miss, .tag-auto-fail {
+    font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; white-space: nowrap;
+  }
+  .tag-auto-faq { color: #147d51; background: #e7f5ee; }
+  .tag-auto-table { color: #1a5fb4; background: #e8f0fe; }
+  .tag-auto-table.rw { border: 1px dashed #1a5fb4; }
+  .tag-auto-miss { color: #b42318; background: #fdeaea; }
+  .tag-auto-fail { color: #92400e; background: #fef3c7; }
+
+  /* 設定面板 */
+  .settings-overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, .45); z-index: 500;
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  .settings-overlay.open { display: flex; }
+
+  /* 「把這次回覆加進 FAQ 庫」的小視窗（自動回復未命中、客服手動回完之後問） */
+  .faq-overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, .45); z-index: 600;
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  .faq-overlay.open { display: flex; }
+  .faq-box {
+    width: min(620px, 100%); max-height: 100%; background: var(--panel);
+    border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .faq-box .fm-body { padding: 16px 20px; overflow-y: auto; }
+  .faq-box .fm-hint {
+    background: #fff8e6; border: 1px solid #f0dca8; color: #7a5b12;
+    border-radius: 9px; padding: 9px 12px; font-size: 12.5px; line-height: 1.5; margin-bottom: 14px;
+  }
+  .faq-box .fm-label {
+    display: block; font-size: 12px; font-weight: 700; color: var(--text-soft);
+    margin: 12px 0 6px;
+  }
+  .faq-box textarea, .faq-box input[type="text"] {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px;
+    font: inherit; font-size: 13px; box-sizing: border-box; background: #fff;
+  }
+  .faq-box textarea { resize: vertical; }
+  .faq-box .fm-rewrite {
+    margin-top: 6px; font-size: 12px; color: var(--text-soft); line-height: 1.5;
+  }
+  .faq-box .fm-check {
+    display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 13px;
+  }
+  .faq-box .fm-err {
+    margin-top: 12px; font-size: 12.5px; color: var(--red);
+    background: #fdeaea; border-radius: 8px; padding: 8px 11px;
+  }
+  .faq-box .fm-foot {
+    display: flex; align-items: center; gap: 10px; padding: 14px 20px;
+    border-top: 1px solid var(--border); flex-shrink: 0;
+  }
+  .faq-box .fm-foot .spacer { flex: 1; }
+
+  /* 「引擎答不出來」提醒彈窗（原本是寫在輸入框的 placeholder，會一直掛在聊天框裡） */
+  .engmiss-overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, .45); z-index: 640;
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  .engmiss-overlay.open { display: flex; }
+  .engmiss-box {
+    width: min(480px, 100%); background: var(--panel);
+    border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .engmiss-head {
+    display: flex; align-items: center; gap: 10px; padding: 14px 18px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .engmiss-head h2 { font-size: 15.5px; font-weight: 700; }
+  .engmiss-head .spacer { flex: 1; }
+  .engmiss-icon {
+    width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+    background: #fdeaea; color: #b42318; font-weight: 700; font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .engmiss-body { padding: 16px 18px; font-size: 13.5px; line-height: 1.6; }
+  .engmiss-body p { margin: 0 0 10px; }
+  .engmiss-body .engmiss-q {
+    background: #f7f8fa; border: 1px solid var(--border); border-radius: 9px;
+    padding: 9px 12px; margin-bottom: 10px; font-size: 13px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .engmiss-body .engmiss-reason { font-size: 12.5px; color: var(--text-soft); }
+  .engmiss-foot {
+    display: flex; align-items: center; gap: 10px; padding: 13px 18px;
+    border-top: 1px solid var(--border); flex-shrink: 0;
+  }
+  .engmiss-foot .spacer { flex: 1; }
+  .engmiss-foot .hint { font-size: 12px; color: var(--text-soft); margin: 0; }
+
+  /* 右下角狀態提示（加入 FAQ 成功之類） */
+  .bf-toast.center { left: 50%; right: auto; transform: translateX(-50%); }
+  .settings-panel {
+    width: min(1180px, 100%); height: min(840px, 100%); background: var(--panel);
+    border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .sp-head {
+    display: flex; align-items: center; gap: 12px; padding: 14px 20px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .sp-head h2 { font-size: 16px; font-weight: 700; }
+  .sp-head .spacer { flex: 1; }
+  .sp-close {
+    width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border);
+    background: #fafbfc; cursor: pointer; font-size: 16px; color: var(--text-soft);
+  }
+  .sp-close:hover { border-color: var(--red); color: var(--red); }
+  .sp-tabs { display: flex; gap: 6px; padding: 12px 20px 0; flex-shrink: 0; }
+  .sp-tab {
+    padding: 8px 16px; border-radius: 9px 9px 0 0; border: 1px solid var(--border);
+    border-bottom: none; background: #f6f8fa; color: var(--text-soft); cursor: pointer;
+    font-size: 13px; font-weight: 700;
+  }
+  .sp-tab.active { background: #fff; color: var(--accent-dark); border-color: var(--accent); }
+  .sp-body { flex: 1; overflow-y: auto; padding: 18px 20px 28px; border-top: 1px solid var(--border); }
+
+  .card {
+    border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; margin-bottom: 16px;
+    background: #fff;
+  }
+  .card h3 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .card .hint { font-size: 12px; color: var(--text-soft); line-height: 1.6; margin-bottom: 10px; }
+  .card .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+  .switch-row {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--border);
+    border-radius: 9px; margin-bottom: 8px; background: #fafbfc;
+  }
+  .switch-row .sr-name { font-size: 13px; font-weight: 700; flex: 1; }
+  .switch-row .sr-sub { font-size: 11px; color: var(--text-soft); font-weight: 400; display: block; margin-top: 2px; }
+  .switch-row.on { border-color: var(--accent); background: var(--accent-soft); }
+  .switch-row .sr-acts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+  /* ★ 「i」圓標：把解釋性文字收進提示，滑鼠移上去才顯示（頁面少一堆字） */
+  .infotip {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%; box-sizing: border-box;
+    border: 1px solid var(--text-soft); color: var(--text-soft);
+    font-size: 10px; font-weight: 700; font-style: normal; font-family: var(--font-sans);
+    line-height: 1; cursor: help; position: relative; vertical-align: middle;
+    margin-left: 6px; flex-shrink: 0;
+  }
+  .infotip:hover { border-color: var(--accent); color: var(--accent-dark); }
+  .infotip::after {
+    content: attr(data-tip);
+    position: absolute; left: 50%; top: calc(100% + 7px); transform: translateX(-50%);
+    background: #1f2937; color: #fff; font-size: 12px; font-weight: 400;
+    line-height: 1.6; padding: 8px 11px; border-radius: 8px;
+    width: max-content; max-width: 290px; text-align: left;
+    opacity: 0; visibility: hidden; pointer-events: none; z-index: 900;
+    transition: opacity .12s ease-out;
+  }
+  .infotip:hover::after, .infotip:focus::after { opacity: 1; visibility: visible; }
+  /* ★ 顯示時由 JS（placeTip）算好座標改用 fixed 定位：
+     `.sp-body` 是 overflow:auto、`.settings-panel` 是 overflow:hidden，
+     絕對定位的提示只要圓標靠右緣（或靠底部）就會被面板裁掉、看不全。
+     fixed 不受祖先 overflow 裁切，座標再夾在視窗內就永遠看得完整。
+     前端腳本沒跑起來時退回上面的 absolute 版本，功能不會全失。
+     ⚠️ 這段註解不要出現 script 開標籤的字樣：ui_check 是用「第一個開標籤」
+     切出 JS 的，會在 CSS 裡誤切。 */
+  .infotip.tip-fixed::after {
+    position: fixed; left: var(--tip-x, 0px); top: var(--tip-y, 0px);
+    transform: none; max-width: min(290px, calc(100vw - 24px));
+  }
+
+  /* 滑動開關（全部開／關） */
+  .sw-toggle {
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+    background: none; border: 0; padding: 0; font: inherit;
+  }
+  .sw-toggle .sw-track {
+    width: 40px; height: 22px; border-radius: 999px; background: #cbd5e1;
+    position: relative; transition: background .15s; flex-shrink: 0;
+  }
+  .sw-toggle .sw-knob {
+    position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; transition: left .15s;
+    box-shadow: 0 1px 2px rgba(0,0,0,.25);
+  }
+  .sw-toggle .sw-label { font-size: 12.5px; font-weight: 700; color: var(--text-soft); white-space: nowrap; }
+  .sw-toggle.on .sw-track { background: var(--accent); }
+  .sw-toggle.on .sw-knob { left: 21px; }
+  .sw-toggle.on .sw-label { color: var(--accent-dark); }
+
+  .btn {
+    padding: 7px 14px; border-radius: 9px; border: 1px solid var(--border); background: #fafbfc;
+    font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text);
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent-dark); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-dark); }
+  .btn.danger { color: var(--red); }
+  .btn.danger:hover { border-color: var(--red); background: #fdeaea; }
+  .btn[disabled] { opacity: .55; cursor: not-allowed; }
+  .btn.sm { padding: 4px 10px; font-size: 12px; }
+
+  .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .data-table th, .data-table td {
+    border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top;
+  }
+  .data-table th { background: #f6f8fa; font-weight: 700; font-size: 12px; white-space: nowrap; }
+  .data-table td input[type="text"], .data-table td textarea {
+    width: 100%; border: 1px solid transparent; background: transparent; font-family: inherit;
+    font-size: 13px; padding: 4px 5px; border-radius: 6px; color: var(--text); resize: vertical;
+  }
+  .data-table td input[type="text"]:focus, .data-table td textarea:focus {
+    border-color: var(--accent); background: #fff; outline: none;
+  }
+  .data-table tr.off td { background: #fafafa; color: var(--text-soft); }
+  .tbl-wrap { overflow-x: auto; max-height: 460px; overflow-y: auto; border-radius: 9px; }
+  .inline-actions { display: flex; gap: 6px; align-items: center; }
+
+  .pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+  .pill.on { background: var(--accent-soft); color: var(--accent-dark); }
+  .pill.off { background: #eef1f5; color: var(--text-soft); }
+  .pill.miss { background: #fdeaea; color: #b42318; }
+
+  .empty-note { padding: 24px; text-align: center; color: var(--text-soft); font-size: 13px; }
+  .test-result {
+    margin-top: 10px; padding: 10px 12px; border-radius: 9px; background: #f6f8fa;
+    border: 1px solid var(--border); font-size: 13px; line-height: 1.6; white-space: pre-wrap;
+  }
+  .log-item {
+    padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px; margin-bottom: 7px;
+    font-size: 12.5px; line-height: 1.55;
+  }
+  .log-item .lg-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 3px; }
+  .log-item .lg-time { color: var(--text-soft); font-size: 11px; }
+  .log-item .lg-q { color: var(--text-soft); }
+  .log-item.clickable { cursor: pointer; }
+  .log-item.clickable:hover { border-color: var(--accent); }
+  .log-item.open { border-color: var(--accent); background: #fbfdff; }
+  .lg-detail {
+    margin-top: 8px; padding: 8px 10px; border-top: 1px dashed var(--border);
+    background: #fff; border-radius: 8px;
+  }
+
+  /* ---------- 知識庫（RAG 第三層） ---------- */
+  .tag-auto-rag { color: #6b21a8; background: #f3e8ff; }
+  .tag-state {
+    font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px;
+    background: #eef1f5; color: var(--text-soft); white-space: nowrap;
+  }
+  .tag-state.draft { background: #fef3c7; color: #92400e; }
+  .tag-state.ready { background: #e7f5ee; color: #147d51; }
+  .tag-state.err { background: #fdeaea; color: #b42318; }
+  .tag-state.busy { background: #e8f0fe; color: #1a5fb4; }
+
+  .kb-stat { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 4px; }
+  .kb-stat .ks { font-size: 11.5px; color: var(--text-soft); }
+  .kb-stat .ks b { display: block; font-size: 17px; color: var(--text); font-weight: 700; }
+
+  .kb-drop {
+    border: 2px dashed var(--border); border-radius: 11px; padding: 22px 14px; text-align: center;
+    color: var(--text-soft); font-size: 13px; background: #fafbfc; cursor: pointer;
+  }
+  .kb-drop:hover, .kb-drop.over {
+    border-color: var(--accent); background: var(--accent-soft); color: var(--accent-dark);
+  }
+
+  .kb-col {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--border);
+    border-radius: 9px; margin-bottom: 7px; background: #fafbfc; flex-wrap: wrap;
+  }
+  .kb-col.off { opacity: .62; }
+  .kb-col .kc-name { font-size: 13px; font-weight: 700; }
+  .kb-col .kc-sub { font-size: 11px; color: var(--text-soft); display: block; }
+
+  .kb-wiz-steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .kb-step {
+    font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+    background: #eef1f5; color: var(--text-soft);
+  }
+  .kb-step.on { background: var(--accent); color: #fff; }
+  .kb-step.done { background: #e7f5ee; color: #147d51; }
+
+  .kb-chunk {
+    border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; margin-bottom: 7px;
+    background: #fff; font-size: 12.5px;
+  }
+  .kb-chunk.off { background: #fafafa; }
+  .kb-chunk .ck-head {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 5px;
+    font-size: 11px; color: var(--text-soft);
+  }
+  .kb-chunk textarea {
+    width: 100%; border: 1px solid var(--border); border-radius: 7px; padding: 6px 7px;
+    font-family: inherit; font-size: 12.5px; line-height: 1.55; color: var(--text);
+    resize: vertical; background: #fff;
+  }
+  .kb-chunk textarea:focus { border-color: var(--accent); outline: none; }
+  .kb-chunk .ck-acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
+
+  .kb-src {
+    font-size: 11.5px; font-weight: 600; color: var(--accent-dark); background: var(--accent-soft);
+    padding: 1px 7px; border-radius: 8px;
+  }
+  .kb-hit {
+    border: 1px solid var(--border); border-left: 3px solid #cbd5e1; border-radius: 8px;
+    padding: 7px 10px; margin-bottom: 6px; font-size: 12.5px; line-height: 1.55;
+  }
+  .kb-hit.picked { border-left-color: var(--accent); background: #fbfdff; }
+  .kb-hit .kh-head {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 3px;
+  }
+  .kb-score { font-size: 11px; color: var(--text-soft); }
+  .kb-score b { color: var(--text); }
+  .kb-stage { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
+
+  /* 知識庫的四層導覽：麵包屑 + 可點的列表項 */
+  .kb-crumbs {
+    display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+    font-size: 12.5px; margin-bottom: 10px; color: var(--text-soft);
+  }
+  .kb-crumbs a {
+    color: var(--accent-dark); cursor: pointer; font-weight: 600;
+    border-bottom: 1px dashed transparent;
+  }
+  .kb-crumbs a:hover { border-bottom-color: var(--accent-dark); }
+  .kb-crumbs .c-sep { color: var(--text-soft); opacity: .7; }
+  .kb-crumbs .c-cur { font-weight: 700; color: var(--text); }
+
+  .kb-pg-head {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 9px;
+  }
+  .kb-pg-head h3 { margin: 0; }
+
+  /* 「新增知識庫」小彈窗：上排兩個單選（圖片／文檔），中間庫名，下面添加／取消 */
+  .kb-type-opts { display: flex; gap: 10px; margin-top: 4px; }
+  .kb-type-opts label {
+    flex: 1; display: flex; align-items: flex-start; gap: 8px; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+    background: #fff; transition: border-color .12s, background .12s;
+  }
+  .kb-type-opts label:hover { border-color: var(--accent); }
+  .kb-type-opts label.on { border-color: var(--accent); background: var(--accent-soft); }
+  .kb-type-opts input[type="radio"] { margin-top: 3px; flex-shrink: 0; }
+  .kb-type-opts .kt-name { font-weight: 700; font-size: 13px; }
+  .kb-type-opts .kt-desc { font-size: 12px; color: var(--text-soft); line-height: 1.45; margin-top: 2px; }
+
+  .kb-col.clickable { cursor: pointer; }
+  .kb-col.clickable:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .kb-col.clickable:hover .kc-name { color: var(--accent-dark); }
+  .kb-col .kc-go { color: var(--text-soft); font-size: 15px; }
+
+  table.data-table tbody tr.row-link { cursor: pointer; }
+  table.data-table tbody tr.row-link:hover { background: var(--accent-soft); }
+
+  /* ===================== 頂部：商家列（新） ===================== */
+  .mbar { display: flex; align-items: center; gap: 8px; padding: 9px 14px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    position: relative; z-index: 40; }
+  .mbar .mtitle { font-size: 12px; color: var(--text-soft); font-weight: 700;
+    white-space: nowrap; margin-right: 2px; }
+  .mbar .mlist { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+    overflow: hidden; }
+  .mbar .mbtn { position: relative; flex: 0 0 auto; max-width: 190px;
+    padding: 7px 14px; border-radius: 9px; border: 1px solid var(--border);
+    background: #fafbfc; color: var(--text-soft); font-weight: 700; font-size: 13px;
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: inherit; transition: all .12s; }
+  .mbar .mbtn:hover { border-color: var(--accent); color: var(--accent); }
+  .mbar .mbtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .mbar .mbtn .badge { position: absolute; top: -6px; right: -6px;
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px;
+    background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
+    text-align: center; padding: 0 5px; box-shadow: 0 0 0 2px #fff; z-index: 2; }
+  .mbar .more { padding: 7px 12px; font-size: 15px; font-weight: 700; }
+  .mbar .mmenu { display: none; position: absolute; top: 100%; right: 14px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 11px;
-    box-shadow: 0 10px 30px rgba(15, 30, 50, .14); padding: 8px; z-index: 200; }
-  .rolemenu.open { display: block; }
-  .rolemenu-head { font-size: 11.5px; color: var(--text-soft); font-weight: 700; padding: 2px 6px 7px; }
-  .roleitem { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 9px;
-    border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text);
-    font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
-  .roleitem:hover { background: #f6f8fa; }
-  .roleitem.cur { background: var(--accent-soft); color: var(--accent-dark); cursor: default; }
-  .roleitem .ic { width: 22px; height: 22px; border-radius: 7px; background: #eef1f5; color: #475569;
-    display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
-  .roleitem.cur .ic { background: #fff; color: var(--accent-dark); }
-  .roleitem .now { margin-left: auto; font-size: 10.5px; font-weight: 700; color: var(--accent-dark); }
-  .logout { width: 100%; padding: 7px; border: 1px solid var(--border); border-radius: 8px; background: #fafbfc;
-    color: var(--text-soft); font-size: 12.5px; cursor: pointer; font-family: inherit; }
-  .logout:hover { border-color: var(--red); color: var(--red); background: var(--red-soft); }
+    box-shadow: 0 10px 30px rgba(15, 30, 50, .14); padding: 8px; z-index: 220;
+    min-width: 180px; max-height: 60vh; overflow: auto; }
+  .mbar .mmenu.open { display: block; }
+  .mbar .mmenu .mbtn { display: block; width: 100%; text-align: left;
+    margin-bottom: 4px; max-width: none; }
+  .app { height: calc(100vh - 52px); }
 
-  /* ---------- 主區 ---------- */
-  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  .topbar { padding: 14px 22px; border-bottom: 1px solid var(--border); background: var(--panel);
-    display: flex; align-items: center; gap: 12px; flex-shrink: 0; flex-wrap: wrap; }
-  .topbar h2 { font-size: 17px; font-weight: 700; }
-  .topbar .sp { flex: 1; }
-  .body { flex: 1; overflow-y: auto; padding: 18px 22px 40px; }
-  .body.nopad { padding: 0; overflow: hidden; display: flex; }
+  /* ===================== 側欄底部：身分切換 + 登出（新） ===================== */
+  .sfoot { padding: 10px 12px; border-top: 1px solid var(--border); position: relative; }
+  .sfoot .who { display: flex; align-items: center; gap: 8px; padding: 5px 6px;
+    border-radius: 9px; margin-bottom: 6px; transition: background .12s; }
+  .sfoot .who.clickable { cursor: pointer; }
+  .sfoot .who.clickable:hover { background: #f6f8fa; }
+  .sfoot .who .ava { width: 30px; height: 30px; border-radius: 50%; background: #e2e8f0;
+    color: #475569; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; flex-shrink: 0; }
+  .sfoot .who .whoInfo { min-width: 0; }
+  .sfoot .who .nm { font-weight: 600; font-size: 13.5px; }
+  .sfoot .who .rl { color: var(--text-soft); font-size: 11.5px; }
+  .sfoot .who .caret { margin-left: auto; color: var(--text-soft); font-size: 10px; }
+  .sfoot .rolemenu { display: none; position: absolute; left: 10px; right: 10px;
+    bottom: calc(100% - 4px); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 11px; box-shadow: 0 10px 30px rgba(15, 30, 50, .14);
+    padding: 8px; z-index: 200; }
+  .sfoot .rolemenu.open { display: block; }
+  .sfoot .rolemenu-head { font-size: 11.5px; color: var(--text-soft); font-weight: 700;
+    padding: 2px 6px 7px; }
+  .sfoot .roleitem { display: flex; align-items: center; gap: 8px; width: 100%;
+    text-align: left; padding: 8px 9px; border: 1px solid transparent; border-radius: 8px;
+    background: transparent; color: var(--text); font-size: 13px; font-weight: 600;
+    cursor: pointer; font-family: inherit; }
+  .sfoot .roleitem:hover { background: #f6f8fa; }
+  .sfoot .roleitem.cur { background: var(--accent-soft); color: var(--accent-dark); cursor: default; }
+  .sfoot .roleitem .ic { width: 22px; height: 22px; border-radius: 7px; background: #eef1f5;
+    color: #475569; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; flex-shrink: 0; }
+  .sfoot .roleitem.cur .ic { background: #fff; color: var(--accent-dark); }
+  .sfoot .roleitem .now { margin-left: auto; font-size: 10.5px; font-weight: 700;
+    color: var(--accent-dark); }
+  .sfoot .logout { width: 100%; padding: 7px; border: 1px solid var(--border);
+    border-radius: 8px; background: #fafbfc; color: var(--text-soft); font-size: 12.5px;
+    cursor: pointer; font-family: inherit; }
+  .sfoot .logout:hover { border-color: var(--red); color: var(--red); background: #fdecec; }
 
-  /* ---------- 元件 ---------- */
-  button.primary, button.ghost, button.danger {
-    padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer;
-    border: 1px solid transparent; transition: all .12s; font-family: inherit; }
-  button.primary { background: var(--accent); color: #fff; }
-  button.primary:hover { background: var(--accent-dark); }
-  button.ghost { background: #fafbfc; border-color: var(--border); color: var(--text-soft); }
-  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
-  button.danger { background: #fff; border-color: var(--border); color: var(--text-soft); }
-  button.danger:hover { border-color: var(--red); color: var(--red); background: var(--red-soft); }
-  button.tiny { padding: 5px 9px; font-size: 12px; border-radius: 7px; }
-  button:disabled { opacity: .5; cursor: default; }
+  /* 貼文特殊配置彈窗內的群組 */
+  .postgrp { border: 1px solid var(--border); border-radius: 11px; padding: 10px 12px;
+    margin-bottom: 10px; background: #fafbfc; }
+  .postgrp .hd { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .postgrp .list { max-height: 220px; overflow: auto; background: #fff; border: 1px solid var(--border);
+    border-radius: 9px; padding: 6px 8px; }
+  .postgrp label.chk { display: flex; align-items: center; gap: 8px; padding: 4px 2px;
+    font-size: 13px; cursor: pointer; }
+  .postgrp label.chk.off { opacity: .45; }
 
-  select, input[type=text] { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
-    background: #fafbfc; font-size: 13px; color: var(--text); outline: none; font-family: inherit; }
-  select:focus, input[type=text]:focus { border-color: var(--accent); background: #fff; }
+  /* markdown 圖片（與 ops.html 同名） */
+  .mdimg { max-width: 100%; max-height: 220px; border-radius: 8px; display: block;
+    margin: 6px 0; border: 1px solid var(--border); background: #fafbfc; cursor: zoom-in; }
 
-  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); }
-  th, td { padding: 10px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid #f0f2f5; }
-  th { background: #fafbfc; color: var(--text-soft); font-weight: 600; font-size: 12px; white-space: nowrap; }
-  tr:last-child td { border-bottom: none; }
-  tbody tr:hover { background: #fbfcfd; }
-  .muted { color: var(--text-soft); }
-  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700;
-    background: #eef1f5; color: var(--text-soft); }
-  .pill.ok { background: var(--accent-soft); color: var(--accent-dark); }
-  .pill.off { background: var(--red-soft); color: var(--red); }
-  .pill.warn { background: var(--amber-soft); color: var(--amber); }
-  .pill.info { background: var(--blue-soft); color: var(--blue); }
+  /* 小標籤（FAQ / 表格 / 概覽清單用） */
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px;
+    font-weight: 700; background: #eef1f5; color: var(--text-soft); }
+  .btn.sm { padding: 4px 10px; font-size: 12px; }
 
-  .switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none;
-    padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px; background: #fafbfc;
-    font-size: 12.5px; font-weight: 600; color: var(--text-soft); font-family: inherit; transition: all .12s; }
-  .switch .dot2 { width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
-  .switch.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
-  .switch.on .dot2 { background: var(--accent); }
-  .switch.off { background: var(--red-soft); border-color: #f5c2c2; color: var(--red); }
-  .switch.off .dot2 { background: var(--red); }
-
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    padding: 14px 16px; box-shadow: var(--shadow); margin-bottom: 14px; }
-  .card h3 { font-size: 13.5px; font-weight: 700; margin-bottom: 10px; }
-  .grid { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-
-  /* ---------- 「i」圓標 ---------- */
-  .infotip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
-    border-radius: 50%; background: #e5e9f0; color: #6b7280; font-size: 11px; font-style: normal;
-    font-weight: 700; cursor: help; margin-left: 5px; vertical-align: middle; flex-shrink: 0; }
-  .infotip:hover { background: var(--accent-soft); color: var(--accent-dark); }
-  .tipbox { position: fixed; z-index: 9999; max-width: 300px; background: #1f2a37; color: #fff;
-    font-size: 12px; line-height: 1.6; padding: 8px 11px; border-radius: 8px; pointer-events: none;
-    box-shadow: 0 8px 24px rgba(0,0,0,.2); display: none; }
-
-  /* ---------- 會話兩欄 ---------- */
-  .conv-wrap { display: flex; flex: 1; min-width: 0; }
-  .conv-list { width: 306px; flex-shrink: 0; border-right: 1px solid var(--border); background: var(--panel);
-    overflow-y: auto; }
-  .conv-item { padding: 11px 14px; border-bottom: 1px solid #f0f2f5; cursor: pointer; transition: background .12s; }
-  .conv-item:hover { background: #fbfcfd; }
-  .conv-item.active { background: var(--accent-soft); }
-  .conv-item .l1 { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
-  .conv-item .nm { font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; }
-  .conv-item .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
-  .conv-item .tm { margin-left: auto; font-size: 11px; color: var(--text-soft); flex-shrink: 0; }
-  .conv-item .l2 { font-size: 12.5px; color: var(--text-soft); white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; }
-  .thread { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  .thread-head { padding: 11px 18px; border-bottom: 1px solid var(--border); background: var(--panel);
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .thread-head .nm { font-weight: 700; }
-  .msgs { flex: 1; overflow-y: auto; padding: 16px 18px; background: #f8fafb; }
-  .msg { max-width: 74%; margin-bottom: 10px; }
-  .msg .bub { padding: 9px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.62;
-    word-break: break-word; background: var(--panel); border: 1px solid var(--border); }
-  .msg .meta { font-size: 11px; color: var(--text-soft); margin: 3px 2px 0; }
-  .msg.out { margin-left: auto; }
-  .msg.out .bub { background: var(--accent-soft); border-color: #cfe8dc; }
-  .mdimg { max-width: 220px; border-radius: 8px; display: block; margin-top: 6px; }
-  .reply { border-top: 1px solid var(--border); background: var(--panel); padding: 11px 14px; }
-  .reply textarea { width: 100%; min-height: 62px; resize: vertical; padding: 9px 11px; font-size: 13.5px;
-    border: 1px solid var(--border); border-radius: 9px; background: #fafbfc; font-family: inherit;
-    color: var(--text); outline: none; }
-  .reply textarea:focus { border-color: var(--accent); background: #fff; }
-  .reply .acts { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
-  .attach { font-size: 12px; color: var(--text-soft); }
-  .aibox { font-size: 12px; color: var(--text-soft); padding: 8px 18px; border-bottom: 1px solid #f0f2f5;
-    background: #fcfdfd; max-height: 132px; overflow-y: auto; }
-  .aibox .row { padding: 3px 0; }
-
-  /* ---------- 彈窗（靜態節點） ---------- */
-  .ov { position: fixed; inset: 0; background: rgba(15, 30, 50, .38); display: none;
-    align-items: center; justify-content: center; z-index: 900; padding: 20px; }
-  .ov.show { display: flex; }
-  .box { background: var(--panel); border-radius: 13px; width: 100%; max-width: 460px; max-height: 88vh;
-    overflow-y: auto; padding: 20px 22px; box-shadow: 0 18px 48px rgba(0,0,0,.22); }
-  .box.wide { max-width: 640px; }
-  .box h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
-  .box .sub { font-size: 12.5px; color: var(--text-soft); margin-bottom: 15px; }
-  .box .acts { justify-content: flex-end; margin-top: 18px; gap: 9px; display: flex; }
-  .err { display: none; margin-bottom: 12px; padding: 9px 12px; border-radius: 8px; background: var(--red-soft);
-    color: var(--red); font-size: 12.5px; }
-  .err.show { display: block; }
-  .fld { margin-bottom: 13px; }
-  .fld > label { display: block; font-size: 12.5px; color: var(--text-soft); font-weight: 600; margin-bottom: 5px; }
-  .chk { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: 13px;
-    font-weight: 600; padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px;
-    background: #fafbfc; margin: 0 6px 6px 0; }
-  .chk input { width: 15px; height: 15px; accent-color: var(--accent); }
-  .chk.off { opacity: .45; }
-  /* 貼文配置：三組（FAQ / 表格 / 知識庫）各自一區 */
-  .postgrp { border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; margin-bottom: 11px; }
-  .postgrp .hd { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; }
-  .postgrp .hd b { font-size: 13.5px; }
-  .postgrp .hd .sp { flex: 1; }
-  .postgrp .list { max-height: 168px; overflow-y: auto; }
-  .postgrp .hint { font-size: 12px; color: var(--text-soft); }
-
-  #toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%) translateY(20px);
-    background: #1f2a37; color: #fff; padding: 10px 18px; border-radius: 9px; font-size: 13px;
-    opacity: 0; transition: all .22s; pointer-events: none; z-index: 99999; }
-  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-  #toast.bad { background: var(--red); }
-  .empty { padding: 36px 20px; text-align: center; color: var(--text-soft); font-size: 13px; }
-  .empty.full { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin: 18px 22px; }
 </style>
 </head>
 <body>
+
+<!-- ================= 頂部：商家列（該客服名下的商家） ================= -->
+<div class="mbar" id="mbar"></div>
+
 <div class="app">
   <aside class="sidebar">
     <div class="sidebar-head">
       <div class="brand">
         <div class="logo">客</div>
-        <h1>客服系統<span id="brandSub">客服工作台</span></h1>
+        <div><h1>客服工作台</h1><span>WeChat · WhatsApp · IG · FB</span></div>
+      </div>
+      <div class="nav-main">
+        <div class="nav active" id="nav-dm" onclick="switchSection('dm')">私訊<span class="nav-badge" id="nav-badge-dm" style="display:none"></span></div>
+        <div class="nav" id="nav-posts" onclick="switchSection('posts')">貼文留言<span class="nav-badge" id="nav-badge-posts" style="display:none"></span></div>
+      </div>
+      <div class="tabs" id="tabs"></div>
+      <div class="ar-bar" id="arBar">
+        <span class="ar-label" id="arLabel">AI 自動回復</span>
+        <button class="ar-btn off" id="arBtn" onclick="toggleAutoReply()">載入中…</button>
+        <button class="ar-btn" id="arCfgBtn" onclick="openSettings('autoreply')" title="自動回復設定">⚙</button>
       </div>
     </div>
-    <nav class="nav" id="nav"></nav>
-    <div class="sidebar-foot">
+    <div class="search"><input id="search" type="text" placeholder="搜尋…" oninput="onSearchInput()"></div>
+    <div class="conv-list" id="convList"></div>
+    <div class="sfoot">
       <div class="who" id="whoBox">
         <div class="ava" id="ava">–</div>
-        <div>
+        <div class="whoInfo">
           <div class="nm" id="meName">–</div>
           <div class="rl" id="meRole">–</div>
         </div>
         <span class="caret" id="whoCaret" hidden>▼</span>
       </div>
       <div class="rolemenu" id="roleMenu">
-        <div class="rolemenu-head">切換身分<span class="infotip"
-          data-tip="切換後直接進該身分的首頁，不需重新登入。">i</span></div>
+        <div class="rolemenu-head">切換身分</div>
         <div id="roleList"></div>
       </div>
       <button class="logout" id="btnLogout">登出</button>
     </div>
   </aside>
 
-  <main class="main">
-    <header class="topbar">
-      <h2 id="pageTitle">會話</h2>
-      <span id="pageTip"></span>
-      <div class="sp"></div>
-      <div id="pageCtl" class="grid"></div>
-      <div class="acts" id="pageActs" style="display:flex;gap:8px"></div>
-    </header>
-    <div class="body nopad" id="view"></div>
+  <main class="chat">
+    <div class="chat-head" id="chatHead">
+      <div class="chat-placeholder" style="flex:1; flex-direction:row; gap:16px;">
+        <span class="big">💬</span><p>選擇左側一位用戶或一篇貼文開始查看</p>
+      </div>
+    </div>
+    <div class="messages" id="messages" style="display:none"></div>
+    <div class="post-detail" id="postDetail" style="display:none"></div>
+    <div class="composer" id="composer" style="display:none">
+      <div class="pending-file" id="pendingFile" style="display:none">
+        <span class="file-icon">📎</span>
+        <span class="pf-name" id="pfName"></span>
+        <span class="pf-x" onclick="clearPendingFile()">✕</span>
+      </div>
+      <div class="composer-row">
+        <label class="attach-btn" title="傳送檔案 / 圖片">＋<input type="file" id="fileInput" style="display:none" onchange="onFilePicked(this)"></label>
+        <textarea id="textInput" rows="1" placeholder="輸入回覆…（Enter 送出，Shift+Enter 換行）"></textarea>
+        <button class="send-btn" id="sendBtn" onclick="sendReply()">送出</button>
+      </div>
+    </div>
   </main>
 </div>
 
-<div id="toast"></div>
-
-<!-- ===================== 靜態彈窗節點（不進重繪區） ===================== -->
-<div class="ov" id="ovPost">
-  <div class="box wide">
-    <h3>貼文特殊配置</h3>
-    <div class="sub" id="ovPostSub">這一則貼文的留言要用哪些資料回答。沒配置過＝與私訊完全相同。
-      <span class="infotip" data-tip="三組各自獨立：每一組有一個開關與一份勾選清單。★ 開關開著就不能空勾 —— 那一層會用一個空的集合去回答，比不回覆更糟。">i</span></div>
-    <div class="err" id="ovPostErr"></div>
-    <div class="fld">
-      <label>這則貼文的留言回覆</label>
-      <button class="switch" id="postEnabled"><span class="dot2"></span><span id="postEnabledTxt">開</span></button>
+<!-- ================= 通用詢問框（不用原生是/否彈窗） ================= -->
+<div class="faq-overlay" id="askOverlay" onclick="if(event.target===this)closeAsk()">
+  <div class="faq-box" style="width:min(420px,100%)">
+    <div class="sp-head"><h2>確認</h2><div class="spacer"></div>
+      <button class="sp-close" onclick="closeAsk()" title="關閉">✕</button></div>
+    <div class="fm-body"><div id="askMsg" style="font-size:14px;line-height:1.6"></div></div>
+    <div class="sp-head" style="border-top:1px solid var(--border);border-bottom:none">
+      <div class="spacer"></div>
+      <button class="btn" onclick="closeAsk()">取消</button>
+      <button class="btn primary" id="askYes">確定</button>
     </div>
-    <div id="postBody"></div>
-    <div class="acts">
-      <button class="ghost" data-close>取消</button>
-      <button class="ghost" id="postReset">移除特殊配置</button>
-      <button class="primary" id="postSave">儲存</button>
+  </div>
+</div>
+
+<!-- ================= 貼文特殊配置（新功能；貼文詳情右上角開啟） ================= -->
+<div class="faq-overlay" id="postCfgOverlay" onclick="if(event.target===this)closePostCfg()">
+  <div class="faq-box" style="width:min(700px,100%)">
+    <div class="sp-head">
+      <h2>貼文特殊配置</h2>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="closePostCfg()" title="關閉">✕</button>
+    </div>
+    <div class="fm-body">
+      <div class="fm-hint" id="postCfgHint">這一則貼文的留言要用哪些資料回答。沒配置過＝與私訊完全相同。</div>
+      <div id="postCfgErr"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin:8px 0 12px">
+        <b>這則貼文的留言回覆</b>
+        <button class="ar-btn off" id="postEnabled" onclick="togglePostEnabled()">關</button>
+      </div>
+      <div id="postCfgBody"><div class="empty">載入中…</div></div>
+    </div>
+    <div class="sp-head" style="border-top:1px solid var(--border);border-bottom:none">
+      <button class="btn" onclick="savePostCfg(true)">移除特殊配置</button>
+      <div class="spacer"></div>
+      <button class="btn" onclick="closePostCfg()">取消</button>
+      <button class="btn primary" onclick="savePostCfg(false)">儲存</button>
     </div>
   </div>
 </div>
 
 <script src="/ui/common.js"></script>
 <script>
-(function () {
-  'use strict';
 
-  var PLATFORM_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
-  var LAYER_LABEL = { faq: 'FAQ', table: '業務表格', rag: '知識庫' };
-  var TIER_LABEL = { faq: 'FAQ', table: '表格', rag: '知識庫', miss: '未命中', claim: '認領', error: '錯誤' };
-  var TIER_CLASS = { faq: 'ok', table: 'info', rag: 'info', miss: 'warn', claim: 'off', error: 'off' };
+'use strict';
+/* ==========================================================================
+   新架構版客服工作台（照舊版外觀，資料改走 CRM 的 /console/agent/*）
+   - 頂部：商家列（該客服名下的商家；未處理紅點；溢出收進「⋯」）
+   - 側欄：私訊 / 貼文留言 一級導覽 + 平台 tab + AI 開關 + ⚙ + 搜尋 + 列表
+   - 主區：私訊氣泡（含命中標記）/ 貼文詳情（右上角貼文特殊配置）/ 回覆框
+   ========================================================================== */
 
-  var TABS = [
-    { key: 'conv', label: '會話', title: '會話工作台',
-      tip: '左側是會話清單（紅點＝有待處理的來訊），右側是對話與回覆框。回覆會建立外送任務，由 Connector 送出。' },
-    { key: 'config', label: '自動回覆', title: '自動回覆配置',
-      tip: '兩層開關（商家×平台×場景 AND 平台帳號）＋ 三層的層開關與啟用集。★ 啟用集是空的話，那一層不會跑。' },
-    { key: 'test', label: '命中測試', title: '命中測試',
-      tip: '只跑指定的層，不寫任何紀錄、不改任何開關。' },
-    { key: 'logs', label: '回覆紀錄', title: '回覆紀錄',
-      tip: '每筆回覆的層級、分數與檢索明細。' }
-  ];
+var PLATFORM_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
+var PLATFORM_TAG_CLASS = { wechat: 'wechat', whatsapp: 'whatsapp', ig: 'ig', fb: 'fb' };
+var DM_PLATFORMS = ['wechat', 'whatsapp', 'ig', 'fb'];
+var POST_PLATFORMS = ['ig', 'fb'];
+var ROLE_LABEL = { admin: '管理員', agent: '客服坐席', ops: '運維' };
+var TIER_LABEL = { faq: 'FAQ 命中', table: '表格命中', rag: '知識庫命中', miss: '未命中' };
 
-  var state = {
-    tab: 'conv', csrf: '', me: null,
-    businesses: [], bizId: null,
-    platform: 'whatsapp', scope: 'dm', onlyPending: false,
-    convs: [], activeKey: null, activeAcc: null, thread: [], logs: [], aiEnabled: true,
-    overview: null, faqs: [], tables: [], collections: [],
-    testLayers: ['faq', 'table', 'rag'], testText: '', testResult: null,
-    logTier: '', logRows: [], logBizId: null,
-    postId: '', postCfg: null, postEnabled: true, postLayers: {}, postChecked: {}
+var state = {
+  me: {}, csrf: '',
+  businesses: [], bizId: null, bizStats: {},
+  section: 'dm',                            // dm | posts
+  platform: 'whatsapp',
+  scope: 'dm',
+  convs: [], convsTotal: 0,
+  posts: [], postsHasMore: false,
+  activeKey: null, activeAcc: null, thread: [], logs: [],
+  activePost: null,
+  search: '',
+  aiEnabled: null,
+  pendingFile: null,
+  sending: false,
+  settingsTab: 'autoreply',
+  overview: null,
+  testText: '', testLayers: ['faq', 'table', 'rag'], testResult: null,
+  logTier: '', logRows: [],
+  postCfg: null, postEnabled: true, postLayers: {}, postChecked: {},
+  post: { id: '', acc: 0 },
+};
+
+function $(id) { return document.getElementById(id); }
+
+function esc(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* 把文字裡的 markdown 圖片標記 ![題注](url) 轉成 <img>
+   （與 ops.html 同一份實作；只放行 /media/、/files/ 與 http(s)://，先 escape 再處理） */
+function mdImages(s) {
+  var out = esc(s || '');
+  out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, url) {
+    if (!/^(\/media\/|\/files\/|https?:\/\/)/.test(url)) return m;
+    return '<img class="mdimg" src="' + url + '" alt="' + alt + '">';
+  });
+  return out.replace(/\n/g, '<br>');
+}
+
+/* 清單／表格的預覽欄：圖塞不進一行，但也不能把 ![題注](/media/x.png) 原始字串露出來
+   —— 先換成「[圖]」再截斷。 */
+function mdPreview(s, n) {
+  var t = String(s === null || s === undefined ? '' : s)
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '[圖]');
+  return esc(t.slice(0, n));
+}
+
+/* 「i」圓標：定義了樣式就必須真的用到（ui_check 的約定） */
+function infotip(text) {
+  return '<span class="infotip" data-tip="' + esc(text) + '">i</span>';
+}
+
+function fmtTime(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  function p(n) { return (n < 10 ? '0' : '') + n; }
+  var today = new Date();
+  var hm = p(d.getHours()) + ':' + p(d.getMinutes());
+  if (d.toDateString() === today.toDateString()) return hm;
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
+}
+
+function fmtSize(n) {
+  n = Number(n || 0);
+  if (!n) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function avatarChar(name) {
+  var s = String(name || '').trim();
+  return s ? s.charAt(0).toUpperCase() : '?';
+}
+
+function toast(msg) { showToast(msg); }
+
+var _toastTimer = null;
+function showToast(text, ms) {
+  var el = $('appToast'), t = $('appToastText');
+  if (!el || !t) return;
+  t.textContent = text;
+  el.style.display = 'flex';
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(function () { el.style.display = 'none'; }, ms || 3400);
+}
+
+/* 自動回復命中標記（沿用舊版寫法；掛在「客戶來訊」氣泡的 meta 上） */
+function autoTag(m) {
+  if (!m) return '';
+  var st = m.auto_reply_state || '';
+  var detail = esc(m.auto_reply_detail || '');
+  var pre = '';
+  if (m.manual_confirmed) pre = '人工確認·';
+  if (st === 'miss') return '<span class="tag-auto-miss" title="' + detail + '">自動回復未命中</span>';
+  if (st !== 'hit') return '';
+  if (m.auto_reply_tier === 'faq') {
+    return '<span class="tag-auto-faq" title="' + detail + '">' + pre + '自動回復-FAQ命中</span>';
+  }
+  if (m.auto_reply_tier === 'table') {
+    var rw = (m.auto_reply_detail || '').indexOf('改寫後命中') >= 0;
+    return '<span class="tag-auto-table' + (rw ? ' rw' : '') + '" title="' + detail + '">'
+      + pre + '自動回復-表格命中' + (rw ? '·改寫' : '') + '</span>';
+  }
+  if (m.auto_reply_tier === 'rag') {
+    var rw2 = (m.auto_reply_detail || '').indexOf('改寫後命中') >= 0;
+    return '<span class="tag-auto-rag" title="' + detail + '">' + pre
+      + '自動回復-知識庫命中' + (rw2 ? '·改寫' : '') + '</span>';
+  }
+  return '';
+}
+
+/* ---------------------------------------------------------------- API */
+function qs(path, params) {
+  var parts = [];
+  (params || []).forEach(function (p) {
+    if (p[1] === null || p[1] === undefined || p[1] === '') return;
+    parts.push(encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]));
+  });
+  return path + (parts.length ? (path.indexOf('?') >= 0 ? '&' : '?') + parts.join('&') : '');
+}
+
+function api(path, opts) {
+  opts = opts || {};
+  var o = { method: opts.method || 'GET', credentials: 'same-origin', headers: {} };
+  if (opts.body !== undefined) {
+    o.headers['Content-Type'] = 'application/json';
+    o.body = JSON.stringify(opts.body);
+  }
+  if (o.method !== 'GET') o.headers['X-CSRF-Token'] = state.csrf;
+  return fetch(path, o).then(function (r) {
+    return r.json().catch(function () { return {}; })
+      .then(function (d) { return { status: r.status, data: d || {} }; });
+  });
+}
+
+function apiJson(path, body) { return api(path, { method: 'POST', body: body }); }
+
+function guard(res) {
+  if (res.status === 401) { window.location.href = '/login'; return false; }
+  if (res.status === 403) { showToast(res.data.error || '沒有權限'); return false; }
+  if (res.status === 502) { showToast(res.data.error || '連不上 Connector'); return false; }
+  if (!res.data || !res.data.ok) { showToast((res.data && res.data.error) || '操作失敗'); return false; }
+  return true;
+}
+
+/* ---------------------------------------------------------------- 頂部商家列 */
+function loadBusinesses() {
+  return api('/console/agent/businesses').then(function (res) {
+    if (!guard(res)) return;
+    state.businesses = res.data.items || [];
+    if (!state.bizId && state.businesses.length) state.bizId = state.businesses[0].id;
+    return api('/console/agent/merchant-stats').then(function (r2) {
+      state.bizStats = (r2.data && r2.data.ok) ? (r2.data.items || {}) : {};
+      renderMerchantBar();
+      return true;
+    });
+  });
+}
+
+function statOf(bid) { return state.bizStats[String(bid)] || {}; }
+
+function renderMerchantBar() {
+  var bar = $('mbar');
+  bar.innerHTML = '<span class="mtitle">商家</span>';
+  var wrap = document.createElement('div');
+  wrap.className = 'mlist'; wrap.id = 'mlist';
+  bar.appendChild(wrap);
+
+  var list = state.businesses.slice();
+  list.sort(function (a, b) {
+    var ta = statOf(a.id).last_ts || '';
+    var tb = statOf(b.id).last_ts || '';
+    if (ta !== tb) return ta < tb ? 1 : -1;              // 最近有訊息的排前面
+    var pa = statOf(a.id).pending || 0, pb = statOf(b.id).pending || 0;
+    if (pa !== pb) return pb - pa;
+    return String(a.business_name || '').localeCompare(String(b.business_name || ''));
+  });
+
+  list.forEach(function (b) { wrap.appendChild(mkMerchantBtn(b)); });
+
+  var more = document.createElement('button');
+  more.className = 'mbtn more'; more.id = 'mMore'; more.textContent = '⋯';
+  more.style.display = 'none';
+  more.onclick = function (e) {
+    e.stopPropagation();
+    $('mMenu').classList.toggle('open');
   };
+  bar.appendChild(more);
 
-  // -------------------------------------------------- 工具
-  function esc(s) {
-    return String(s === null || s === undefined ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-  function infotip(text) { return '<span class="infotip" data-tip="' + esc(text) + '">i</span>'; }
-  function $(id) { return document.getElementById(id); }
+  var menu = document.createElement('div');
+  menu.className = 'mmenu'; menu.id = 'mMenu';
+  bar.appendChild(menu);
 
-  function mdImages(s) {
-    var out = esc(s || '');
-    out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, function (m, alt, url) {
-      if (!/^(\/media\/|\/files\/|https?:\/\/)/.test(url)) return m;
-      return '<img class="mdimg" src="' + url + '" alt="' + alt + '">';
-    });
-    return out.replace(/\n/g, '<br>');
-  }
-  // 清單／表格的預覽欄用：圖塞不進一行，但也**不能**把 `![題注](/media/x.png)`
-  // 原始字串露出來 —— 先換成「[圖]」再截斷。
-  function mdPreview(s, n) {
-    var t = String(s === null || s === undefined ? '' : s)
-      .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '[圖]');
-    return mdImages(t.slice(0, n));
-  }
+  fitMerchantBar();
+}
 
-  var toastTimer = null;
-  function toast(msg, bad) {
-    var t = $('toast');
-    t.textContent = msg;
-    t.className = bad ? 'show bad' : 'show';
-    if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.className = ''; }, 2400);
-  }
+function mkMerchantBtn(b) {
+  var st = statOf(b.id);
+  var btn = document.createElement('button');
+  btn.className = 'mbtn' + (String(b.id) === String(state.bizId) ? ' active' : '');
+  btn.setAttribute('data-biz', String(b.id));
+  btn.innerHTML = esc(b.business_name || ('#' + b.id))
+    + (st.pending ? '<span class="badge">' + (st.pending > 99 ? '99+' : st.pending) + '</span>' : '');
+  btn.onclick = function () { pickBiz(b.id); };
+  return btn;
+}
 
-  function api(path, method, body) {
-    method = method || 'GET';
-    var opt = { method: method, credentials: 'same-origin', headers: {} };
-    if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
-    if (method !== 'GET') { opt.headers['X-CSRF-Token'] = state.csrf; }
-    return fetch(path, opt).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (d) {
-        return { status: r.status, data: d || {} };
-      });
-    });
-  }
+function fitMerchantBar() {
+  var wrap = $('mlist'), more = $('mMore'), menu = $('mMenu');
+  if (!wrap || !more || !menu) return;
+  var btns = Array.prototype.slice.call(wrap.children);
+  btns.forEach(function (b) { b.style.display = ''; });
+  menu.innerHTML = ''; menu.classList.remove('open');
+  more.style.display = 'none';
+  if (!btns.length) return;
+  var avail = wrap.clientWidth;
+  if (wrap.scrollWidth <= avail) return;
 
-  function guard(res) {
-    if (res.status === 401) { window.location.href = '/login'; return false; }
-    if (res.status === 403) { toast(res.data.error || '沒有權限', true); return false; }
-    if (res.status === 502) { toast(res.data.error || '連不上 Connector', true); return false; }
-    if (!res.data.ok) { toast(res.data.error || '操作失敗', true); return false; }
-    return true;
+  more.style.display = '';
+  var hidden = [];
+  for (var i = btns.length - 1; i >= 1; i--) {
+    btns[i].style.display = 'none';
+    hidden.unshift(btns[i]);
+    if (wrap.scrollWidth <= avail) break;
   }
-
-  function fmtTime(s) {
-    if (!s) return '';
-    var d = new Date(s);
-    if (isNaN(d.getTime())) return '';
-    function p(n) { return (n < 10 ? '0' : '') + n; }
-    var today = new Date();
-    var hm = p(d.getHours()) + ':' + p(d.getMinutes());
-    if (d.toDateString() === today.toDateString()) return hm;
-    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
-  }
-
-  // -------------------------------------------------- 「i」圓標定位（fixed，不受 overflow 裁切）
-  var tipEl = document.createElement('div');
-  tipEl.className = 'tipbox';
-  document.body.appendChild(tipEl);
-  document.addEventListener('mouseover', function (e) {
-    var t = e.target && e.target.closest ? e.target.closest('.infotip') : null;
-    if (!t) return;
-    tipEl.textContent = t.getAttribute('data-tip') || '';
-    tipEl.style.display = 'block';
-    var r = t.getBoundingClientRect();
-    var x = r.left + r.width / 2 - tipEl.offsetWidth / 2;
-    var y = r.bottom + 8;
-    if (y + tipEl.offsetHeight > window.innerHeight - 8) y = r.top - tipEl.offsetHeight - 8;
-    if (y < 8) y = 8;
-    x = Math.max(8, Math.min(x, window.innerWidth - tipEl.offsetWidth - 8));
-    tipEl.style.left = x + 'px';
-    tipEl.style.top = y + 'px';
+  if (!hidden.length) { more.style.display = 'none'; wrap.style.overflow = ''; return; }
+  hidden.forEach(function (b) {
+    var c = b.cloneNode(true);
+    c.style.display = '';
+    c.onclick = function () { pickBiz(b.getAttribute('data-biz')); };
+    menu.appendChild(c);
   });
-  document.addEventListener('mouseout', function (e) {
-    if (e.target && e.target.closest && e.target.closest('.infotip')) tipEl.style.display = 'none';
+}
+
+document.addEventListener('click', function () {
+  var m = $('mMenu');
+  if (m) m.classList.remove('open');
+});
+
+function pickBiz(bid) {
+  state.bizId = parseInt(bid, 10);
+  state.activeKey = null; state.activeAcc = null; state.thread = [];
+  state.activePost = null; state.convs = []; state.posts = [];
+  renderMerchantBar();
+  resetChat();
+  if (state.section === 'posts') loadPosts(); else loadConversations();
+  loadAutoSettings();
+}
+
+/* ---------------------------------------------------------------- 一級/二級導覽 */
+function platformsForSection() {
+  return state.section === 'posts' ? POST_PLATFORMS : DM_PLATFORMS;
+}
+
+function renderTabs() {
+  var el = $('tabs');
+  el.innerHTML = platformsForSection().map(function (p) {
+    return '<div class="tab' + (state.platform === p ? ' active' : '') + '"'
+      + ' data-platform="' + p + '" onclick="switchPlatform(\'' + p + '\')">'
+      + esc(PLATFORM_LABEL[p]) + '</div>';
+  }).join('');
+}
+
+function switchSection(section) {
+  state.section = section;
+  state.scope = section === 'posts' ? 'comment' : 'dm';
+  if (platformsForSection().indexOf(state.platform) < 0) {
+    state.platform = platformsForSection()[0];
+  }
+  $('nav-dm').className = 'nav' + (section === 'dm' ? ' active' : '');
+  $('nav-posts').className = 'nav' + (section === 'posts' ? ' active' : '');
+  state.activeKey = null; state.activeAcc = null; state.activePost = null;
+  state.thread = []; state.convs = []; state.posts = [];
+  $('search').value = ''; state.search = '';
+  renderTabs();
+  resetChat();
+  loadAutoSettings();
+  if (section === 'posts') loadPosts(); else loadConversations();
+}
+
+function switchPlatform(p) {
+  state.platform = p;
+  state.activeKey = null; state.activeAcc = null; state.activePost = null;
+  state.thread = []; state.convs = []; state.posts = [];
+  renderTabs();
+  resetChat();
+  loadAutoSettings();
+  if (state.section === 'posts') loadPosts(); else loadConversations();
+}
+
+function onSearchInput() {
+  state.search = ($('search').value || '').trim().toLowerCase();
+  if (state.section === 'posts') renderPosts(); else renderConversations();
+}
+
+/* ---------------------------------------------------------------- 私訊會話 */
+function loadConversations() {
+  if (!state.bizId) { state.convs = []; renderConversations(); return; }
+  var url = qs('/console/agent/conversations', [
+    ['business_id', state.bizId], ['platform', state.platform], ['scope', 'dm'], ['limit', 100]]);
+  api(url).then(function (res) {
+    if (!guard(res)) { state.convs = []; renderConversations(); return; }
+    state.convs = res.data.items || [];
+    state.aiEnabled = res.data.ai_enabled;
+    renderConversations();
+    renderBadges();
   });
+}
 
-  // -------------------------------------------------- 彈窗
-  function openOv(id) { $(id).classList.add('show'); }
-  function closeOv(id) { $(id).classList.remove('show'); }
-  function ovErr(id, msg) {
-    var el = $(id);
-    if (!msg) { el.classList.remove('show'); el.textContent = ''; return; }
-    el.textContent = msg; el.classList.add('show');
-  }
-  document.addEventListener('click', function (e) {
-    var t = e.target;
-    if (t && t.hasAttribute && t.hasAttribute('data-close')) {
-      var ov = t.closest('.ov');
-      if (ov) ov.classList.remove('show');
-    }
-    if (t && t.classList && t.classList.contains('ov')) t.classList.remove('show');
+function renderConversations() {
+  var list = $('convList');
+  var items = state.convs.filter(function (c) {
+    if (!state.search) return true;
+    var nm = (c.sender_name || c.key || '').toLowerCase();
+    return nm.indexOf(state.search) >= 0 || String(c.key || '').toLowerCase().indexOf(state.search) >= 0;
   });
-
-  // -------------------------------------------------- 側邊欄 / 頁首
-  function pendingTotal() {
-    return state.convs.reduce(function (n, c) { return n + (parseInt(c.pending, 10) || 0); }, 0);
+  if (!items.length) {
+    list.innerHTML = '<div class="empty">' + (state.search ? '沒有符合的用戶' : '尚無訊息') + '</div>';
+    return;
   }
+  list.innerHTML = items.map(function (c) {
+    var cid = c.key;
+    var active = String(cid) === String(state.activeKey);
+    var badge = c.pending > 0
+      ? '<span class="conv-badge">' + (c.pending > 99 ? '99+' : c.pending) + '</span>' : '';
+    return '<div class="conv' + (active ? ' active' : '') + '" data-key="' + esc(cid) + '"'
+      + ' data-acc="' + esc(c.bp_account_id || '') + '" onclick="openConversation(\'' + esc(cid) + '\')">'
+      + badge
+      + '<div class="avatar">' + esc(avatarChar(c.sender_name || cid)) + '</div>'
+      + '<div class="conv-meta">'
+      + '<div class="conv-row1"><span class="conv-name">' + esc(c.sender_name || cid) + '</span></div>'
+      + '<div class="conv-row2"><span class="conv-preview">'
+      + (c.direction === 'outbound' || c.direction === 'out' ? '我：' : '')
+      + mdPreview(c.text, 60) + '</span></div>'
+      + '<span class="conv-time">' + fmtTime(c.last_ts) + '</span>'
+      + '</div></div>';
+  }).join('');
+}
 
-  function renderNav() {
-    var nav = $('nav');
-    nav.innerHTML = '';
-    TABS.forEach(function (t) {
-      var b = document.createElement('button');
-      b.textContent = t.label;
-      if (state.tab === t.key) b.className = 'active';
-      if (t.key === 'conv' && pendingTotal() > 0) {
-        var g = document.createElement('span');
-        g.className = 'badge';
-        g.textContent = String(pendingTotal());
-        b.appendChild(g);
+function openConversation(cid) {
+  state.activeKey = cid;
+  state.activeAcc = null;
+  var c = state.convs.filter(function (x) { return String(x.key) === String(cid); })[0];
+  if (c) state.activeAcc = c.bp_account_id;
+  renderConversations();
+  var url = qs('/console/agent/conversation', [
+    ['business_id', state.bizId], ['platform', state.platform], ['scope', 'dm'],
+    ['bp_account_id', state.activeAcc], ['key', cid], ['limit', 100]]);
+  api(url).then(function (res) {
+    if (!guard(res)) return;
+    state.thread = res.data.items || [];
+    state.logs = res.data.logs || [];
+    renderChatHead({ name: (c && c.sender_name) || cid, sender_id: cid });
+    renderMessages(state.thread, true);
+    $('postDetail').style.display = 'none';
+    $('composer').style.display = 'block';
+  });
+}
+
+function renderChatHead(data) {
+  $('chatHead').innerHTML =
+    '<div class="avatar">' + esc(avatarChar(data.name)) + '</div>'
+    + '<div class="who"><div class="name">' + esc(data.name) + '</div>'
+    + '<div class="sub">' + esc(data.sender_id) + '</div></div>'
+    + '<div class="spacer"></div>'
+    + '<span class="platform-tag ' + PLATFORM_TAG_CLASS[state.platform] + '">'
+    + esc(PLATFORM_LABEL[state.platform]) + '</span>'
+    + '<button class="btn-outline" onclick="markRead()" title="把這個會話的來訊標為已處理">標為已處理</button>';
+  $('messages').style.display = 'block';
+  $('composer').style.display = 'block';
+}
+
+function renderMessages(list, forceBottom) {
+  var box = $('messages');
+  box.innerHTML = list.length ? list.map(function (m) { return msgHtml(m); }).join('')
+    : '<div class="empty">尚無訊息</div>';
+  if (forceBottom) box.scrollTop = box.scrollHeight;
+}
+
+function msgHtml(m) {
+  var inbound = !(m.direction === 'outbound' || m.direction === 'out');
+  var content = '';
+  var files = m.files || [];
+  if (files.length) {
+    content = files.map(function (f) {
+      if (f.sticker) {
+        return '<div class="img-broken">[貼圖' + (f.sticker_id ? ' ' + esc(f.sticker_id) : '') + ']</div>';
       }
-      b.onclick = function () { state.tab = t.key; loadTab(); };   // ★ loadTab() 才會載入該分頁的資料
-      nav.appendChild(b);
-    });
-    var cur = TABS.filter(function (t) { return t.key === state.tab; })[0] || TABS[0];
-    $('pageTitle').textContent = cur.title;
-    $('pageTip').innerHTML = infotip(cur.tip);
-  }
-
-  function renderActs(items) {
-    var box = $('pageActs');
-    box.innerHTML = '';
-    (items || []).forEach(function (it) {
-      var b = document.createElement('button');
-      b.className = it.cls || 'ghost';
-      b.textContent = it.label;
-      b.onclick = it.onClick;
-      box.appendChild(b);
-    });
-  }
-
-  function sel(id, options, value, onChange) {
-    var s = '<select id="' + id + '">';
-    options.forEach(function (o) {
-      s += '<option value="' + esc(o.v) + '"' + (String(o.v) === String(value) ? ' selected' : '')
-        + '>' + esc(o.t) + '</option>';
-    });
-    return s + '</select>';
-  }
-
-  function bizSelector() {
-    if (!state.businesses.length) return '<span class="muted">沒有可操作的商家</span>';
-    return sel('selBiz', state.businesses.map(function (b) {
-      return { v: b.id, t: b.business_name };
-    }), state.bizId);
-  }
-
-  function bindBizSelector() {
-    var el = $('selBiz');
-    if (el) el.onchange = function () {
-      state.bizId = parseInt(this.value, 10);
-      state.activeKey = null; state.convs = [];
-      loadTab();
-    };
-  }
-
-  // -------------------------------------------------- 會話
-  function renderConv() {
-    var ctl = $('pageCtl');
-    var scopes = state.platform === 'wechat' || state.platform === 'whatsapp'
-      ? [{ v: 'dm', t: '私訊' }] : [{ v: 'dm', t: '私訊' }, { v: 'comment', t: '貼文留言' }];
-    ctl.innerHTML = bizSelector()
-      + sel('selPlat', [
-        { v: 'whatsapp', t: 'WhatsApp' }, { v: 'wechat', t: '微信' },
-        { v: 'ig', t: 'Instagram' }, { v: 'fb', t: 'Facebook' }
-      ], state.platform)
-      + sel('selScope', scopes, state.scope)
-      + '<button class="switch ' + (state.onlyPending ? 'on' : '') + '" id="swPending">'
-      + '<span class="dot2"></span>只看待處理</button>';
-    bindBizSelector();
-    $('selPlat').onchange = function () {
-      state.platform = this.value;
-      if (state.platform === 'wechat' || state.platform === 'whatsapp') state.scope = 'dm';
-      state.activeKey = null; state.convs = []; loadTab();   // ★ loadTab() 才會去抓資料；render() 只重繪
-    };
-    $('selScope').onchange = function () { state.scope = this.value; state.activeKey = null; loadTab(); };
-    $('swPending').onclick = function () { state.onlyPending = !state.onlyPending; render(); };
-
-    renderActs([]);
-
-    var shown = state.convs.filter(function (c) { return !state.onlyPending || (c.pending || 0) > 0; });
-    var list = '<div class="conv-list">';
-    if (!shown.length) {
-      list += '<div class="empty">' + (state.convs.length ? '沒有待處理的會話' : '這個帳號目前沒有會話') + '</div>';
-    } else {
-      shown.forEach(function (c) {
-        var nm = c.sender_name || c.key;
-        list += '<div class="conv-item' + (String(c.key) === String(state.activeKey) ? ' active' : '')
-          + '" data-key="' + esc(c.key) + '" data-acc="' + esc(c.bp_account_id) + '">'
-          + '<div class="l1">' + (c.pending ? '<span class="dot"></span>' : '')
-          + '<span class="nm">' + esc(nm) + '</span>'
-          + '<span class="tm">' + esc(fmtTime(c.last_ts)) + '</span></div>'
-          + '<div class="l2">' + (c.direction === 'outbound' || c.direction === 'out' ? '我：' : '')
-          + mdPreview(c.text, 40) + '</div></div>';
-      });
-    }
-    list += '</div>';
-
-    var thread = '<div class="thread" id="thread">';
-    if (!state.activeKey) {
-      thread += '<div class="empty" style="margin:auto">從左邊選一個會話</div>';
-    } else {
-      var head = state.convs.filter(function (x) { return String(x.key) === String(state.activeKey); })[0] || {};
-      // 貼文留言才有「特殊配置」入口；該商家該平台的留言總開關關了就不顯示。
-      var headExtra = '';
-      if (state.scope === 'comment') {
-        headExtra = state.aiEnabled
-          ? '<button class="ghost tiny" id="btnPostCfg">貼文特殊配置</button>'
-          : '<span class="muted" style="font-size:12px">留言 AI 已關</span>';
-      }
-      thread += '<div class="thread-head"><span class="nm">' + esc(head.sender_name || state.activeKey) + '</span>'
-        + '<span class="pill">' + esc(PLATFORM_LABEL[state.platform] || state.platform) + '</span>'
-        + '<span class="pill">' + (state.scope === 'comment' ? '貼文留言' : '私訊') + '</span>'
-        + '<span class="sp" style="flex:1"></span>'
-        + '<span id="headActs" class="grid">' + headExtra + '</span></div>';
-      if (state.logs.length) {
-        thread += '<div class="aibox">' + state.logs.map(function (g) {
-          return '<div class="row"><span class="pill ' + (TIER_CLASS[g.tier] || '') + '">'
-            + esc(TIER_LABEL[g.tier] || g.tier) + '</span> '
-            + (g.score !== null && g.score !== undefined ? '<span class="muted">分數 ' + esc(g.score) + '</span> ' : '')
-            + mdImages(g.detail || g.answer || '') + '</div>';
-        }).join('') + '</div>';
-      }
-      thread += '<div class="msgs" id="msgs">' + state.thread.map(function (m) {
-        var out = (m.direction === 'outbound' || m.direction === 'out');
-        return '<div class="msg ' + (out ? 'out' : '') + '"><div class="bub">'
-          + mdImages(m.text || '(非文字訊息)') + '</div>'
-          + '<div class="meta">' + esc(fmtTime(m.ts)) + (out ? ' · 我方' : '') + '</div></div>';
-      }).join('') + '</div>';
-      thread += '<div class="reply">'
-        + '<textarea id="replyText" placeholder="輸入回覆…（Ctrl+Enter 送出）"></textarea>'
-        + '<div class="acts">'
-        + '<button class="primary" id="btnSend">送出</button>'
-        + '<label class="attach">附件 <input type="file" id="replyFile"></label>'
-        + '<span class="muted" id="replyHint"></span>'
-        + '<span class="sp" style="flex:1"></span>'
-        + (head.pending ? '<button class="ghost tiny" id="btnRead">清紅點</button>' : '')
-        + '</div></div>';
-    }
-    thread += '</div>';
-
-    $('view').innerHTML = list + thread;
-    bindConvEvents();
-  }
-
-  function bindConvEvents() {
-    Array.prototype.forEach.call(document.querySelectorAll('.conv-item'), function (el) {
-      el.onclick = function () {
-        state.activeKey = el.getAttribute('data-key');
-        state.activeAcc = parseInt(el.getAttribute('data-acc'), 10);
-        loadThread();
-      };
-    });
-    var btn = $('btnSend');
-    if (btn) btn.onclick = sendReply;
-    var ta = $('replyText');
-    if (ta) ta.onkeydown = function (e) {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') sendReply();
-    };
-    var rd = $('btnRead');
-    if (rd) rd.onclick = markRead;
-    var pc = $('btnPostCfg');
-    if (pc) pc.onclick = function () {
-      var h = state.convs.filter(function (x) {
-        return String(x.key) === String(state.activeKey); })[0] || {};
-      openPost(h.post_id || '', h.bp_account_id || state.activeAcc);
-    };
-  }
-
-  function loadConvs() {
-    if (!state.bizId) { state.convs = []; render(); return; }
-    api('/console/agent/conversations?business_id=' + state.bizId
-      + '&platform=' + encodeURIComponent(state.platform) + '&scope=' + state.scope)
-      .then(function (res) {
-        if (!guard(res)) { state.convs = []; render(); return; }
-        state.convs = res.data.items || [];
-        state.aiEnabled = res.data.ai_enabled;
-        if (state.activeKey && !state.convs.some(function (c) {
-          return String(c.key) === String(state.activeKey); })) state.activeKey = null;
-        render();
-      });
-  }
-
-  function loadThread() {
-    if (!state.activeKey) { render(); return; }
-    api('/console/agent/conversation?business_id=' + state.bizId
-      + '&platform=' + encodeURIComponent(state.platform) + '&scope=' + state.scope
-      + '&bp_account_id=' + state.activeAcc + '&key=' + encodeURIComponent(state.activeKey))
-      .then(function (res) {
-        if (!guard(res)) return;
-        state.thread = res.data.items || [];
-        state.logs = res.data.logs || [];
-        render();
-      });
-  }
-
-  function sendReply() {
-    var ta = $('replyText');
-    var text = ta ? ta.value.trim() : '';
-    var f = $('replyFile');
-    var file = f && f.files && f.files[0];
-    if (!text && !file) { toast('請輸入內容或選一個附件', true); return; }
-    var btn = $('btnSend');
-    if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
-
-    var chain = Promise.resolve(null);
-    if (file) {
-      var fd = new FormData();
-      fd.append('file', file);
-      fd.append('scope', 'outbound');
-      chain = fetch('/console/agent/upload', {
-        method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-Token': state.csrf }, body: fd
-      }).then(function (r) { return r.json().catch(function () { return {}; }); })
-        .then(function (d) {
-          if (!d || !d.ok) throw new Error((d && d.error) || '附件上傳失敗');
-          return { media_key: d.media_key, caption: '' };
-        });
-    }
-
-    chain.then(function (asset) {
-      return api('/console/agent/reply', 'POST', {
-        business_id: state.bizId, platform: state.platform, bp_account_id: state.activeAcc,
-        sender_id: state.activeKey, scope: state.scope, text: text,
-        assets: asset ? [asset] : []
-      });
-    }).then(function (res) {
-      if (!guard(res)) return;
-      toast('已建立外送任務 #' + res.data.task_id);
-      var ta2 = $('replyText'); if (ta2) ta2.value = '';
-      var f2 = $('replyFile'); if (f2) f2.value = '';
-      loadThread();
-    }).catch(function (err) {
-      toast(err.message || '送出失敗', true);
-    }).then(function () {
-      var b2 = $('btnSend');
-      if (b2) { b2.disabled = false; b2.textContent = '送出'; }
-    });
-  }
-
-  function markRead() {
-    api('/console/agent/read', 'POST', {
-      business_id: state.bizId, platform: state.platform, bp_account_id: state.activeAcc,
-      key: state.activeKey, scope: state.scope
-    }).then(function (res) {
-      if (!guard(res)) return;
-      toast('已標記為處理（' + res.data.updated + ' 筆）');
-      loadConvs();
-      loadThread();
-    });
-  }
-
-  // -------------------------------------------------- 貼文特殊配置（§9.3）
-  var POST_KINDS = ['faq', 'table', 'kb'];
-
-  function layerKeyOf(kind) { return kind === 'kb' ? 'rag' : kind; }
-
-  function openPost(postId, accId) {
-    state.postId = postId || '';
-    if (!state.postId) { toast('這則留言沒帶貼文 ID，無法配置特殊規則', true); return; }
-    state.postAcc = accId || state.activeAcc;
-    ovErr('ovPostErr', '');
-    $('postBody').innerHTML = '<div class="muted">載入中…</div>';
-    openOv('ovPost');
-    api('/console/agent/post-config?business_id=' + state.bizId
-      + '&platform=' + encodeURIComponent(state.platform)
-      + '&post_id=' + encodeURIComponent(state.postId)
-      + '&bp_account_id=' + (state.postAcc || 0))
-      .then(function (res) {
-        if (!guard(res)) { closeOv('ovPost'); return; }
-        if (!res.data.comment_switch_on) {
-          closeOv('ovPost');
-          toast('該平台的「留言」總開關是關的，先到「自動回覆」打開', true);
-          return;
+      if (f.isImage) {
+        if (f.url) {
+          return '<img class="img-thumb" src="' + esc(f.url) + '"'
+            + ' onerror="this.outerHTML=\'<div class=img-broken>圖片無法載入</div>\'"'
+            + ' onclick="window.open(this.src)">';
         }
-        state.postCfg = res.data;
-        state.postEnabled = !!res.data.enabled;
-        state.postLayers = {}; state.postChecked = {};
-        POST_KINDS.forEach(function (k) {
-          state.postLayers[k] = !!res.data.layers[layerKeyOf(k)];
-          state.postChecked[k] = (res.data.picked[k] || []).slice();
-        });
-        renderPost();
+        return '<div class="img-broken">[圖片]</div>';
+      }
+      var size = fmtSize(f.fileSize);
+      return '<div class="file-card"><div class="file-icon">📄</div><div class="file-info">'
+        + '<div class="fname">' + esc(f.filename || '檔案') + '</div>'
+        + (size ? '<div class="fsize">' + size + '</div>' : '')
+        + (f.url ? '<a href="' + esc(f.url) + '" target="_blank">下載 / 開啟</a>' : '')
+        + '</div></div>';
+    }).join('');
+  }
+  if (m.text) content += '<div class="text">' + mdImages(m.text) + '</div>';
+
+  var fail = (!inbound && m.status === 'failed') ? '<span class="status-fail">● 發送失敗</span>' : '';
+  var at = inbound ? autoTag(m) : '';
+  var meta = '<div class="meta">' + fail + at + '<span>' + fmtTime(m.ts) + '</span></div>';
+  return '<div class="msg-row ' + (inbound ? 'inbound' : 'outbound') + '">'
+    + '<div class="bubble">' + content + meta + '</div></div>';
+}
+
+function markRead() {
+  if (!state.activeKey) return;
+  apiJson('/console/agent/read', {
+    business_id: state.bizId, platform: state.platform, bp_account_id: state.activeAcc,
+    key: state.activeKey, scope: 'dm'
+  }).then(function (res) {
+    if (!guard(res)) return;
+    showToast('已標記為處理（' + (res.data.updated || 0) + ' 筆）');
+    loadConversations();
+    openConversation(state.activeKey);
+  });
+}
+
+/* ---------------------------------------------------------------- 貼文留言 */
+function loadPosts() {
+  if (!state.bizId) { state.posts = []; renderPosts(); return; }
+  var url = qs('/console/agent/posts', [
+    ['business_id', state.bizId], ['platform', state.platform], ['limit', 30], ['offset', 0]]);
+  api(url).then(function (res) {
+    if (!guard(res)) { state.posts = []; renderPosts(); return; }
+    state.posts = res.data.items || [];
+    state.postsHasMore = !!res.data.has_more;
+    renderPosts();
+    renderBadges();
+  });
+}
+
+function renderPosts() {
+  var list = $('convList');
+  var posts = state.posts.filter(function (p) {
+    return !state.search || String(p.name || '').toLowerCase().indexOf(state.search) >= 0;
+  });
+  if (!posts.length) {
+    list.innerHTML = '<div class="empty">' + (state.search ? '沒有符合的貼文' : '尚無貼文') + '</div>';
+    return;
+  }
+  list.innerHTML = posts.map(function (p) {
+    var active = state.activePost && String(state.activePost.post_id) === String(p.post_id);
+    var thumb = p.media_url
+      ? '<img src="' + esc(p.media_url) + '" onerror="this.style.display=\'none\'">'
+      : '<span style="font-size:20px">🖼</span>';
+    var badge = p.new_comments > 0
+      ? '<span class="post-badge new">' + p.new_comments + ' 新</span>' : '';
+    return '<div class="post-card' + (active ? ' active' : '') + '"'
+      + ' data-post="' + esc(p.post_id) + '" data-acc="' + esc(p.bp_account_id || '') + '"'
+      + ' onclick="openPost(\'' + esc(p.post_id) + '\',' + (p.bp_account_id || 0) + ')">'
+      + '<div class="post-thumb">' + thumb + '</div>'
+      + '<div class="post-meta"><div class="post-name">'
+      + esc(String(p.name || '(無文字)').slice(0, 50) || '(無文字)') + '</div>'
+      + '<div class="post-sub"><span>' + fmtTime(p.created_at) + '</span>'
+      + '<span>💬 ' + (p.comments_count || 0) + '</span></div></div>'
+      + badge + '</div>';
+  }).join('')
+    + (state.postsHasMore ? '<div class="list-foot"><button class="load-more" onclick="loadMorePosts()">載入更多</button></div>' : '');
+}
+
+var _postsOffset = 0;
+function loadMorePosts() {
+  _postsOffset += 30;
+  api(qs('/console/agent/posts', [['business_id', state.bizId], ['platform', state.platform],
+    ['limit', 30], ['offset', _postsOffset]])).then(function (res) {
+    if (!guard(res)) return;
+    state.posts = state.posts.concat(res.data.items || []);
+    state.postsHasMore = !!res.data.has_more;
+    renderPosts();
+  });
+}
+
+function openPost(postId, acc) {
+  state.activePost = { post_id: postId, bp_account_id: acc };
+  renderPosts();
+  api(qs('/console/agent/post', [['business_id', state.bizId], ['platform', state.platform],
+    ['bp_account_id', acc], ['post_id', postId]])).then(function (res) {
+    if (!guard(res)) {
+      $('postDetail').style.display = 'block';
+      $('postDetail').innerHTML = '<div class="empty">載入失敗</div>';
+      return;
+    }
+    renderPostDetail(res.data);
+  });
+}
+
+function renderPostDetail(post) {
+  var box = $('postDetail');
+  var media = post.media_url
+    ? '<img src="' + esc(post.media_url) + '" onerror="this.parentNode.innerHTML=\'<div class=no-media>媒體無法載入</div>\'">'
+    : '<div class="no-media">無媒體</div>';
+  var comments = post.comments || [];
+  var commentsHtml = comments.length
+    ? comments.map(function (c) { return commentHtml(c, true); }).join('')
+    : '<div class="empty">尚無留言</div>';
+
+  // ★ 貼文自動回復特殊配置：放在貼文詳情「右上角」
+  var cfgBtn = '<button class="btn-outline" id="btnPostCfg"'
+    + ' onclick="openPostCfg(\'' + esc(post.post_id) + '\',' + (post.bp_account_id || 0) + ')">'
+    + '⚙ 貼文特殊配置</button>';
+
+  box.innerHTML = '<div class="post-body">'
+    + '<div class="post-card-head">'
+    + '<div class="post-head">'
+    + '<div class="avatar">' + esc(PLATFORM_LABEL[state.platform].charAt(0)) + '</div>'
+    + '<div><div class="ph-name">' + esc(PLATFORM_LABEL[state.platform]) + ' 貼文</div>'
+    + '<div class="ph-sub">' + fmtTime(post.created_at) + '</div></div>'
+    + '<div class="spacer"></div>'
+    + cfgBtn
+    + (post.permalink ? '<button class="btn-outline" onclick="window.open(\'' + esc(post.permalink) + '\')">在 ' + esc(PLATFORM_LABEL[state.platform]) + ' 查看</button>' : '')
+    + '</div>'
+    + '<div class="post-media">' + media + '</div>'
+    + (post.name ? '<div class="post-caption"><div class="caption">' + esc(post.name) + '</div></div>' : '')
+    + '<div class="post-stats"><span>💬 <b>' + (post.comments_count || 0) + '</b> 則留言</span></div>'
+    + '</div>'
+    + '<div class="comment-section"><h3>留言（' + comments.length + '）</h3>' + commentsHtml + '</div>'
+    + '</div>';
+
+  $('chatHead').innerHTML = '<div class="who"><div class="name">'
+    + esc(PLATFORM_LABEL[state.platform]) + ' 貼文留言</div>'
+    + '<div class="sub">' + esc(String(post.name || '').slice(0, 40) || post.post_id || '') + '</div></div>'
+    + '<div class="spacer"></div>'
+    + '<span class="platform-tag ' + PLATFORM_TAG_CLASS[state.platform] + '">'
+    + esc(PLATFORM_LABEL[state.platform]) + '</span>';
+  $('messages').style.display = 'none';
+  $('composer').style.display = 'none';
+  box.style.display = 'block';
+}
+
+function commentHtml(c, isRoot) {
+  var replies = (c.replies || []).map(function (r) { return commentHtml(r, false); }).join('');
+  var tag = '';
+  if (isRoot) {
+    if (c.replied) tag = '<span class="tag-replied">已回</span>';
+    else if (c.is_handled) tag = '<span class="tag-ignored">已忽略</span>';
+    else tag = '<span class="tag-pending">待處理</span>';
+    tag += autoTag(c);
+  }
+  var foot = '';
+  if (isRoot && !c.replied && !c.is_handled) {
+    foot = '<div class="comment-replies" id="cr_' + esc(c.comment_id) + '">' + replies + '</div>'
+      + '<div class="comment-foot">'
+      + '<button class="reply-btn" onclick="showReplyBox(\'' + esc(c.comment_id) + '\',\'\',true)">回覆</button>'
+      + '<button class="reply-btn" onclick="markCommentHandled(\'' + esc(c.comment_id) + '\')">忽略</button>'
+      + '</div>';
+  } else {
+    foot = '<div class="comment-replies">' + replies + '</div>';
+  }
+  return '<div class="comment" data-cid="' + esc(c.comment_id) + '">'
+    + '<div class="comment-head"><div class="avatar">' + esc(avatarChar(c.from_name)) + '</div>'
+    + '<div class="c-name">' + esc(c.from_name || '用戶') + '</div>'
+    + '<div class="c-time">' + fmtTime(c.time) + '</div>'
+    + '<div class="spacer"></div>' + tag + '</div>'
+    + '<div class="comment-text">' + esc(c.text || '') + '</div>'
+    + foot + '</div>';
+}
+
+function showReplyBox(commentId, value, focus) {
+  var host = $('cr_' + commentId);
+  if (!host) return;
+  var exist = $('rb_' + commentId);
+  if (exist) { if (focus) exist.querySelector('textarea').focus(); return; }
+  var div = document.createElement('div');
+  div.className = 'reply-box'; div.id = 'rb_' + commentId;
+  div.innerHTML = '<textarea rows="1" placeholder="回覆這則留言…">' + esc(value || '') + '</textarea>'
+    + '<button class="send-btn" onclick="sendCommentReply(\'' + esc(commentId) + '\', this)">送出</button>';
+  host.insertBefore(div, host.firstChild);
+  if (focus) div.querySelector('textarea').focus();
+}
+
+function sendCommentReply(commentId, btn) {
+  var box = $('rb_' + commentId);
+  var ta = box ? box.querySelector('textarea') : null;
+  var text = ta ? ta.value.trim() : '';
+  if (!text) { showToast('請輸入回覆內容'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
+  var acc = state.activePost ? state.activePost.bp_account_id : 0;
+  apiJson('/console/agent/comment/reply', {
+    business_id: state.bizId, platform: state.platform, bp_account_id: acc,
+    comment_id: commentId, text: text
+  }).then(function (res) {
+    if (!guard(res)) {
+      if (btn) { btn.disabled = false; btn.textContent = '送出'; }
+      return;
+    }
+    showToast('已建立外送任務 #' + res.data.task_id);
+    setTimeout(function () { openPost(state.activePost.post_id, acc); loadPosts(); }, 600);
+  });
+}
+
+function markCommentHandled(commentId) {
+  var acc = state.activePost ? state.activePost.bp_account_id : 0;
+  apiJson('/console/agent/comment/handle', {
+    business_id: state.bizId, platform: state.platform, bp_account_id: acc, comment_id: commentId
+  }).then(function (res) {
+    if (!guard(res)) return;
+    showToast('已標記為已處理');
+    openPost(state.activePost.post_id, acc);
+    loadPosts();
+  });
+}
+
+/* ---------------------------------------------------------------- 私訊回覆 */
+function onFilePicked(input) {
+  var f = input.files && input.files[0];
+  if (!f) return;
+  state.pendingFile = f;
+  $('pfName').textContent = f.name + '（' + fmtSize(f.size) + '）';
+  $('pendingFile').style.display = 'flex';
+}
+
+function clearPendingFile() {
+  state.pendingFile = null;
+  $('fileInput').value = '';
+  $('pendingFile').style.display = 'none';
+}
+
+function sendReply() {
+  if (state.sending) return;
+  var ta = $('textInput');
+  var text = ta ? ta.value.trim() : '';
+  var file = state.pendingFile;
+  if (!text && !file) { showToast('請輸入內容或選一個附件'); return; }
+  state.sending = true;
+  $('sendBtn').disabled = true;
+
+  var chain = Promise.resolve(null);
+  if (file) {
+    var fd = new FormData();
+    fd.append('file', file);
+    fd.append('scope', 'outbound');
+    chain = fetch('/console/agent/upload', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'X-CSRF-Token': state.csrf }, body: fd
+    }).then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (d) {
+        if (!d || !d.ok) throw new Error((d && d.error) || '附件上傳失敗');
+        return { media_key: d.media_key, caption: '' };
       });
   }
 
-  function renderPost() {
-    var cfg = state.postCfg;
-    if (!cfg) return;
-    $('postEnabled').className = 'switch ' + (state.postEnabled ? 'on' : 'off');
-    $('postEnabledTxt').textContent = state.postEnabled ? '開' : '關（這則貼文不用 AI）';
-    var baseSet = {};
-    POST_KINDS.forEach(function (k) {
-      baseSet[k] = {};
-      (cfg.base[k] || []).forEach(function (i) { baseSet[k][i] = true; });
+  chain.then(function (asset) {
+    return apiJson('/console/agent/reply', {
+      business_id: state.bizId, platform: state.platform, bp_account_id: state.activeAcc,
+      sender_id: state.activeKey, scope: 'dm', text: text,
+      assets: asset ? [asset] : []
     });
-    var html = '<div class="hint" style="margin-bottom:9px">'
-      + (cfg.configured
-        ? '這則貼文有自己的配置，不會跟著私訊的基準集跑。'
-        : '尚未配置過 —— 目前與私訊的基準集完全相同；按「儲存」就會固定成這則貼文自己的配置。')
-      + '</div>';
-    POST_KINDS.forEach(function (k) {
-      var items = cfg.candidates[k] || [];
-      var picked = state.postChecked[k] || [];
-      var pset = {};
-      picked.forEach(function (i) { pset[i] = true; });
-      html += '<div class="postgrp"><div class="hd">'
-        + '<b>' + esc(LAYER_LABEL[layerKeyOf(k)] || k) + '</b>'
-        + '<span class="hint">已勾 ' + picked.length + ' / 共 ' + items.length + '</span>'
-        + '<span class="sp"></span>'
-        + '<button class="switch ' + (state.postLayers[k] ? 'on' : 'off') + '" data-pgroup="' + k + '">'
-        + '<span class="dot2"></span>' + (state.postLayers[k] ? '啟用' : '停用') + '</button>'
-        + '</div><div class="list">';
-      if (!items.length) {
-        html += '<div class="hint">這個商家還沒有可選項目。</div>';
+  }).then(function (res) {
+    if (!guard(res)) return;
+    showToast('已建立外送任務 #' + res.data.task_id);
+    if (ta) ta.value = '';
+    clearPendingFile();
+    setTimeout(function () { openConversation(state.activeKey); loadConversations(); }, 700);
+  }).catch(function (e) {
+    showToast(e.message || '送出失敗');
+  }).then(function () {
+    state.sending = false;
+    $('sendBtn').disabled = false;
+  });
+}
+
+/* ---------------------------------------------------------------- AI 開關 */
+function loadAutoSettings() {
+  if (!state.bizId) return;
+  api(qs('/console/agent/overview', [['business_id', state.bizId]])).then(function (res) {
+    if (!guard(res)) return;
+    state.overview = res.data;
+    renderAutoBar();
+  });
+}
+
+function currentScopeEntry() {
+  var o = state.overview;
+  if (!o || !o.scopes) return null;
+  return o.scopes.filter(function (s) {
+    return s.platform === state.platform && s.scope === state.scope;
+  })[0] || null;
+}
+
+function renderAutoBar() {
+  var bar = $('arBar'), btn = $('arBtn'), label = $('arLabel');
+  var sc = currentScopeEntry();
+  if (!sc) { label.textContent = 'AI 自動回復'; btn.textContent = '—'; return; }
+  btn.disabled = false;
+  btn.textContent = sc.enabled ? '已開啟' : '已關閉';
+  btn.className = 'ar-btn ' + (sc.enabled ? 'on' : 'off');
+  label.textContent = 'AI 自動回復 · ' + PLATFORM_LABEL[state.platform]
+    + (state.scope === 'comment' ? ' 留言' : ' 私訊');
+  bar.className = 'ar-bar' + (sc.enabled ? ' on' : '');
+}
+
+function toggleAutoReply() {
+  var sc = currentScopeEntry();
+  if (!sc) return;
+  apiJson('/console/agent/scope', {
+    business_id: state.bizId, platform: state.platform, scope: state.scope, enabled: !sc.enabled
+  }).then(function (res) {
+    if (!guard(res)) return;
+    showToast(!sc.enabled ? '已開啟自動回復' : '已關閉自動回復');
+    loadAutoSettings();
+  });
+}
+
+/* ---------------------------------------------------------------- 紅點 */
+function renderBadges() {
+  var dm = 0;
+  if (state.section === 'dm') {
+    dm = state.convs.reduce(function (n, c) { return n + (parseInt(c.pending, 10) || 0); }, 0);
+  }
+  var posts = 0;
+  if (state.section === 'posts') {
+    posts = state.posts.reduce(function (n, p) { return n + (parseInt(p.new_comments, 10) || 0); }, 0);
+  }
+  setBadge('nav-badge-dm', dm);
+  setBadge('nav-badge-posts', posts);
+}
+
+function setBadge(id, n) {
+  var el = $(id);
+  if (!el) return;
+  if (n > 0) { el.textContent = n > 99 ? '99+' : String(n); el.style.display = ''; }
+  else el.style.display = 'none';
+}
+
+/* ---------------------------------------------------------------- 貼文特殊配置（新） */
+function openPostCfg(postId, acc) {
+  state.post = { id: postId, acc: acc || 0 };
+  $('postCfgErr').textContent = '';
+  $('postCfgBody').innerHTML = '<div class="empty">載入中…</div>';
+  $('postCfgOverlay').classList.add('open');
+  api(qs('/console/agent/post-config', [['business_id', state.bizId], ['platform', state.platform],
+    ['post_id', postId], ['bp_account_id', acc || 0]])).then(function (res) {
+    if (!guard(res)) { closePostCfg(); return; }
+    if (!res.data.comment_switch_on) {
+      closePostCfg();
+      showToast('該平台的「留言」總開關是關的，先到 ⚙ 自動回復 打開');
+      return;
+    }
+    state.postCfg = res.data;
+    state.postEnabled = !!res.data.enabled;
+    state.postLayers = {}; state.postChecked = {};
+    ['faq', 'table', 'kb'].forEach(function (k) {
+      var lk = k === 'kb' ? 'rag' : k;
+      state.postLayers[k] = !!res.data.layers[lk];
+      state.postChecked[k] = (res.data.picked[k] || []).slice();
+    });
+    renderPostCfg();
+  });
+}
+
+function closePostCfg() { $('postCfgOverlay').classList.remove('open'); }
+
+function togglePostEnabled() {
+  state.postEnabled = !state.postEnabled;
+  $('postEnabled').textContent = state.postEnabled ? '開' : '關';
+  $('postEnabled').className = 'ar-btn ' + (state.postEnabled ? 'on' : 'off');
+}
+
+function renderPostCfg() {
+  var cfg = state.postCfg;
+  if (!cfg) return;
+  $('postEnabled').textContent = state.postEnabled ? '開' : '關（這則貼文不用 AI）';
+  $('postEnabled').className = 'ar-btn ' + (state.postEnabled ? 'on' : 'off');
+  $('postCfgHint').textContent = cfg.configured
+    ? '這則貼文有自己的配置，不會跟著私訊的基準集跑。'
+    : '尚未配置過 —— 目前與私訊的基準集完全相同；按「儲存」就會固定成這則貼文自己的配置。';
+  var baseSet = {};
+  ['faq', 'table', 'kb'].forEach(function (k) {
+    baseSet[k] = {};
+    (cfg.base[k] || []).forEach(function (i) { baseSet[k][i] = true; });
+  });
+  var html = '';
+  ['faq', 'table', 'kb'].forEach(function (k) {
+    var items = cfg.candidates[k] || [];
+    var picked = state.postChecked[k] || [];
+    var pset = {};
+    picked.forEach(function (i) { pset[i] = true; });
+    var lk = k === 'kb' ? 'rag' : k;
+    html += '<div class="postgrp"><div class="hd"><b>' + esc(TIER_LABEL[lk] || k) + '</b>'
+      + '<span class="chip">已勾 ' + picked.length + ' / 共 ' + items.length + '</span>'
+      + '<div class="spacer" style="flex:1"></div>'
+      + '<button class="ar-btn ' + (state.postLayers[k] ? 'on' : 'off') + '" data-pgroup="' + k + '">'
+      + (state.postLayers[k] ? '啟用' : '停用') + '</button></div><div class="list">';
+    if (!items.length) {
+      html += '<div class="empty">這個商家還沒有可選項目。</div>';
+    } else {
+      items.forEach(function (it) {
+        html += '<label class="chk' + (state.postLayers[k] ? '' : ' off') + '">'
+          + '<input type="checkbox" data-pck="' + k + '" value="' + it.id + '"'
+          + (pset[it.id] ? ' checked' : '') + '>'
+          + '<span>' + esc(it.title)
+          + (it.kind === 'image' ? ' <span class="chip">圖片庫</span>' : '')
+          + (baseSet[k][it.id] ? ' <span class="chip">私訊有</span>' : '')
+          + '</span></label>';
+      });
+    }
+    html += '</div></div>';
+  });
+  $('postCfgBody').innerHTML = html;
+  bindPostCfgEvents();
+}
+
+function bindPostCfgEvents() {
+  Array.prototype.forEach.call(document.querySelectorAll('[data-pgroup]'), function (b) {
+    b.onclick = function () {
+      var k = b.getAttribute('data-pgroup');
+      state.postLayers[k] = !state.postLayers[k];
+      collectPostChecks();
+      renderPostCfg();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-pck]'), function (c) {
+    c.onchange = function () { collectPostChecks(); };
+  });
+}
+
+function collectPostChecks() {
+  ['faq', 'table', 'kb'].forEach(function (k) {
+    state.postChecked[k] = Array.prototype.filter.call(
+      document.querySelectorAll('[data-pck="' + k + '"]'), function (c) { return c.checked; })
+      .map(function (c) { return parseInt(c.value, 10); });
+  });
+}
+
+function savePostCfg(remove) {
+  collectPostChecks();
+  var body = {
+    business_id: state.bizId, platform: state.platform,
+    bp_account_id: state.post.acc || 0, post_id: state.post.id,
+    enabled: state.postEnabled,
+    layers: { faq: !!state.postLayers.faq, table: !!state.postLayers.table, kb: !!state.postLayers.kb },
+    bindings: { faq: state.postChecked.faq || [], table: state.postChecked.table || [],
+                kb: state.postChecked.kb || [] }
+  };
+  if (remove) body.remove = true;
+  apiJson('/console/agent/post-config', body).then(function (res) {
+    if (!guard(res)) { $('postCfgErr').textContent = (res.data && res.data.error) || '儲存失敗'; return; }
+    closePostCfg();
+    showToast(remove ? '已移除這則貼文的特殊配置' : '已儲存');
+    if (state.activePost) openPost(state.activePost.post_id, state.activePost.bp_account_id);
+  });
+}
+
+/* ---------------------------------------------------------------- 設定面板（⚙） */
+function openSettings(tab) {
+  state.settingsTab = tab || 'autoreply';
+  $('settingsOverlay').classList.add('open');
+  switchSettingsTab(state.settingsTab);
+}
+function closeSettings() { $('settingsOverlay').classList.remove('open'); }
+
+function switchSettingsTab(tab) {
+  state.settingsTab = tab;
+  Array.prototype.forEach.call(document.querySelectorAll('.sp-tab'), function (t) {
+    t.className = 'sp-tab' + (t.getAttribute('data-tab') === tab ? ' active' : '');
+  });
+  renderSettingsTab();
+}
+
+function renderSettingsTab() {
+  var body = $('spBody');
+  var t = state.settingsTab;
+  if (t === 'autoreply') return renderSettingsAutoreply(body);
+  if (t === 'faq') return renderSettingsFaq(body);
+  if (t === 'table') return renderSettingsTable(body);
+  if (t === 'hittest') return renderSettingsHittest(body);
+  if (t === 'logs') return renderSettingsLogs(body);
+  body.innerHTML = '<div class="empty">「知識庫」屬於知識庫管理（塊C），本輪尚未接線；'
+    + '請先用舊版 console（8001）管理。</div>';
+}
+
+/* ---------- FAQ 問答對 ---------- */
+function renderSettingsFaq(body) {
+  body.innerHTML = '<div class="card">'
+    + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'
+    + '<input type="text" id="faqQ" placeholder="搜尋問題／答案…" style="flex:1;padding:8px 11px;'
+    + 'border:1px solid var(--border);border-radius:9px">'
+    + '<button class="btn primary" onclick="faqNew()">新增 FAQ</button></div>'
+    + '<div id="faqBox"><div class="empty">載入中…</div></div></div>'
+    + '<div class="card" id="faqEditCard" style="display:none">'
+    + '<h3 id="faqEditTitle">新增 FAQ</h3>'
+    + '<input type="hidden" id="faqEditId">'
+    + '<label style="display:block;font-size:12px;color:var(--text-soft);margin:8px 0 4px">問題</label>'
+    + '<textarea id="faqEditQ" rows="2" style="width:100%;padding:8px 11px;border:1px solid var(--border);'
+    + 'border-radius:9px;font-family:inherit"></textarea>'
+    + '<label style="display:block;font-size:12px;color:var(--text-soft);margin:10px 0 4px">答案</label>'
+    + '<textarea id="faqEditA" rows="4" style="width:100%;padding:8px 11px;border:1px solid var(--border);'
+    + 'border-radius:9px;font-family:inherit"></textarea>'
+    + '<label style="display:block;font-size:12px;color:var(--text-soft);margin:10px 0 4px">關鍵詞（逗號分隔，選填）</label>'
+    + '<input type="text" id="faqEditK" style="width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:9px">'
+    + '<div style="margin-top:12px;display:flex;gap:8px">'
+    + '<button class="btn primary" onclick="faqSave()">儲存</button>'
+    + '<button class="btn" onclick="faqEditCancel()">取消</button></div></div>';
+  var q = $('faqQ');
+  if (q) q.oninput = function () { loadFaqList(this.value); };
+  loadFaqList('');
+}
+
+function loadFaqList(q) {
+  api(qs('/console/agent/faqs', [['business_id', state.bizId], ['q', q || '']]))
+    .then(function (res) {
+      var box = $('faqBox');
+      if (!box) return;
+      if (!guard(res)) { box.innerHTML = '<div class="empty">載入失敗</div>'; return; }
+      var items = res.data.items || [];
+      if (!items.length) { box.innerHTML = '<div class="empty">尚無 FAQ</div>'; return; }
+      box.innerHTML = '<div class="tbl-wrap"><table class="data-table"><thead><tr>'
+        + '<th>問題</th><th>答案</th><th>關鍵詞</th><th>狀態</th><th>操作</th></tr></thead><tbody>'
+        + items.map(function (f) {
+          return '<tr><td>' + esc(String(f.question || '').slice(0, 40)) + '</td>'
+            + '<td>' + esc(String(f.answer || '').slice(0, 50)) + '</td>'
+            + '<td>' + esc(f.keywords || '') + '</td>'
+            + '<td>' + (f.enabled ? '<span class="chip">啟用</span>' : '<span class="chip">停用</span>') + '</td>'
+            + '<td><button class="btn sm" onclick="faqEdit(' + f.id + ')">編輯</button> '
+            + '<button class="btn sm" onclick="faqDelete(' + f.id + ')">刪除</button></td></tr>';
+        }).join('') + '</tbody></table></div>';
+      window._faqs = items;
+    });
+}
+
+function faqNew() {
+  $('faqEditCard').style.display = 'block';
+  $('faqEditTitle').textContent = '新增 FAQ';
+  $('faqEditId').value = '';
+  $('faqEditQ').value = ''; $('faqEditA').value = ''; $('faqEditK').value = '';
+  $('faqEditQ').focus();
+}
+
+function faqEdit(id) {
+  var f = (window._faqs || []).filter(function (x) { return x.id === id; })[0];
+  if (!f) return;
+  $('faqEditCard').style.display = 'block';
+  $('faqEditTitle').textContent = '編輯 FAQ';
+  $('faqEditId').value = String(id);
+  $('faqEditQ').value = f.question || '';
+  $('faqEditA').value = f.answer || '';
+  $('faqEditK').value = f.keywords || '';
+  $('faqEditQ').focus();
+}
+
+function faqEditCancel() { $('faqEditCard').style.display = 'none'; }
+
+function faqSave() {
+  var id = $('faqEditId').value;
+  var body = {
+    business_id: state.bizId,
+    question: $('faqEditQ').value, answer: $('faqEditA').value,
+    keywords: $('faqEditK').value, enabled: true
+  };
+  var p = id
+    ? apiJson('/console/agent/faq-update', { business_id: state.bizId, id: parseInt(id, 10),
+        question: body.question, answer: body.answer, keywords: body.keywords })
+    : apiJson('/console/agent/faq', body);
+  p.then(function (res) {
+    if (!guard(res)) return;
+    showToast(id ? '已更新' : '已新增');
+    $('faqEditCard').style.display = 'none';
+    loadFaqList($('faqQ') ? $('faqQ').value : '');
+    loadAutoSettingsAnd();
+  });
+}
+
+function faqDelete(id) {
+  askConfirm('確定刪除這條 FAQ？', function () {
+    apiJson('/console/agent/faq-delete', { business_id: state.bizId, ids: [id] }).then(function (res) {
+      if (!guard(res)) return;
+      showToast('已刪除');
+      loadFaqList($('faqQ') ? $('faqQ').value : '');
+      loadAutoSettingsAnd();
+    });
+  });
+}
+
+/* ---------- 業務表格 ---------- */
+function renderSettingsTable(body) {
+  body.innerHTML = '<div class="card">'
+    + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'
+    + '<label style="font-size:12px;color:var(--text-soft)">表格</label>'
+    + '<select id="tblSel" style="min-width:200px;padding:8px 11px;border:1px solid var(--border);'
+    + 'border-radius:9px"></select>'
+    + '<div style="flex:1"></div>'
+    + '<button class="btn primary" onclick="tableNew()">新增表格</button></div>'
+    + '<div id="tblBox"><div class="empty">載入中…</div></div></div>'
+    + '<div class="card" id="tblNewCard" style="display:none">'
+    + '<h3>新增業務表格</h3>'
+    + '<label style="display:block;font-size:12px;color:var(--text-soft);margin:8px 0 4px">表名</label>'
+    + '<input type="text" id="tblNewName" style="width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:9px">'
+    + '<label style="display:block;font-size:12px;color:var(--text-soft);margin:10px 0 4px">欄位（逗號分隔）</label>'
+    + '<input type="text" id="tblNewCols" placeholder="例：品項, 價格, 說明" style="width:100%;padding:8px 11px;'
+    + 'border:1px solid var(--border);border-radius:9px">'
+    + '<div style="margin-top:12px;display:flex;gap:8px">'
+    + '<button class="btn primary" onclick="tableCreate()">建立</button>'
+    + '<button class="btn" onclick="document.getElementById(\'tblNewCard\').style.display=\'none\'">取消</button>'
+    + '</div></div>';
+  loadTables();
+}
+
+function loadTables(selId) {
+  api(qs('/console/agent/tables', [['business_id', state.bizId]])).then(function (res) {
+    if (!guard(res)) return;
+    var items = res.data.items || [];
+    window._tables = items;
+    var sel = $('tblSel');
+    if (!sel) return;
+    sel.innerHTML = items.length
+      ? items.map(function (t) {
+        return '<option value="' + t.id + '">' + esc(t.name) + '（' + (t.row_count || 0) + ' 列）</option>';
+      }).join('')
+      : '<option value="">（尚無表格）</option>';
+    sel.onchange = function () { loadTableRows(this.value); };
+    if (items.length) { if (selId) sel.value = String(selId); loadTableRows(sel.value); }
+    else $('tblBox').innerHTML = '<div class="empty">尚無業務表格</div>';
+  });
+}
+
+function tableNew() { $('tblNewCard').style.display = 'block'; $('tblNewName').focus(); }
+
+function tableCreate() {
+  var cols = ($('tblNewCols').value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  apiJson('/console/agent/table-create', {
+    business_id: state.bizId, name: $('tblNewName').value.trim(), columns: cols
+  }).then(function (res) {
+    if (!guard(res)) return;
+    showToast('已建立');
+    $('tblNewCard').style.display = 'none';
+    $('tblNewName').value = ''; $('tblNewCols').value = '';
+    loadTables(res.data.table && res.data.table.id);
+    loadAutoSettingsAnd();
+  });
+}
+
+function loadTableRows(tableId) {
+  var box = $('tblBox');
+  if (!tableId) { if (box) box.innerHTML = '<div class="empty">尚無業務表格</div>'; return; }
+  api(qs('/console/agent/table', [['business_id', state.bizId], ['table_id', tableId]]))
+    .then(function (res) {
+      if (!box) return;
+      if (!guard(res)) { box.innerHTML = '<div class="empty">載入失敗</div>'; return; }
+      var t = res.data.table || {};
+      var cols = (t.columns || []).slice();
+      var rows = t.rows || [];
+      if (!cols) rows.forEach(function (r) { Object.keys(r.data || {}).forEach(function (k) { if (cols.indexOf(k) < 0) cols.push(k); }); });
+      window._tblCols = cols; window._tblId = tableId;
+      var h = '<div style="display:flex;gap:8px;margin-bottom:8px">'
+        + '<button class="btn sm" onclick="tableRowAdd()">新增列</button>'
+        + '<button class="btn sm" onclick="tableRemove(' + tableId + ')">刪除表格</button></div>'
+        + '<div class="tbl-wrap"><table class="data-table"><thead><tr>'
+        + cols.map(function (c) { return '<th>' + esc(c) + '</th>'; }).join('')
+        + '<th>操作</th></tr></thead><tbody>';
+      if (!rows.length) {
+        h += '<tr><td colspan="' + (cols.length + 1) + '">尚無資料列</td></tr>';
       } else {
-        items.forEach(function (it) {
-          html += '<label class="chk' + (state.postLayers[k] ? '' : ' off') + '">'
-            + '<input type="checkbox" data-pck="' + k + '" value="' + it.id + '"'
-            + (pset[it.id] ? ' checked' : '') + '>'
-            + '<span>' + esc(it.title)
-            + (it.kind === 'image' ? ' <span class="pill">圖片庫</span>' : '')
-            + (baseSet[k][it.id] ? ' <span class="pill ok">私訊有</span>' : '')
-            + '</span></label>';
+        rows.forEach(function (r) {
+          h += '<tr>' + cols.map(function (c) {
+            return '<td>' + esc((r.data || {})[c] || '') + '</td>';
+          }).join('') + '<td><button class="btn sm" onclick="tableRowDel(' + r.id + ')">刪除</button></td></tr>';
         });
       }
-      html += '</div></div>';
+      h += '</tbody></table></div>';
+      box.innerHTML = h;
     });
-    $('postBody').innerHTML = html;
+}
+
+function tableRowAdd() {
+  var cols = window._tblCols || [];
+  var data = {};
+  for (var i = 0; i < cols.length; i++) {
+    var v = window.prompt('「' + cols[i] + '」的值：', '');
+    if (v === null) return;
+    data[cols[i]] = v;
   }
+  if (!Object.keys(data).length) { showToast('這張表沒有欄位'); return; }
+  apiJson('/console/agent/table-row', {
+    business_id: state.bizId, table_id: parseInt(window._tblId, 10), action: 'create', data: data
+  }).then(function (res) { if (guard(res)) { showToast('已新增'); loadTableRows(window._tblId); loadTables(window._tblId); } });
+}
 
-  function collectPost() {
-    var bindings = {};
-    POST_KINDS.forEach(function (k) {
-      bindings[k] = Array.prototype.filter.call(
-        document.querySelectorAll('[data-pck="' + k + '"]'), function (c) { return c.checked; })
-        .map(function (c) { return parseInt(c.value, 10); });
-    });
-    return {
-      business_id: state.bizId, platform: state.platform,
-      bp_account_id: state.postAcc || state.activeAcc || 0, post_id: state.postId,
-      enabled: state.postEnabled,
-      layers: { faq: !!state.postLayers.faq, table: !!state.postLayers.table,
-                kb: !!state.postLayers.kb },
-      bindings: bindings
-    };
-  }
+function tableRowDel(rowId) {
+  apiJson('/console/agent/table-row', {
+    business_id: state.bizId, table_id: parseInt(window._tblId, 10), action: 'delete', id: rowId
+  }).then(function (res) { if (guard(res)) { showToast('已刪除'); loadTableRows(window._tblId); loadTables(window._tblId); } });
+}
 
-  function savePost(remove) {
-    var body = collectPost();
-    if (remove) body.remove = true;
-    api('/console/agent/post-config', 'POST', body).then(function (res) {
-      if (!guard(res)) { ovErr('ovPostErr', res.data.error || '儲存失敗'); return; }
-      closeOv('ovPost');
-      toast(remove ? '已移除這則貼文的特殊配置' : '已儲存');
-      loadThread();
-    });
-  }
-
-  $('postEnabled').onclick = function () {
-    state.postEnabled = !state.postEnabled;
-    renderPost();
-  };
-  $('postSave').onclick = function () { savePost(false); };
-  $('postReset').onclick = function () { savePost(true); };
-
-  document.addEventListener('click', function (e) {
-    var g = e.target && e.target.getAttribute ? e.target.getAttribute('data-pgroup') : null;
-    if (!g) return;
-    state.postLayers[g] = !state.postLayers[g];
-    // 勾選狀態先從 DOM 收回來，否則重繪會把使用者剛勾的洗掉
-    POST_KINDS.forEach(function (k) {
-      state.postChecked[k] = Array.prototype.filter.call(
-        document.querySelectorAll('[data-pck="' + k + '"]'), function (c) { return c.checked; })
-        .map(function (c) { return parseInt(c.value, 10); });
-    });
-    renderPost();
-  });
-
-  document.addEventListener('change', function (e) {
-    var t = e.target;
-    if (!t || !t.getAttribute) return;
-    var k = t.getAttribute('data-pck');
-    if (!k) return;
-    var v = parseInt(t.value, 10);
-    var list = state.postChecked[k] || [];
-    var i = list.indexOf(v);
-    if (t.checked && i < 0) list.push(v);
-    if (!t.checked && i >= 0) list.splice(i, 1);
-    state.postChecked[k] = list;
-  });
-
-  // -------------------------------------------------- 自動回覆配置
-  function renderConfig() {
-    $('pageCtl').innerHTML = bizSelector();
-    bindBizSelector();
-    renderActs([{ label: '重新載入', cls: 'ghost', onClick: loadTab }]);
-    if (!state.overview) { $('view').innerHTML = '<div class="empty full">載入中…</div>'; return; }
-    var o = state.overview;
-
-    var html = '<div style="padding:16px 22px 30px">';
-
-    html += '<div class="card"><h3>第一層：商家 × 平台 × 場景'
-      + infotip('實際是否回覆＝這一層 AND 該平台帳號自己的開關。兩層都開才會跑 AI。') + '</h3>'
-      + '<div class="grid">';
-    o.scopes.forEach(function (s) {
-      html += '<button class="switch ' + (s.enabled ? 'on' : 'off') + '" data-scope="'
-        + esc(s.platform + ':' + s.scope) + '"><span class="dot2"></span>'
-        + esc(PLATFORM_LABEL[s.platform] || s.platform) + ' '
-        + (s.scope === 'comment' ? '留言' : '私訊') + '</button>';
-    });
-    html += '</div></div>';
-
-    html += '<div class="card"><h3>第二層：平台帳號'
-      + infotip('同一個商家可以綁多個平台帳號，每個帳號各自決定要不要自動回覆。') + '</h3>';
-    if (!o.accounts.length) html += '<div class="muted">尚未綁定平台帳號</div>';
-    else {
-      html += '<div class="grid">';
-      o.accounts.forEach(function (a) {
-        html += '<button class="switch ' + (a.ai_enabled ? 'on' : 'off') + '" data-acc="' + a.id + '">'
-          + '<span class="dot2"></span>' + esc(PLATFORM_LABEL[a.platform] || a.platform) + ' · '
-          + esc(a.display_name || a.platform_business_account_id) + '</button>';
-      });
-      html += '</div>';
-    }
-    html += '</div>';
-
-    html += '<div class="card"><h3>層開關</h3><div class="grid">';
-    ['faq', 'table', 'rag'].forEach(function (k) {
-      var on = !!o.layers[k];
-      html += '<button class="switch ' + (on ? 'on' : 'off') + '" data-layer="' + k + '">'
-        + '<span class="dot2"></span>' + esc(LAYER_LABEL[k]) + ' 層</button>';
-    });
-    html += '</div></div>';
-
-    html += '<div class="card"><h3>啟用集'
-      + infotip('勾選＝這一層要用的資料。★ 一個都沒勾＝這一層不跑（不是「全部」）。') + '</h3>';
-    html += bindList('faq', o.faqs, o.bindings.faq);
-    html += bindList('table', o.tables, o.bindings.table);
-    html += bindList('kb', o.collections, o.bindings.kb);
-    html += '</div>';
-
-    html += '</div>';
-    $('view').innerHTML = html;
-    bindConfigEvents();
-  }
-
-  function bindList(kind, items, picked) {
-    var label = { faq: 'FAQ 問答對', table: '業務表格', kb: '知識庫' }[kind];
-    var set = {};
-    (picked || []).forEach(function (i) { set[i] = true; });
-    var h = '<div style="margin-bottom:12px"><div class="muted" style="margin-bottom:6px">' + label
-      + '（勾 ' + (picked || []).length + ' / 共 ' + (items || []).length + '）</div><div class="grid">';
-    if (!items || !items.length) h += '<span class="muted">沒有可選項目</span>';
-    (items || []).forEach(function (it) {
-      var nm = it.question || it.name || it.title || ('#' + it.id);
-      h += '<button class="switch ' + (set[it.id] ? 'on' : 'off')
-        + '" data-bind="' + kind + ':' + it.id + '"><span class="dot2"></span>' + esc(nm) + '</button>';
-    });
-    return h + '</div></div>';
-  }
-
-  function bindConfigEvents() {
-    Array.prototype.forEach.call(document.querySelectorAll('[data-scope]'), function (b) {
-      b.onclick = function () {
-        var p = b.getAttribute('data-scope').split(':');
-        api('/console/agent/scope', 'POST', {
-          business_id: state.bizId, platform: p[0], scope: p[1], enabled: !b.classList.contains('on')
-        }).then(function (r) { if (guard(r)) loadTab(); });
-      };
-    });
-    Array.prototype.forEach.call(document.querySelectorAll('[data-acc]'), function (b) {
-      b.onclick = function () {
-        api('/console/agent/account-ai', 'POST', {
-          business_id: state.bizId, bp_account_id: parseInt(b.getAttribute('data-acc'), 10),
-          enabled: !b.classList.contains('on')
-        }).then(function (r) { if (guard(r)) loadTab(); });
-      };
-    });
-    Array.prototype.forEach.call(document.querySelectorAll('[data-layer]'), function (b) {
-      b.onclick = function () {
-        api('/console/agent/layer', 'POST', {
-          business_id: state.bizId, layer: b.getAttribute('data-layer'),
-          enabled: !b.classList.contains('on')
-        }).then(function (r) { if (guard(r)) loadTab(); });
-      };
-    });
-    Array.prototype.forEach.call(document.querySelectorAll('[data-bind]'), function (b) {
-      b.onclick = function () {
-        var p = b.getAttribute('data-bind').split(':');
-        api('/console/agent/binding', 'POST', {
-          business_id: state.bizId, kind: p[0], item_id: parseInt(p[1], 10),
-          enabled: !b.classList.contains('on')
-        }).then(function (r) { if (guard(r)) loadTab(); });
-      };
-    });
-  }
-
-  function loadOverview() {
-    if (!state.bizId) { state.overview = null; render(); return; }
-    api('/console/agent/overview?business_id=' + state.bizId).then(function (res) {
-      if (!guard(res)) { state.overview = null; render(); return; }
-      state.overview = res.data;
-      Promise.all([
-        api('/console/agent/faqs?business_id=' + state.bizId),
-        api('/console/agent/tables?business_id=' + state.bizId),
-        api('/console/agent/collections?business_id=' + state.bizId)
-      ]).then(function (rs) {
-        state.overview.faqs = (rs[0].data.items || []);
-        state.overview.tables = (rs[1].data.items || []);
-        state.overview.collections = (rs[2].data.items || []);
-        render();
-      });
-    });
-  }
-
-  // -------------------------------------------------- 命中測試
-  function renderTest() {
-    $('pageCtl').innerHTML = bizSelector();
-    bindBizSelector();
-    renderActs([{ label: '跑一次', cls: 'primary', onClick: runTest }]);
-    var h = '<div style="padding:16px 22px 30px">';
-    h += '<div class="card"><h3>測試問句'
-      + infotip('只跑你勾的層，不寫紀錄、不改任何開關。') + '</h3>'
-      + '<div class="grid" style="margin-bottom:10px">';
-    ['faq', 'table', 'rag'].forEach(function (k) {
-      var on = state.testLayers.indexOf(k) >= 0;
-      h += '<button class="switch ' + (on ? 'on' : 'off') + '" data-tl="' + k + '">'
-        + '<span class="dot2"></span>' + esc(LAYER_LABEL[k]) + '</button>';
-    });
-    h += '</div><input type="text" id="testInput" style="width:100%" placeholder="例：你們的營業時間？" value="'
-      + esc(state.testText) + '"></div>';
-    if (state.testResult) {
-      var r = state.testResult;
-      h += '<div class="card"><h3>結果</h3>'
-        + '<div class="grid" style="margin-bottom:8px"><span class="pill '
-        + (TIER_CLASS[r.tier] || '') + '">' + esc(TIER_LABEL[r.tier] || r.tier) + '</span>'
-        + (r.score !== null && r.score !== undefined ? '<span class="pill">分數 ' + esc(r.score) + '</span>' : '')
-        + '<span class="pill">' + esc(r.elapsed_ms) + ' ms</span>'
-        + '<span class="pill">模型呼叫 ' + esc(r.llm_calls) + '</span></div>'
-        + '<div style="margin:8px 0;font-size:13.5px;line-height:1.7">' + mdImages(r.answer || '(無)') + '</div>'
-        + '<div class="muted" style="font-size:12.5px">' + esc(r.detail || '') + '</div>'
-        + '<div class="muted" style="font-size:12px;margin-top:6px">啟用集：FAQ '
-        + esc(r.scope_set.faq) + ' · 表格 ' + esc(r.scope_set.table) + ' · 知識庫 '
-        + esc(r.scope_set.kb) + '（' + esc(r.scope_set.source || '') + '）</div></div>';
-    }
-    $('view').innerHTML = h + '</div>';
-    Array.prototype.forEach.call(document.querySelectorAll('[data-tl]'), function (b) {
-      b.onclick = function () {
-        var k = b.getAttribute('data-tl');
-        var i = state.testLayers.indexOf(k);
-        if (i >= 0) state.testLayers.splice(i, 1); else state.testLayers.push(k);
-        renderTest();
-      };
-    });
-    var inp = $('testInput');
-    if (inp) inp.onkeydown = function (e) { if (e.key === 'Enter') runTest(); };
-  }
-
-  function runTest() {
-    var inp = $('testInput');
-    var text = inp ? inp.value.trim() : '';
-    if (!text) { toast('請輸入問句', true); return; }
-    state.testText = text;
-    toast('測試中…');
-    api('/console/agent/test', 'POST', {
-      business_id: state.bizId, platform: state.platform, scope: state.scope,
-      text: text, layers: state.testLayers.length ? state.testLayers : null
-    }).then(function (res) {
+function tableRemove(tableId) {
+  askConfirm('確定刪除整張表格？', function () {
+    apiJson('/console/agent/table-delete', { business_id: state.bizId, id: tableId }).then(function (res) {
       if (!guard(res)) return;
-      state.testResult = res.data;
-      renderTest();
-      toast('完成：' + (TIER_LABEL[res.data.tier] || res.data.tier));
+      showToast('已刪除表格');
+      loadTables();
+      loadAutoSettingsAnd();
     });
+  });
+}
+
+function renderSettingsAutoreply(body) {
+  if (!state.overview) { body.innerHTML = '<div class="empty">載入中…</div>'; return; }
+  var o = state.overview;
+  var h = '<div class="card"><h3>商家 × 平台 × 場景（第一層）'
+    + infotip('實際是否回覆＝這一層 AND 該平台帳號自己的開關。兩層都開才會跑 AI。')
+    + '<div style="display:flex;flex-wrap:wrap;gap:8px">';
+  (o.scopes || []).forEach(function (s) {
+    h += '<button class="ar-btn ' + (s.enabled ? 'on' : 'off') + '" data-scope="'
+      + esc(s.platform + ':' + s.scope) + '">' + esc(PLATFORM_LABEL[s.platform] || s.platform) + ' '
+      + (s.scope === 'comment' ? '留言' : '私訊') + '</button>';
+  });
+  h += '</div></div>';
+
+  h += '<div class="card"><h3>平台帳號（第二層）</h3><div style="display:flex;flex-wrap:wrap;gap:8px">';
+  (o.accounts || []).forEach(function (a) {
+    h += '<button class="ar-btn ' + (a.ai_enabled ? 'on' : 'off') + '" data-acc="' + a.id + '">'
+      + esc(PLATFORM_LABEL[a.platform] || a.platform) + ' · '
+      + esc(a.display_name || a.platform_business_account_id) + '</button>';
+  });
+  h += '</div></div>';
+
+  h += '<div class="card"><h3>層開關</h3><div style="display:flex;gap:8px">';
+  ['faq', 'table', 'rag'].forEach(function (k) {
+    h += '<button class="ar-btn ' + (o.layers[k] ? 'on' : 'off') + '" data-layer="' + k + '">'
+      + esc(TIER_LABEL[k]) + ' 層</button>';
+  });
+  h += '</div></div>';
+
+  h += '<div class="card"><h3>啟用集（勾選＝這一層要用的資料；一個都沒勾＝這層不跑）</h3>';
+  h += bindListHtml('faq', o.faqs, o.bindings.faq);
+  h += bindListHtml('table', o.tables, o.bindings.table);
+  h += bindListHtml('kb', o.collections, o.bindings.kb);
+  h += '</div>';
+  body.innerHTML = h;
+  bindOverviewEvents();
+}
+
+function bindListHtml(kind, items, picked) {
+  var label = { faq: 'FAQ 問答對', table: '業務表格', kb: '知識庫' }[kind];
+  var set = {};
+  (picked || []).forEach(function (i) { set[i] = true; });
+  var h = '<div style="margin-bottom:12px"><div style="color:var(--text-soft);margin-bottom:6px">'
+    + label + '（勾 ' + (picked || []).length + ' / 共 ' + ((items || []).length) + '）</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:8px">';
+  if (!items || !items.length) h += '<span style="color:var(--text-soft)">沒有可選項目</span>';
+  (items || []).forEach(function (it) {
+    var nm = it.question || it.name || it.title || ('#' + it.id);
+    h += '<button class="ar-btn ' + (set[it.id] ? 'on' : 'off') + '" data-bind="' + kind + ':' + it.id + '">'
+      + esc(nm) + '</button>';
+  });
+  return h + '</div></div>';
+}
+
+function bindOverviewEvents() {
+  Array.prototype.forEach.call(document.querySelectorAll('[data-scope]'), function (b) {
+    b.onclick = function () {
+      var p = b.getAttribute('data-scope').split(':');
+      apiJson('/console/agent/scope', { business_id: state.bizId, platform: p[0], scope: p[1],
+        enabled: !b.classList.contains('on') }).then(function (r) { if (guard(r)) loadAutoSettingsAnd(); });
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-acc]'), function (b) {
+    b.onclick = function () {
+      apiJson('/console/agent/account-ai', { business_id: state.bizId,
+        bp_account_id: parseInt(b.getAttribute('data-acc'), 10),
+        enabled: !b.classList.contains('on') }).then(function (r) { if (guard(r)) loadAutoSettingsAnd(); });
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-layer]'), function (b) {
+    b.onclick = function () {
+      apiJson('/console/agent/layer', { business_id: state.bizId, layer: b.getAttribute('data-layer'),
+        enabled: !b.classList.contains('on') }).then(function (r) { if (guard(r)) loadAutoSettingsAnd(); });
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-bind]'), function (b) {
+    b.onclick = function () {
+      var p = b.getAttribute('data-bind').split(':');
+      apiJson('/console/agent/binding', { business_id: state.bizId, kind: p[0],
+        item_id: parseInt(p[1], 10), enabled: !b.classList.contains('on') })
+        .then(function (r) { if (guard(r)) loadAutoSettingsAnd(); });
+    };
+  });
+}
+
+function loadAutoSettingsAnd() {
+  api(qs('/console/agent/overview', [['business_id', state.bizId]])).then(function (res) {
+    if (!guard(res)) return;
+    state.overview = res.data;
+    Promise.all([
+      api(qs('/console/agent/faqs', [['business_id', state.bizId]])),
+      api(qs('/console/agent/tables', [['business_id', state.bizId]])),
+      api(qs('/console/agent/collections', [['business_id', state.bizId]]))
+    ]).then(function (rs) {
+      state.overview.faqs = (rs[0].data.items || []);
+      state.overview.tables = (rs[1].data.items || []);
+      state.overview.collections = (rs[2].data.items || []);
+      renderAutoBar();
+      if (state.settingsTab === 'autoreply') renderSettingsAutoreply($('spBody'));
+    });
+  });
+}
+
+function renderSettingsHittest(body) {
+  var h = '<div class="card"><h3>測試問句（只跑你勾的層，不寫紀錄、不改開關）</h3>'
+    + '<div style="display:flex;gap:8px;margin-bottom:10px">';
+  ['faq', 'table', 'rag'].forEach(function (k) {
+    var on = state.testLayers.indexOf(k) >= 0;
+    h += '<button class="ar-btn ' + (on ? 'on' : 'off') + '" data-tl="' + k + '">'
+      + esc(TIER_LABEL[k]) + '</button>';
+  });
+  h += '</div><input type="text" id="testInput" style="width:100%;padding:9px 12px;border:1px solid var(--border);'
+    + 'border-radius:9px" placeholder="例：你們的營業時間？" value="' + esc(state.testText) + '"></div>';
+  if (state.testResult) {
+    var r = state.testResult;
+    h += '<div class="card"><h3>結果</h3><div style="display:flex;gap:8px;margin-bottom:8px">'
+      + '<span class="chip">' + esc(TIER_LABEL[r.tier] || r.tier) + '</span>'
+      + (r.score !== null && r.score !== undefined ? '<span class="chip">分數 ' + esc(r.score) + '</span>' : '')
+      + '<span class="chip">' + esc(r.elapsed_ms) + ' ms</span>'
+      + '<span class="chip">模型呼叫 ' + esc(r.llm_calls) + '</span></div>'
+      + '<div style="font-size:13.5px;line-height:1.7">' + mdImages(r.answer || '(無)') + '</div>'
+      + '<div style="color:var(--text-soft);font-size:12.5px">' + esc(r.detail || '') + '</div></div>';
   }
+  body.innerHTML = h;
+  Array.prototype.forEach.call(document.querySelectorAll('[data-tl]'), function (b) {
+    b.onclick = function () {
+      var k = b.getAttribute('data-tl');
+      var i = state.testLayers.indexOf(k);
+      if (i >= 0) state.testLayers.splice(i, 1); else state.testLayers.push(k);
+      renderSettingsHittest(body);
+    };
+  });
+  var inp = $('testInput');
+  if (inp) inp.onkeydown = function (e) { if (e.key === 'Enter') runTest(); };
+}
 
-  // -------------------------------------------------- 回覆紀錄
-  function renderLogs() {
-    $('pageCtl').innerHTML = bizSelector()
-      + sel('selTier', [{ v: '', t: '全部層級' }, { v: 'faq', t: 'FAQ' }, { v: 'table', t: '表格' },
-        { v: 'rag', t: '知識庫' }, { v: 'miss', t: '未命中' }], state.logTier);
-    bindBizSelector();
-    $('selTier').onchange = function () { state.logTier = this.value; loadLogs(); };
-    renderActs([{ label: '重新載入', cls: 'ghost', onClick: loadLogs }]);
+function runTest() {
+  var inp = $('testInput');
+  var text = inp ? inp.value.trim() : '';
+  if (!text) { showToast('請輸入問句'); return; }
+  state.testText = text;
+  showToast('測試中…');
+  apiJson('/console/agent/test', {
+    business_id: state.bizId, platform: state.platform, scope: state.scope,
+    text: text, layers: state.testLayers.length ? state.testLayers : null
+  }).then(function (res) {
+    if (!guard(res)) return;
+    state.testResult = res.data;
+    renderSettingsHittest($('spBody'));
+    showToast('完成：' + (TIER_LABEL[res.data.tier] || res.data.tier));
+  });
+}
 
-    var h = '<div style="padding:16px 22px 30px">';
-    if (!state.logRows.length) h += '<div class="empty full">沒有紀錄</div>';
-    else {
-      h += '<table><thead><tr><th>時間</th><th>層級</th><th>平台</th><th>問句</th><th>分數</th>'
-        + '<th>回覆</th></tr></thead><tbody>';
-      state.logRows.forEach(function (g) {
-        h += '<tr><td class="muted">' + esc(fmtTime(g.created_at)) + '</td>'
-          + '<td><span class="pill ' + (TIER_CLASS[g.tier] || '') + '">'
-          + esc(TIER_LABEL[g.tier] || g.tier) + '</span></td>'
-          + '<td>' + esc(PLATFORM_LABEL[g.platform] || g.platform || '') + '</td>'
-          + '<td>' + esc((g.question || '').slice(0, 30)) + '</td>'
-          + '<td class="muted">' + esc(g.score === null || g.score === undefined ? '' : g.score) + '</td>'
-          + '<td>' + mdPreview(g.answer, 40) + '</td></tr>';
-      });
-      h += '</tbody></table>';
-    }
-    $('view').innerHTML = h + '</div>';
-  }
+function renderSettingsLogs(body) {
+  body.innerHTML = '<div class="card"><h3>回覆紀錄</h3>'
+    + '<select id="selTier" style="padding:7px 10px;border:1px solid var(--border);border-radius:9px;margin-bottom:10px">'
+    + ['', 'faq', 'table', 'rag', 'miss'].map(function (v) {
+      var t = v === '' ? '全部層級' : TIER_LABEL[v];
+      return '<option value="' + v + '"' + (state.logTier === v ? ' selected' : '') + '>' + esc(t) + '</option>';
+    }).join('') + '</select><div id="logBox"></div></div>';
+  $('selTier').onchange = function () { state.logTier = this.value; loadLogs(); };
+  loadLogs();
+}
 
-  function loadLogs() {
-    if (!state.bizId) { state.logRows = []; render(); return; }
-    api('/console/agent/logs?business_id=' + state.bizId + '&tier=' + encodeURIComponent(state.logTier))
-      .then(function (res) {
-        if (!guard(res)) { state.logRows = []; render(); return; }
-        state.logRows = res.data.logs || [];
-        render();
-      });
-  }
+function loadLogs() {
+  api(qs('/console/agent/logs', [['business_id', state.bizId], ['tier', state.logTier], ['limit', 100]]))
+    .then(function (res) {
+      var box = $('logBox');
+      if (!box) return;
+      if (!guard(res)) { box.innerHTML = '<div class="empty">載入失敗</div>'; return; }
+      var rows = res.data.logs || [];
+      if (!rows.length) { box.innerHTML = '<div class="empty">沒有紀錄</div>'; return; }
+      box.innerHTML = '<div class="tbl-wrap"><table class="data-table"><thead><tr>'
+        + '<th>時間</th><th>層級</th><th>平台</th><th>問句</th><th>分數</th><th>回覆</th>'
+        + '</tr></thead><tbody>'
+        + rows.map(function (g) {
+          return '<tr><td>' + fmtTime(g.created_at) + '</td>'
+            + '<td>' + esc(TIER_LABEL[g.tier] || g.tier) + '</td>'
+            + '<td>' + esc(PLATFORM_LABEL[g.platform] || g.platform || '') + '</td>'
+            + '<td>' + esc(String(g.question || '').slice(0, 30)) + '</td>'
+            + '<td>' + esc(g.score === null || g.score === undefined ? '' : g.score) + '</td>'
+            + '<td>' + mdPreview(g.answer, 40) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    });
+}
 
-  // -------------------------------------------------- 分頁調度
-  function render() {
-    renderNav();
-    if (state.tab === 'conv') renderConv();
-    else if (state.tab === 'config') renderConfig();
-    else if (state.tab === 'test') renderTest();
-    else renderLogs();
-  }
+/* ---------------------------------------------------------------- 通用詢問框（不用原生是/否彈窗） */
+var _askYes = null;
+function askConfirm(msg, onYes) {
+  var ov = $('askOverlay');
+  if (!ov) { if (onYes) onYes(); return; }
+  $('askMsg').textContent = msg;
+  _askYes = onYes;
+  ov.classList.add('open');
+  $('askYes').onclick = function () {
+    ov.classList.remove('open');
+    var f = _askYes; _askYes = null;
+    if (f) f();
+  };
+}
+function closeAsk() { var ov = $('askOverlay'); if (ov) ov.classList.remove('open'); _askYes = null; }
 
-  function loadTab() {
-    if (state.tab === 'conv') loadConvs();
-    else if (state.tab === 'config') loadOverview();
-    else if (state.tab === 'test') render();
-    else loadLogs();
-  }
+/* ---------------------------------------------------------------- 尾端靜態節點用到的函式 */
+function closeFaqDialog() { var el = $('faqOverlay'); if (el) el.classList.remove('open'); }
+function saveFaqDialog() { closeFaqDialog(); }
+function closeEngineMiss() { var el = $('engineMiss'); if (el) el.classList.remove('open'); }
+function closeKbNew() { var el = $('kbNewOverlay'); if (el) el.classList.remove('open'); }
+function closeKbParams() { var el = $('kbParamsOverlay'); if (el) el.classList.remove('open'); }
+function kbSwitchParamTarget() {}
+function kbCreateCollection() {}
 
-  // -------------------------------------------------- 啟動
-  function boot() {
-    fetch('/api/auth/me', { credentials: 'same-origin' }).then(function (r) {
-      return r.json().catch(function () { return {}; });
-    }).then(function (d) {
+/* ---------------------------------------------------------------- 其他 */
+function resetChat() {
+  $('chatHead').innerHTML = '<div class="chat-placeholder" style="flex:1;flex-direction:row;gap:16px">'
+    + '<span class="big">💬</span><p>' + (state.section === 'posts'
+      ? '選擇左側一篇貼文開始查看' : '選擇左側一位用戶開始查看') + '</p></div>';
+  $('messages').style.display = 'none';
+  $('postDetail').style.display = 'none';
+  $('composer').style.display = 'none';
+}
+
+/* ---------------------------------------------------------------- 啟動 */
+function boot() {
+  fetch('/api/auth/me', { credentials: 'same-origin' })
+    .then(function (r) { return r.json().catch(function () { return {}; }); })
+    .then(function (d) {
       if (!d || !d.ok) { window.location.href = '/login'; return; }
       state.me = d.staff || {};
       state.csrf = d.csrf_token || '';
       $('ava').textContent = (state.me.staff_name || '–').slice(0, 1);
       $('meName').textContent = state.me.staff_name || '';
-      $('meRole').textContent = ({ admin: '管理員', agent: '客服坐席', ops: '運維' })[state.me.active_role]
-        || state.me.active_role || '—';
+      $('meRole').textContent = ROLE_LABEL[state.me.active_role] || state.me.active_role || '—';
       if (window.TopUser) {
-        window.TopUser.init({ me: state.me, csrf: state.csrf, onError: function (m) { toast(m, true); } });
+        window.TopUser.init({ me: state.me, csrf: state.csrf,
+          onError: function (m) { showToast(m); } });
       }
-      return api('/console/agent/businesses');
-    }).then(function (res) {
-      if (!res || !guard(res)) return;
-      state.businesses = res.data.items || [];
-      state.bizId = state.businesses.length ? state.businesses[0].id : null;
-      loadTab();
-    }).catch(function () { /* 保持頁面 */ });
+      return loadBusinesses();
+    }).then(function (ok) {
+      if (!ok) return;
+      if (!state.bizId) {
+        $('convList').innerHTML = '<div class="empty">沒有可操作的商家</div>';
+        return;
+      }
+      loadAutoSettingsAnd();
+      renderTabs();
+      renderMerchantBar();
+      loadConversations();
+    }).catch(function (e) {
+      $('arBtn').textContent = '啟動失敗';
+      console.error(e);
+    });
 
-    $('btnLogout').onclick = function () {
-      fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
-        .then(function () { window.location.href = '/login'; });
-    };
-  }
+  $('btnLogout').onclick = function () {
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+      .then(function () { window.location.href = '/login'; });
+  };
 
-  boot();
-})();
+  $('textInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); }
+  });
+
+  window.addEventListener('resize', function () { fitMerchantBar(); });
+}
+
+boot();
+
 </script>
+<div class="ctx-menu" id="ctxMenu"></div>
+
+<!-- 批次補做（開啟自動回復後一併處理未處理訊息）的進度 -->
+<div class="bf-toast" id="backfillToast" style="display:none">
+  <span class="bf-dot"></span><span id="bfText"></span>
+</div>
+
+<!-- 右下角狀態提示 -->
+<div class="bf-toast center" id="appToast" style="display:none">
+  <span id="appToastText"></span>
+</div>
+
+<!-- 自動回復未命中 → 客服手動回完後，問要不要把這次回覆存進 FAQ 庫 -->
+<div class="faq-overlay" id="faqOverlay" onclick="if(event.target===this)closeFaqDialog()">
+  <div class="faq-box">
+    <div class="sp-head">
+      <h2>加入 FAQ 庫</h2>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="closeFaqDialog()" title="關閉">✕</button>
+    </div>
+    <div class="fm-body">
+      <div class="fm-hint">
+        這則是「<b>自動回復未命中</b>」的客戶訊息。把它存成 FAQ 之後，
+        同樣（或類似）的問法就會由 FAQ 直接回答，不必再人工處理。問題與答案都可以修改再存。
+      </div>
+      <label class="fm-label">問題（客戶的問法）</label>
+      <textarea id="faqQ" rows="2"></textarea>
+      <div class="fm-rewrite" id="faqRewriteWrap" style="display:none">
+        引擎當時改寫成的問句：<span id="faqRewrite"></span>（僅供參考，不會存進 FAQ）
+      </div>
+      <label class="fm-label">答案（要回給客戶的內容）</label>
+      <textarea id="faqA" rows="4"></textarea>
+      <label class="fm-label">關鍵詞（同一個問題的其他問法，用逗號分隔，可留空）</label>
+      <input type="text" id="faqK" placeholder="例如：運費多少, 運費怎麼算">
+      <label class="fm-check"><input type="checkbox" id="faqEnabled" checked> 啟用（新增後立刻由自動回復使用）</label>
+      <div class="fm-err" id="faqErr" style="display:none"></div>
+    </div>
+    <div class="fm-foot">
+      <span class="hint" style="margin:0" id="faqScopeNote"></span>
+      <div class="spacer"></div>
+      <button class="btn" onclick="closeFaqDialog()">取消</button>
+      <button class="btn primary" id="faqSaveBtn" onclick="saveFaqDialog()">新增至 FAQ 庫</button>
+    </div>
+  </div>
+</div>
+
+<!-- 由引擎回覆但未命中 → 彈窗提醒（按 OK／關閉／Esc 即消失，不再留在聊天框） -->
+<div class="engmiss-overlay" id="engineMissOverlay" onclick="if(event.target===this)closeEngineMiss()">
+  <div class="engmiss-box">
+    <div class="engmiss-head">
+      <span class="engmiss-icon">!</span>
+      <h2>引擎答不出這一則</h2>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="closeEngineMiss()" title="關閉">✕</button>
+    </div>
+    <div class="engmiss-body">
+      <p>自動回復引擎沒有命中，請自行輸入回覆。</p>
+      <div class="engmiss-q" id="engineMissQ" style="display:none"></div>
+      <div class="engmiss-reason" id="engineMissReason"></div>
+    </div>
+    <div class="engmiss-foot">
+      <span class="hint">已寫入紀錄（設定 → 紀錄 可查）</span>
+      <div class="spacer"></div>
+      <button class="btn primary" id="engineMissOk" onclick="closeEngineMiss()">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== AI 自動回復設定面板 ========== -->
+<div class="settings-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
+  <div class="settings-panel">
+    <div class="sp-head">
+      <h2>AI 自動回復設定</h2>
+      <span class="pill off" id="spDeepseek">DeepSeek</span>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="closeSettings()" title="關閉">✕</button>
+    </div>
+    <div class="sp-tabs">
+      <div class="sp-tab active" data-tab="autoreply" onclick="switchSettingsTab('autoreply')">自動回復</div>
+      <div class="sp-tab" data-tab="faq" onclick="switchSettingsTab('faq')">FAQ 問答對</div>
+      <div class="sp-tab" data-tab="table" onclick="switchSettingsTab('table')">業務表格</div>
+      <div class="sp-tab" data-tab="kb" onclick="switchSettingsTab('kb')">知識庫</div>
+      <div class="sp-tab" data-tab="hittest" onclick="switchSettingsTab('hittest')">命中測試</div>
+      <div class="sp-tab" data-tab="logs" onclick="switchSettingsTab('logs')">紀錄</div>
+    </div>
+    <div class="sp-body" id="spBody"></div>
+  </div>
+</div>
+
+<!-- ========== 新增知識庫（小彈窗）：兩個單選 → 庫名 → 添加／取消 ========== -->
+<div class="faq-overlay" id="kbNewOverlay"
+     onclick="if(event.target===this)closeKbNew()">
+  <div class="faq-box" style="width:min(480px,100%)">
+    <div class="sp-head">
+      <h2>新增知識庫</h2>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="closeKbNew()" title="關閉">✕</button>
+    </div>
+    <div class="fm-body">
+      <label class="fm-label">類型</label>
+      <div class="kb-type-opts" id="kbNewKindBox">
+        <label class="kb-opt on" data-kind="image">
+          <input type="radio" name="kbNewKind" value="image" checked
+                 onchange="kbNewKindPick('image')">
+          <span><span class="kt-name">圖片知識庫</span>
+            <span class="kt-desc">放圖片（截圖、示意圖），用「描述」檢索，命中直接把圖帶出來。</span></span>
+        </label>
+        <label class="kb-opt" data-kind="doc">
+          <input type="radio" name="kbNewKind" value="doc"
+                 onchange="kbNewKindPick('doc')">
+          <span><span class="kt-name">文檔知識庫</span>
+            <span class="kt-desc">放 PDF／Word／Excel 等文件。文件裡真的有圖時才會開「庫名_圖片庫」。</span></span>
+        </label>
+      </div>
+
+      <label class="fm-label">庫名</label>
+      <input type="text" id="kbNewName" placeholder="例如：產品保固條款 / 介面截圖庫"
+             oninput="kbNewNameHint()"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();kbCreateCollection()}">
+      <div class="fm-rewrite" id="kbNewHint" style="margin-top:8px"></div>
+      <div class="fm-err" id="kbNewErr" style="display:none"></div>
+    </div>
+    <div class="fm-foot">
+      <span class="hint" style="margin:0">只建立你選的這一個庫</span>
+      <div class="spacer"></div>
+      <button class="btn" onclick="closeKbNew()">取消</button>
+      <button class="btn primary" id="kbNewAddBtn" onclick="kbCreateCollection()">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 知識庫參數配置彈窗（從「知識庫」分頁開） ========== -->
+<div class="settings-overlay" id="kbParamsOverlay" onclick="if(event.target===this)closeKbParams()">
+  <div class="settings-panel" style="max-width:760px">
+    <div class="sp-head">
+      <h2 id="kbParamsTitle">參數配置</h2>
+      <select id="kbParamTarget" style="padding:6px 10px;border:1px solid var(--border);border-radius:9px;max-width:280px"
+        onchange="kbSwitchParamTarget(this.value)"></select>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="closeKbParams()" title="關閉">✕</button>
+    </div>
+    <div class="sp-body" id="kbParamsBody"></div>
+  </div>
+</div>
 </body>
 </html>
