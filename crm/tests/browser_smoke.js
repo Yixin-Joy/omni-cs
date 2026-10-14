@@ -90,6 +90,81 @@ function readPw() {
   await settle(1200);
   errors.length = 0;
 
+  // ---------- [2b] 管理台 · 平台帳號彈窗：單頁展示、不左右上下滑動 ----------
+  // ★ 這裡就是「商家管理 → 平台帳號」。原本彈窗 620px 寬塞 680px 的表格 +
+  //   488px 高的新增卡片 → 內容 724×987 溢出 620×836，橫豎都出捲軸。
+  //   改成「左表單｜右清單」兩欄 + table-layout:fixed 後應完全不捲動。
+  console.log('\n[2b] 管理台 · 平台帳號彈窗');
+  for (const vp of [{ width: 1440, height: 900 }, { width: 1280, height: 800 },
+                    { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(vp);
+    await settle(400);
+    await page.click('button[data-act="biz-acct"]');
+    await page.waitForSelector('#ovAcct.show', { timeout: 5000 });
+    await settle(600);
+    const m = await page.evaluate(() => {
+      const box = document.querySelector('#ovAcct .box');
+      const sc = document.querySelector('#ovAcct .acct-scroll');
+      const br = box.getBoundingClientRect();
+      const badTd = Array.from(document.querySelectorAll('#ovAcct td'))
+        .filter(el => el.scrollWidth > el.clientWidth + 1).length;
+      return {
+        boxV: box.scrollHeight > box.clientHeight + 1,
+        boxH: box.scrollWidth > box.clientWidth + 1,
+        listH: sc.scrollWidth > sc.clientWidth + 1,
+        badTd,
+        insideVp: br.right <= window.innerWidth + 1 && br.bottom <= window.innerHeight + 1
+                  && br.left >= -1 && br.top >= -1,
+        size: Math.round(br.width) + '×' + Math.round(br.height),
+        vp: window.innerWidth + '×' + window.innerHeight,
+      };
+    });
+    check(!m.boxH && !m.listH && m.badTd === 0,
+      '平台帳號彈窗無橫向捲動（' + m.vp + '）',
+      '彈窗 ' + m.size + '，溢出儲存格 ' + m.badTd + ' 個');
+    check(!m.boxV, '平台帳號彈窗無縱向捲動（' + m.vp + '）',
+      '彈窗 ' + m.size);
+    check(m.insideVp, '彈窗完整落在視窗內（' + m.vp + '）', '彈窗 ' + m.size);
+    // 兩欄都在、且清單真的渲染了
+    const two = await page.$$eval('#ovAcct .acct-form, #ovAcct .acct-list',
+      els => els.length);
+    check(two === 2, '左（表單）右（清單）兩欄佈局', two + ' 欄');
+    await page.click('#ovAcct [data-close]');
+    await settle(300);
+  }
+
+  // 憑證編輯模式：左欄切成編輯（有「取消編輯」可退回），且仍不捲動
+  await page.click('button[data-act="biz-acct"]');
+  await page.waitForSelector('#ovAcct.show');
+  await settle(500);
+  const credBtn = await page.$('#acctRows [data-acct-cred]');
+  if (credBtn) {
+    await credBtn.click();
+    await settle(400);
+    const em = await page.evaluate(() => {
+      const box = document.querySelector('#ovAcct .box');
+      return {
+        editing: document.getElementById('acctAdd').textContent.indexOf('儲存') >= 0,
+        hasCancel: document.getElementById('acctReset').offsetParent !== null,
+        scroll: box.scrollHeight > box.clientHeight + 1 || box.scrollWidth > box.clientWidth + 1,
+      };
+    });
+    check(em.editing && em.hasCancel, '點「憑證」→ 左欄切編輯模式（可取消）');
+    check(!em.scroll, '編輯模式下彈窗仍不捲動');
+    await page.click('#acctReset');
+    await settle(300);
+    const back = await page.evaluate(() => ({
+      add: document.getElementById('acctAdd').textContent,
+      cancel: document.getElementById('acctReset').offsetParent !== null,
+    }));
+    check(back.add.indexOf('新增') >= 0 && !back.cancel, '「取消編輯」回到新增模式');
+  }
+  await page.click('#ovAcct [data-close]');
+  await settle(300);
+
+  await page.setViewportSize({ width: 1500, height: 950 });
+  await settle(300);
+
   // ---------- [3~6] 客服工作台（切回 agent） ----------
   console.log('\n[3] 工作台 · 商家列');
   await page.click('#whoBox');

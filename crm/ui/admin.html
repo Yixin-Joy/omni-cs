@@ -148,6 +148,57 @@
     width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
     background: #fafbfc; font-size: 13.5px; outline: none; color: var(--text); font-family: inherit; }
   .fld input:focus, .fld select:focus { border-color: var(--accent); background: #fff; }
+  /* ---------- 平台帳號彈窗：兩欄、單頁展示（不左右上下滑動） ----------
+     ★ 原本是單欄：620px 寬的彈窗要塞 680px 的表格 + 488px 高的新增卡片
+       → 內容 724×987 溢出容器 620×836，橫豎都出捲軸。
+     改成「左＝新增綁定表單（固定寬）｜右＝已綁定清單（吃剩餘寬）」，
+     彈窗放寬到 1180px，表格 table-layout:fixed 讓欄寬可控 → 一頁看得完。 */
+  .box.acct {
+    max-width: min(1180px, 96vw); max-height: 92vh; padding: 18px 20px;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .box.acct .sub { margin-bottom: 10px; }
+  .box.acct .acct-cols { display: flex; gap: 16px; flex: 1 1 auto; min-height: 0; }
+  .box.acct .acct-form { flex: 0 0 356px; display: flex; flex-direction: column; min-height: 0; }
+  .box.acct .acct-form .card {
+    margin-bottom: 0; padding: 12px 14px; overflow-y: auto; min-height: 0;
+  }
+  .box.acct .acct-form .card h3 { font-size: 13px; margin-bottom: 9px; }
+  .box.acct .acct-form .fld { margin-bottom: 9px; }
+  .box.acct .acct-form .fld > label { font-size: 12px; margin-bottom: 4px; }
+  .box.acct .acct-form input, .box.acct .acct-form select { padding: 7px 9px; font-size: 13px; }
+  .box.acct .cred-box { grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  .box.acct .cred-fld { margin-bottom: 8px; }
+  .box.acct .cred-fld > label { font-size: 11.5px; }
+  .box.acct .cred-fld input { padding: 6px 8px; font-size: 12.5px; }
+
+  .box.acct .acct-list { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;
+    min-height: 0; }
+  .box.acct .acct-list-head {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-shrink: 0;
+  }
+  .box.acct .acct-list-head h3 { font-size: 13px; font-weight: 700; }
+  .box.acct .acct-list-head .cnt { font-size: 12px; color: var(--text-soft); }
+  .box.acct .acct-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  /* table-layout:fixed → 欄寬由 <colgroup> 決定，不會被長 ID 撐開（不再橫向捲動） */
+  .box.acct table { table-layout: fixed; }
+  .box.acct th, .box.acct td { padding: 7px 9px; font-size: 12.5px; }
+  .box.acct th { font-size: 11.5px; }
+  .box.acct td .switch { padding: 4px 9px; font-size: 12px; }
+  .box.acct td .switch .dot2 { width: 7px; height: 7px; }
+  /* ⚠️ 原生 ID 與顯示名稱都可能是「一整串不可斷的長 token」
+     （例：顯示名稱存成 `whatsapp:WHATSAPP_PHONE_NUMBER_ID`）→
+     沒有 break 規則就會撐破欄寬、把彈窗擠出橫向捲軸。
+     table-layout:fixed 已釘住欄寬，這裡再讓內容自己折行。 */
+  .box.acct .acct-id, .box.acct .acct-name {
+    font-size: 11.5px; overflow-wrap: anywhere; word-break: break-all; line-height: 1.4;
+  }
+  .box.acct .acct-id { color: var(--text-soft); }
+  .box.acct .acct-name { font-size: 12.5px; overflow-wrap: anywhere; word-break: break-word; }
+  .box.acct .acct-foot {
+    display: flex; justify-content: flex-end; gap: 8px; padding-top: 12px; flex-shrink: 0;
+  }
+
   .cred-box { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
   .cred-fld { margin-bottom: 10px; }
   .cred-fld > label { font-size: 12px; font-weight: 600; color: var(--text-soft); display: block; margin-bottom: 4px; }
@@ -229,27 +280,50 @@
 </div>
 
 <div class="ov" id="ovAcct">
-  <div class="box wide">
+  <div class="box acct">
     <h3 id="ovAcctTitle">平台帳號</h3>
     <div class="sub">平台原生帳號 ID 是兩個服務的對齊鍵，同一平台的一個帳號只能屬於一個商家。
       <span class="infotip" data-tip="例：WhatsApp 的 phone_number_id、IG 的 account id、FB 的 page id。請填平台給的原生值，不要填本系統的流水號。">i</span></div>
     <div class="err" id="ovAcctErr"></div>
-    <div class="card" style="box-shadow:none;margin-bottom:14px">
-      <h3>新增綁定</h3>
-      <div class="fld"><label>平台</label><select id="acctPlatform"></select></div>
-      <div class="fld"><label>平台原生帳號 ID</label><input type="text" id="acctNative" placeholder="例：1362588056935295"></div>
-      <div class="fld"><label>顯示名稱</label><input type="text" id="acctDisplay" placeholder="選填，例：客服主號"></div>
-      <div class="fld"><label>平台憑證
-        <span class="infotip" data-tip="按商家區分的業務憑證（AppSecret / Access Token 等）。憑證存 CRM 資料庫，Connector 收發時自動取用；握手 token（驗證用）仍留在 .env。留空＝先不填，之後可再補。">i</span></label>
-        <div id="acctCredBox" class="cred-box"></div>
+
+    <div class="acct-cols">
+      <!-- 左：新增／編輯綁定 -->
+      <div class="acct-form">
+        <div class="card" style="box-shadow:none">
+          <h3 id="acctFormTitle">新增綁定</h3>
+          <div class="fld"><label>平台</label><select id="acctPlatform"></select></div>
+          <div class="fld"><label>平台原生帳號 ID</label><input type="text" id="acctNative" placeholder="例：1362588056935295"></div>
+          <div class="fld"><label>顯示名稱</label><input type="text" id="acctDisplay" placeholder="選填，例：客服主號"></div>
+          <div class="fld"><label>平台憑證
+            <span class="infotip" data-tip="按商家區分的業務憑證（AppSecret / Access Token 等）。憑證存 CRM 資料庫，Connector 收發時自動取用；握手 token（驗證用）仍留在 .env。留空＝先不填，之後可再補。">i</span></label>
+            <div id="acctCredBox" class="cred-box"></div>
+          </div>
+          <div class="acts" style="justify-content:flex-start">
+            <button class="primary" id="acctAdd">新增綁定</button>
+            <button class="ghost" id="acctReset" style="display:none">取消編輯</button>
+          </div>
+        </div>
       </div>
-      <div class="acts" style="justify-content:flex-start"><button class="primary" id="acctAdd">新增綁定</button></div>
+
+      <!-- 右：已綁定清單（欄寬固定，不橫向捲動） -->
+      <div class="acct-list">
+        <div class="acct-list-head"><h3>已綁定帳號</h3><span class="cnt" id="acctCount"></span></div>
+        <div class="acct-scroll">
+          <table>
+            <colgroup>
+              <col style="width:76px"><col style="width:200px"><col style="width:156px">
+              <col style="width:68px"><col style="width:92px"><col style="width:86px">
+              <col style="width:72px">
+            </colgroup>
+            <thead><tr><th>平台</th><th>原生 ID</th><th>顯示名稱</th><th>憑證</th>
+              <th>AI 回覆</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody id="acctRows"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
-    <table>
-      <thead><tr><th>平台</th><th>原生 ID</th><th>顯示名稱</th><th>憑證</th><th>AI 回覆</th><th>狀態</th><th></th></tr></thead>
-      <tbody id="acctRows"></tbody>
-    </table>
-    <div class="acts"><button class="ghost" data-close>關閉</button></div>
+
+    <div class="acct-foot"><button class="ghost" data-close>關閉</button></div>
   </div>
 </div>
 
@@ -872,11 +946,16 @@
   $('acctPlatform').onchange = function () { renderCredFields(this.value, null); };
 
   function renderAcctRows(items) {
+    $('acctCount').textContent = items.length ? items.length + ' 個' : '';
     $('acctRows').innerHTML = items.length ? items.map(function (a) {
       return '<tr>'
         + '<td>' + esc(PLATFORM_LABEL[a.platform] || a.platform) + '</td>'
-        + '<td class="muted" style="font-size:12px;word-break:break-all">' + esc(a.platform_business_account_id) + '</td>'
-        + '<td>' + esc(a.display_name || '—') + '</td>'
+        // ⚠️ 原生 ID 很長 → 靠 colgroup 固定欄寬 + acct-id 的 break-all 換行，
+        //   不再讓它把整張表撐寬（那會讓彈窗出現橫向捲軸）。
+        + '<td class="acct-id" title="' + esc(a.platform_business_account_id) + '">'
+        + esc(a.platform_business_account_id) + '</td>'
+        + '<td class="acct-name" title="' + esc(a.display_name || '') + '">'
+        + esc(a.display_name || '—') + '</td>'
         + '<td>' + (a.has_credential
             ? '<span class="pill ok">已填</span>'
             : '<span class="pill">未填</span>') + '</td>'
@@ -936,6 +1015,8 @@
   function resetAcctForm() {
     delete $('acctAdd').dataset.editCredId;
     $('acctAdd').textContent = '新增綁定';
+    $('acctFormTitle').textContent = '新增綁定';
+    $('acctReset').style.display = 'none';
     $('acctNative').disabled = false;
     $('acctNative').value = '';
     $('acctPlatform').disabled = false;
@@ -943,8 +1024,9 @@
     $('acctDisplay').value = '';
     renderCredFields($('acctPlatform').value, null);
   }
+  $('acctReset').onclick = function () { resetAcctForm(); ovErr('ovAcctErr', ''); };
 
-  // 編輯憑證：彈出小框，重新輸入（不顯示舊明碼，留空＝不變）
+  // 編輯憑證：左欄表單切成「編輯模式」（不顯示舊明碼，留空＝不變）
   function editCred(id) {
     var row = findAcct(parseInt(id, 10));
     if (!row) return;
@@ -956,8 +1038,12 @@
     $('acctDisplay').value = row.display_name || '';
     $('acctDisplay').disabled = true;
     $('acctAdd').textContent = '儲存憑證';
+    $('acctFormTitle').textContent = '編輯憑證 · ' + (PLATFORM_LABEL[row.platform] || row.platform);
+    $('acctReset').style.display = '';
     $('acctAdd').dataset.editCredId = id;
     ovErr('ovAcctErr', '');
+    // 表單在左欄，若有需要讓它滾到可見處（小視窗時）
+    $('acctCredBox').scrollIntoView({ block: 'nearest' });
   }
 
   document.addEventListener('click', function (e) {

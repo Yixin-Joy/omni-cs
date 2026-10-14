@@ -232,6 +232,29 @@ def check_platform_badges(html: str, js: str) -> None:
           "一級紅點不再只靠當前平台會話算（renderBadges 不用 state.convs）")
 
 
+def check_acct_modal(html: str) -> None:
+    """後台「平台帳號」彈窗必須單頁展示（不左右上下滑動）。
+
+    ★ 曾發生：彈窗 `box wide`（620px）+ 單欄堆疊 → 內容 724×987 溢出容器 620×836，
+      橫豎都出捲軸。修法＝`.box.acct`（1180px）+ 左表單／右清單兩欄 +
+      表格 `table-layout: fixed` + `colgroup` 固定欄寬 + 內容 `overflow-wrap: anywhere`。
+    """
+    if 'id="ovAcct"' not in html:
+        return
+    check('class="box acct"' in html, "平台帳號彈窗用 .box.acct（不再用 box wide）")
+    check("box wide" not in html or html.find("box wide") > html.find('id="ovAcct"'),
+          "平台帳號彈窗不再是單欄 box wide")
+    check(".box.acct" in html and "max-width: min(1180px" in html,
+          "彈窗放寬到 1180px（96vw 上限）")
+    check('class="acct-cols"' in html and 'class="acct-form"' in html
+          and 'class="acct-list"' in html, "左（表單）右（清單）兩欄佈局")
+    check("<colgroup>" in html, "表格有 colgroup 固定欄寬")
+    check("table-layout: fixed" in html, "表格 table-layout: fixed（長 ID 不撐寬）")
+    check("overflow-wrap: anywhere" in html, "長 token 會折行（不橫向溢出）")
+    check('class="acct-scroll"' in html and "overflow: auto" in html,
+          "清單區自己滾（彈窗本體不滾）")
+
+
 def check_badge_consistency(html: str, js: str) -> None:
     """紅點一致性閘門（迴歸）。
 
@@ -312,6 +335,9 @@ def main():
 
         # [11] 紅點一致性（商家列 ↔ 工作台）
         check_badge_consistency(html, js_all)
+
+        # [12] 後台平台帳號彈窗（單頁展示）
+        check_acct_modal(html)
 
         # [5] 身分切換元件有載入
         has_switch_ui = 'id="roleMenu"' in html or 'id="whoBox"' in html
