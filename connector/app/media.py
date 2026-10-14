@@ -63,6 +63,27 @@ def resolve(media_key: str) -> Path:
     return p
 
 
+def public_url(media_key: str, base_url: str | None = None) -> str:
+    """`media_key` → **外網可達的絕對網址**（給 IG／FB 用）。
+
+    為什麼 IG／FB 一定要絕對網址：它們的 attachment 只收 `payload.url`，
+    由 **Meta 的伺服器自己去下載**那個檔案 —— 所以網址必須外網可達、不需登入。
+
+    路徑用 `/files/<media_key>`（Connector 的 StaticFiles 掛的就是 MEDIA_DIR），
+    而 ngrok 隧道指向 Connector → 這條路徑外網真的抓得到
+    （CRM 端的 `/files` 只是**代理**給站內頁面用）。
+
+    沒設 `PUBLIC_BASE_URL` 就回空字串 —— 呼叫端要**記下原因**，不要靜靜略過。
+    """
+    key = (media_key or "").replace("\\", "/").strip().lstrip("/")
+    if not key or ".." in key.split("/"):
+        return ""
+    base = (base_url if base_url is not None else getattr(config, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+    if not base:
+        return ""
+    return f"{base}/files/{key}"
+
+
 def find_in_kb_cache(sha256: str) -> Path | None:
     """發送前先看快取有沒有（避免重複上傳）。"""
     d = scope_dir("kb_cache")

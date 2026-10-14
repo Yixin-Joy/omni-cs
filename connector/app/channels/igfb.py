@@ -136,8 +136,49 @@ async def send_text(platform: str, target_id: str, text: str,
 
 
 async def send_asset(target_id: str, media_path: str, caption: str = "",
-                     filename: str = "", credential: dict | None = None) -> "_base.SendResult":
-    return _base.SendResult(ok=False, error="IG/FB 附件發送尚未支援（請用文字或連結）")
+                     filename: str = "", credential: dict | None = None,
+                     platform: str = "fb") -> "_base.SendResult":
+    """私訊送圖片（知識庫「圖文結合輸出」的輸出端）。
+
+    ★ IG／FB 的 attachment **只收公開 URL**（`payload.url`），由 Meta 自己去下載，
+      不能上傳本地檔案 → 這裡把 `media_path`（在 MEDIA_DIR 底下）換算成
+      `PUBLIC_BASE_URL + /files/<相對路徑>` 再交給 Graph API。
+
+    ⚠️ 這裡原本是 `return SendResult(ok=False, error="尚未支援")` ——
+       於是「AI 回覆帶圖」在 IG／FB 上**永遠失敗**（CRM 記錄寫「附圖 N」，
+       客戶端卻只收到文字）。修好 `_asset_items` 的上傳後，這支必須同時可用。
+
+    ⚠️ `caption`：IG／FB 的圖片訊息沒有 caption 欄位 → 忽略（呼叫端會另發一條文字）。
+    """
+    from pathlib import Path as _P
+
+    from app.core import config
+    from app import media as _media
+
+    try:
+        rel = _P(str(media_path)).resolve().relative_to(_P(config.MEDIA_DIR).resolve())
+    except Exception:  # noqa: BLE001 —— 不在 MEDIA_DIR 底下就拼不出公開網址
+        return _base.SendResult(
+            ok=False, error=f"圖片不在媒體目錄底下，無法產生公開網址：{media_path}")
+
+    url = _media.public_url(str(rel).replace("\\", "/"))
+    if not url:
+        return _base.SendResult(
+            ok=False,
+            error="沒設定 PUBLIC_BASE_URL，IG／FB 抓不到圖片"
+                  "（Meta 會自己來下載，網址必須外網可達）")
+
+    mime = _guess_mime(filename or str(rel))
+    return await _send_attachment(platform if platform in ("ig", "fb") else "fb",
+                                  target_id, url, mime, credential or {})
+
+
+def _guess_mime(name: str) -> str:
+    ext = (name or "").rsplit(".", 1)[-1].lower() if "." in (name or "") else ""
+    return {
+        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp",
+    }.get(ext, "image/png")
 
 
 async def reply_comment(platform: str, comment_id: str, text: str,

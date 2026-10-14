@@ -44,7 +44,12 @@ INTERNAL_BIND_HOST = _get("INTERNAL_BIND_HOST", "127.0.0.1")
 
 # ===== 媒體 =====
 MEDIA_DIR = _path("MEDIA_DIR", "media")
-KB_CACHE_DIR = _path("KB_CACHE_DIR", "media/kb_cache")
+# ⚠️ **必須在 MEDIA_DIR 底下**：`media_key` 的定義是「相對 MEDIA_DIR 的路徑」，
+#    `media.resolve()` 也只在 MEDIA_DIR 底下找檔。這裡若指到別的根（例如相對
+#    connector 根的 `media/kb_cache`，而 MEDIA_DIR 是 `../media`），存進去的圖
+#    `resolve()` 永遠找不到 —— kb_cache 實質不可用（曾踩）。
+#    對外網址 = `PUBLIC_BASE_URL + /files/ + media_key`（見 media.public_url）。
+KB_CACHE_DIR = _path("KB_CACHE_DIR", os.path.join(MEDIA_DIR, "kb_cache"))
 KB_CACHE_TTL_DAYS = int(_get("KB_CACHE_TTL_DAYS", "7") or 7)
 # 對外可訪問基址（ngrok / 正式域名），拼媒體 URL 用
 PUBLIC_BASE_URL = _get("PUBLIC_BASE_URL", "")

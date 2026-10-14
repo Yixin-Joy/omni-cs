@@ -394,6 +394,39 @@ def check_port_completeness(html: str, js: str) -> None:
         ):
             check(gone not in js, f"自動回復設定已移除：{why}")
 
+    # [e3] ★★ 會話／貼文項絕不能用 `data-acc`（P0：會被設定頁的 [data-acc] 綁定
+    #      覆蓋 onclick，導致点不开详情，還會誤改該帳號的 AI 開關）
+    check("data-bp=" in js, "會話／貼文項用 data-bp 記錄 bp_account_id（不再用 data-acc）")
+    for gone, why in (
+        ("' data-acc=\"' + esc(c.bp_account_id", "會話項上的 data-acc"),
+        ("' data-acc=\"' + esc(p.bp_account_id", "貼文項上的 data-acc"),
+    ):
+        check(gone not in js, f"已移除：{why}")
+    # 設定頁的綁定必須限定在 #spBody 內（不得用 document 全域選取 [data-acc]）
+    check("box.querySelectorAll('[data-acc]')" in js,
+          "設定頁的 [data-acc] 綁定限定在 #spBody 內")
+    check("document.querySelectorAll('[data-acc]')" not in js,
+          "沒有任何全域 [data-acc] 選取（否則會覆蓋會話項 onclick）")
+
+    # [e4] 送出樂觀顯示 + 送達狀態 + 內容輪詢
+    for marker, why in (
+        ("outStatusTag", "我方訊息有送達狀態標籤"),
+        ("正在送出", "送出中顯示「正在送出」"),
+        ("已送達", "送完顯示「已送達」"),
+        ("refreshThread", "可單獨刷新開啟中的會話訊息"),
+        ("_threadSig", "訊息沒變不重繪（保住滾動位置）"),
+        ("_convsSig", "會話列表沒變不重繪（不打断点击）"),
+        ("_nearBottom", "只在底部時才自動捲到最新"),
+    ):
+        check(marker in js, f"送出／輪詢具備：{why}")
+    # 輪詢不可以只刷紅點 —— 必須連列表與訊息一起刷
+    if "setInterval(function () {" in js:
+        tail = js[js.index("setInterval(function () {"):]
+        tail = tail[:800]
+        check("loadAllCounts()" in tail and "refreshThread(false)" in tail
+              and ("loadConversations()" in tail or "loadPosts()" in tail),
+              "輪詢同時刷新：紅點 + 列表 + 開啟中的訊息")
+
     # [f] 移植過來的那幾塊：全部走 stApi/stApiJson/stUpload/stDownload（自動帶
     #     business_id 與 CSRF）。⚠️ 只看移植區 —— CRM 原本就有的對話頁附件上傳
     #     (`/console/agent/upload`) 不屬於這批，它自己帶了 CSRF 也不需要 business_id。

@@ -117,8 +117,22 @@ def record_outbound_message(task: dict, items: list[dict]) -> None:
     bp = task.get("bp_account_id")
     mid = f"out-{task.get('task_id')}"
     text = " ".join(i["text"] for i in items if i["kind"] == "text")
-    assets = [{"media_key": i["media_key"], "caption": i.get("caption") or ""}
-              for i in items if i["kind"] == "asset"]
+    # ★ 附件要寫**可渲染的 url**：工作台（`_files_of`）讀的是 `url` / `type`，
+    #   只寫 media_key 的話前端拿不到任何網址 → 我方帶圖的回覆在氣泡裡**只顯示文字**。
+    #   路徑用 `<PUBLIC_BASE_URL>/files/<media_key>`（前端會把它正規化成相對 `/files/...`，
+    #   走 CRM 的代理）；PUBLIC_BASE_URL 沒設時退回相對 `/files/<media_key>`。
+    assets = []
+    for i in items:
+        if i["kind"] != "asset":
+            continue
+        key = i.get("media_key") or ""
+        assets.append({
+            "media_key": key,
+            "url": media.public_url(key) or (f"/files/{key.lstrip('/')}" if key else ""),
+            "type": "image",
+            "filename": os.path.basename(key),
+            "caption": i.get("caption") or "",
+        })
     mtype = "text" if not assets else ("image" if len(assets) == 1 else "mixed")
     payload = json.dumps({"text": text, "assets": assets}, ensure_ascii=False)
 

@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 from app.core import config
@@ -64,13 +65,48 @@ CAPTION_MAX = 900
 
 
 def _asset_items(assets: list) -> list[dict]:
-    """把 kb_asset 清單收斂成任務內容裡的 assets（Connector `build_sub_items` 認這個格式）。"""
+    """把 kb_asset 清單收斂成任務內容裡的 assets（Connector `build_sub_items` 認這個格式）。
+
+    ★★ **必須把圖真的推給 Connector**（`upload_media` → `media_key`）：
+      Connector 的 `media.resolve()` 只認它自己 `MEDIA_DIR` 底下的 `media_key`，
+      CRM 端的 `rel_path`（`kb_assets/xxx.png`）它**找不到**。
+
+      ⚠️ 曾經只塞 `rel_path`，而 Connector 讀的是 `media_key`/`path` ——
+        兩邊欄位名對不上 → 附圖被**靜默丟掉**，任務只剩文字一條。
+        症狀：CRM 記錄寫「附圖 4」、客戶端（FB）與工作台氣泡都只有文字。
+
+    ⚠️ 這裡是**同步 HTTP**（`connector_client.upload_media`）；呼叫端
+      (`enqueue_reply`) 本來就在 `asyncio.to_thread` 裡跑，阻塞沒問題。
+    ⚠️ 上傳失敗**不中斷**（文字還是要送），但一定要記下是哪一張、為什麼 ——
+      靜默略過正是上面那個坑的成因。
+    """
+    from app.internal import connector_client
+    from app.rag import rag_config
+
     out: list[dict] = []
     for a in assets or []:
-        if not a or not a.get("rel_path"):
+        rel = (a or {}).get("rel_path") or ""
+        if not rel:
             continue
-        out.append({"rel_path": a.get("rel_path"), "mime": a.get("mime") or "image/png",
-                    "caption": a.get("caption") or "", "filename": a.get("filename") or ""})
+        path = rag_config.local_path_of_rel(rel)
+        if not path:
+            log.warning("附圖找不到實體檔案，略過：rel_path=%s", rel)
+            continue
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            log.warning("附圖讀取失敗，略過：%s（%s）", rel, e)
+            continue
+        name = a.get("filename") or os.path.basename(rel)
+        got = connector_client.upload_media(data, name, scope="kb_cache")
+        if not got or not got.get("media_key"):
+            log.warning("附圖推送 Connector 失敗，略過：%s", rel)
+            continue
+        out.append({"media_key": got["media_key"],
+                    "mime": a.get("mime") or "image/png",
+                    "caption": a.get("caption") or "",
+                    "filename": name})
     return out
 
 

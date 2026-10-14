@@ -324,6 +324,35 @@ function readPw() {
   check(clip !== 'hidden' && clip !== 'clip', '商家列不裁切（紅點才露得出來）', clip);
 
   console.log('\n[4] 私訊');
+  // ★★ P0 回歸：**剛打開頁面就直接點會話**必須打得開。
+  //    舊 bug：設定頁的 `bindOverviewEvents` 用 document 全域選 `[data-acc]`，
+  //    把會話項的 onclick **覆蓋**成「切換該帳號 AI 開關」→ 点不开详情，
+  //    而且每点一下都靜默改掉該帳號的 AI 開關。
+  //    ⚠️ 一定要在「還沒點過 #nav-dm」之前驗 —— 切欄目會重建列表，
+  //    把被覆蓋的 onclick 洗掉，測不出這個 bug（原本就是這樣漏掉的）。
+  const fresh = await page.evaluate(() => {
+    const el = document.querySelector('#convList .conv');
+    return { n: document.querySelectorAll('#convList .conv').length,
+             has: !!el, attr: el ? el.getAttribute('onclick') : '' };
+  });
+  check(fresh.has, '剛載入就有會話項目', fresh.n + ' 筆');
+  if (fresh.has) {
+    check(String(fresh.attr).indexOf('openConversation') >= 0,
+      '★ 會話項的 onclick 沒被設定頁的綁定覆蓋', String(fresh.attr).slice(0, 40));
+    await page.click('#convList .conv');
+    await settle(1500);
+    const opened = await page.evaluate(() => ({
+      activeKey: window.state && window.state.activeKey,
+      msgs: document.querySelectorAll('#messages .msg-row').length,
+      head: (document.getElementById('chatHead') || {}).textContent || '',
+      composer: getComputedStyle(document.getElementById('composer')).display,
+    }));
+    check(!!opened.activeKey, '★★ 剛載入直接點會話打得開（P0 回歸）',
+      'activeKey=' + opened.activeKey);
+    check(opened.msgs > 0, '★ 點會話後訊息有渲染出來', opened.msgs + ' 則');
+    check(opened.composer !== 'none', '★ 點會話後輸入框出現', opened.composer);
+  }
+
   await page.click('#nav-dm');
   await settle(1600);
   const convs = await page.$$eval('#convList .conv', els => els.length);
@@ -357,6 +386,69 @@ function readPw() {
       '交替段數=' + runs + ' / 共 ' + dirs.length + ' 則');
     await shot('shot6_dm_thread.png');
   }
+
+  // ★ 輪詢活性（issue：新訊息不強制刷新不會自己出現）
+  //   不寫任何資料 —— 只驗證「開啟中的會話」與「會話列表」在一個輪詢週期內
+  //   **真的有再被請求**（舊版只輪詢紅點數字，內容永不更新）。
+  if (convs > 0) {
+    const hits = { list: 0, thread: 0 };
+    const tap = (r) => {
+      const u = r.url();
+      if (/\/console\/agent\/conversations\?/.test(u)) hits.list++;
+      if (/\/console\/agent\/conversation\?/.test(u)) hits.thread++;
+    };
+    page.on('response', tap);
+    const before = { ...hits };
+    await page.waitForTimeout(23000);          // COUNT_POLL_MS = 20s，留餘裕
+    page.off('response', tap);
+    check(hits.list > before.list && hits.thread > before.thread,
+      '★ 輪詢會刷新「會話列表」與「開啟中的訊息」（不只紅點數字）',
+      `list ${before.list}→${hits.list} / thread ${before.thread}→${hits.thread}`);
+  }
+  // ★ 樂觀送出（issue：送出後要立刻出現在畫面上，標「正在送出」）
+  //   ⚠️ 把 apiJson 換成永不 resolve 的 promise → 停在「正在送出」那一刻，
+  //      全程**不產生任何真實發送**，測完立刻還原。
+  const optimistic = await page.evaluate(async () => {
+    const conv = document.querySelector('#convList .conv');
+    if (!conv) return { skip: true };
+    conv.click();
+    await new Promise(r => setTimeout(r, 1200));
+    const box = document.getElementById('messages');
+    const before = document.querySelectorAll('#messages .msg-row').length;
+
+    const realApi = window.apiJson;
+    window.apiJson = () => new Promise(() => {});      // 永不 resolve
+    const ta = document.getElementById('textInput');
+    ta.value = '__CK__樂觀顯示自檢';
+    let grew = false, sending = false, matched = false;
+    try {
+      window.sendReply();
+      await new Promise(r => setTimeout(r, 150));
+      grew = document.querySelectorAll('#messages .msg-row').length > before;
+      sending = box.textContent.indexOf('正在送出') >= 0;
+      matched = box.textContent.indexOf('__CK__樂觀顯示自檢') >= 0;
+    } finally {
+      window.apiJson = realApi;
+      // 收尾：把本地那條摘掉、還原按鈕與輸入框（不留痕跡）
+      window.state.thread = (window.state.thread || [])
+        .filter(m => String(m.message_id || '').indexOf('local-') !== 0);
+      window.renderMessages(window.state.thread, false);
+      window.state.sending = false;
+      const btn = document.getElementById('sendBtn');
+      if (btn) btn.disabled = false;
+      if (ta) ta.value = '';
+    }
+    return { grew, sending, matched, before };
+  });
+  if (optimistic.skip) {
+    check(false, '★ 樂觀送出（需要至少一個會話）', '沒有會話可測');
+  } else {
+    check(optimistic.grew && optimistic.matched,
+      '★ 送出後訊息立刻出現在畫面上（不等伺服器）',
+      `氣泡 ${optimistic.before} → 立刻 +1`);
+    check(optimistic.sending, '★ 送出中的訊息標「正在送出」');
+  }
+
   // ★ 右鍵選單：**只**出現在「還沒被處理的單條客戶訊息氣泡」上，
   //   會話項（用戶聊天框）上**不能**有。只驗出現/不出現，不點菜單項（不改資料）。
   const ctx = await page.evaluate(() => {

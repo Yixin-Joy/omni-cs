@@ -90,6 +90,24 @@ def media_url_of_rel(rel_path: str) -> str:
         return media_url(base)
     return ""
 
+
+def local_path_of_rel(rel_path: str) -> str:
+    """`kb_asset.rel_path` → **本機絕對路徑**（找不到回空字串）。
+
+    兩種歷史形態都要吃：
+      ① 新的：`kb_assets/<sha16>.png` → 在公開圖片目錄 `RAG_MEDIA_DIR` 底下；
+      ② 舊的：`kb/<uuid>/assets/xxx.png` → 在 `RAG_KB_DIR` 底下（不公開，但檔案在）。
+    找到才有辦法把圖推給 Connector 發出去（見 `autoreply._asset_items`）。
+    """
+    rel = str(rel_path or "").replace("\\", "/").lstrip("/")
+    if not rel or ".." in rel.split("/"):
+        return ""
+    for root, cand in ((RAG_MEDIA_DIR, os.path.basename(rel)), (RAG_KB_DIR, rel)):
+        p = os.path.join(root, cand)
+        if os.path.isfile(p):
+            return p
+    return ""
+
 # ---------- 混合檢索權重 ----------
 # 純向量在中文短問句（含指代）上不穩，混入 jieba 字面分數補強（RAG_DESIGN.md §8）
 RAG_VECTOR_WEIGHT = float(_get("RAG_VECTOR_WEIGHT", "0.65"))

@@ -340,6 +340,11 @@
   .ar-btn.locked { opacity: .45; cursor: not-allowed; filter: grayscale(1); }
   .ar-btn.locked:hover { border-color: var(--border); color: var(--text-soft); }
 
+  /* 我方訊息的送達狀態（正在送出 / 已送達） */
+  .status-sending { color: var(--text-soft); font-weight: 700; }
+  .status-sent { color: #147d51; font-weight: 700; }
+  .status-fail { color: var(--red); font-weight: 700; }
+
   /* 訊息 / 留言上的自動回復標記 */
   .tag-auto-faq, .tag-auto-table, .tag-auto-rag, .tag-auto-miss, .tag-auto-fail {
     font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; white-space: nowrap;
@@ -1045,7 +1050,8 @@ var state = {
   refreshing: false,                        // 「重新整理」（補拉歷史）進行中
   convs: [], convsTotal: 0,
   posts: [], postsHasMore: false,
-  activeKey: null, activeAcc: null, thread: [], logs: [],
+  activeKey: null, activeAcc: null, thread: [], threadSig: '', logs: [],
+  convsSig: '', postsSig: '',
   activePost: null,
   search: '',
   aiEnabled: null,
@@ -1397,6 +1403,15 @@ function loadConversations() {
   });
 }
 
+/* 列表內容指紋：輪詢時若內容一模一樣就**不重繪**。
+   ⚠️ 這不只是省效能 —— 20 秒一次的無條件重繪會在「使用者按下但還沒放開」的
+   瞬間把節點換掉，導致那一下 click 根本不會觸發（點不動）。 */
+function _convsSig(items) {
+  return (items || []).map(function (c) {
+    return [c.key, c.pending, c.last_ts, c.direction, (c.text || '').length].join(':');
+  }).join('|');
+}
+
 function renderConversations() {
   var list = $('convList');
   var items = state.convs.filter(function (c) {
@@ -1404,6 +1419,10 @@ function renderConversations() {
     var nm = (c.sender_name || c.key || '').toLowerCase();
     return nm.indexOf(state.search) >= 0 || String(c.key || '').toLowerCase().indexOf(state.search) >= 0;
   });
+  var sig = _convsSig(items) + '#' + (state.search || '') + '#' + state.activeKey
+    + '#' + state.platform + '#' + state.bizId;
+  if (sig === state.convsSig) return;      // 沒變 → 不重繪
+  state.convsSig = sig;
   if (!items.length) {
     list.innerHTML = '<div class="empty">' + (state.search ? '沒有符合的用戶' : '尚無訊息') + '</div>';
     return;
@@ -1414,7 +1433,7 @@ function renderConversations() {
     var badge = c.pending > 0
       ? '<span class="conv-badge">' + (c.pending > 99 ? '99+' : c.pending) + '</span>' : '';
     return '<div class="conv' + (active ? ' active' : '') + '" data-key="' + esc(cid) + '"'
-      + ' data-acc="' + esc(c.bp_account_id || '') + '" onclick="openConversation(\'' + esc(cid) + '\')">'
+      + ' data-bp="' + esc(c.bp_account_id || '') + '" onclick="openConversation(\'' + esc(cid) + '\')">'
       + badge
       + '<div class="avatar">' + esc(avatarChar(c.sender_name || cid)) + '</div>'
       + '<div class="conv-meta">'
@@ -1439,6 +1458,7 @@ function openConversation(cid) {
   api(url).then(function (res) {
     if (!guard(res)) return;
     state.thread = res.data.items || [];
+    state.threadSig = _threadSig(state.thread);
     state.logs = res.data.logs || [];
     renderChatHead({ name: (c && c.sender_name) || cid, sender_id: cid });
     renderMessages(state.thread, true);
@@ -1470,12 +1490,62 @@ function renderMessages(list, forceBottom) {
   if (forceBottom) box.scrollTop = box.scrollHeight;
 }
 
+/* 使用者是不是「已經在底部」—— 只有這樣才自動捲到最新，
+   否則（正在往上看歷史）輪詢重繪會把他彈回底部，很干擾。 */
+function _nearBottom(box) {
+  return box.scrollTop + box.clientHeight >= box.scrollHeight - 48;
+}
+
+/* 這串訊息的「內容指紋」：沒變就不重繪（避免輪詢一直閃、也保住選取/滾動）。 */
+function _threadSig(list) {
+  return (list || []).map(function (m) {
+    return [m.message_id || '', m.status || '', (m.text || '').length,
+            (m.files || []).length, m.is_handled === false ? 'p' : 'h'].join(':');
+  }).join('|');
+}
+
+/* 只刷「目前開啟的會話」的訊息（不動列表）。輪詢與送出後都用這支。 */
+function refreshThread(force) {
+  if (!state.activeKey) return;
+  var url = qs('/console/agent/conversation', [
+    ['business_id', state.bizId], ['platform', state.platform], ['scope', 'dm'],
+    ['bp_account_id', state.activeAcc], ['key', state.activeKey], ['limit', 100]]);
+  api(url).then(function (res) {
+    if (!guard(res)) return;
+    var items = res.data.items || [];
+    state.logs = res.data.logs || [];
+    var sig = _threadSig(items);
+    if (!force && sig === state.threadSig) return;   // 沒變 → 不重繪
+    var box = $('messages');
+    var stick = force || _nearBottom(box);
+    state.threadSig = sig;
+    renderMessages(items, stick);
+  });
+}
+
 /* 這一則能否右鍵：客戶來訊、還沒被處理、有 message_id、渠道支援私訊。
    ⚠️ 這是唯一的入口 —— 我方回覆氣泡與已處理的訊息都不掛右鍵。 */
 function msgReplyable(m) {
   return !!m && (m.direction === 'inbound' || m.direction === 'in')
     && !!m.message_id && m.is_handled === false
     && engineSupported(state.platform, 'dm');
+}
+
+/* 我方訊息的送達狀態標籤。
+   `sending`  = 剛按下送出、還沒拿到任務編號（樂觀顯示）
+   `queued`   = 任務已建立、Connector 正在送
+   `failed`   = 送出失敗（另外用紅色標）
+   `out-<id>` = Connector 送完後落庫的回覆 → 已送達
+   ⚠️ 只有出站訊息才標；客戶來訊不標。 */
+function outStatusTag(m) {
+  if (m.direction !== 'outbound' && m.direction !== 'out') return '';
+  if (m.status === 'failed') return '';
+  if (m.status === 'sending') return '<span class="status-sending">◌ 正在送出…</span>';
+  if (m.status === 'queued') return '<span class="status-sending">◌ 已送出，傳送中…</span>';
+  if (String(m.message_id || '').indexOf('out-') === 0) {
+    return '<span class="status-sent">✓ 已送達</span>';
+  }
+  return '';
 }
 
 function msgHtml(m, idx) {
@@ -1506,9 +1576,11 @@ function msgHtml(m, idx) {
   }
   if (m.text) content += '<div class="text">' + mdImages(m.text) + '</div>';
 
-  var fail = (!inbound && m.status === 'failed') ? '<span class="status-fail">● 發送失敗</span>' : '';
+  var fail = (!inbound && m.status === 'failed')
+    ? '<span class="status-fail">● 發送失敗</span>' : '';
   var at = inbound ? autoTag(m) : '';
-  var meta = '<div class="meta">' + fail + at + '<span>' + fmtTime(m.ts) + '</span></div>';
+  var meta = '<div class="meta">' + fail + outStatusTag(m) + at
+    + '<span>' + fmtTime(m.ts) + '</span></div>';
   // ★ 右鍵只掛在「還沒被處理的客戶來訊氣泡」上（不是整個會話框）
   var ctx = msgReplyable(m)
     ? ' oncontextmenu="showMsgMenu(event,' + idx + ')"'
@@ -1702,6 +1774,13 @@ function renderPosts() {
   var posts = state.posts.filter(function (p) {
     return !state.search || String(p.name || '').toLowerCase().indexOf(state.search) >= 0;
   });
+  var sig = posts.map(function (p) {
+    return [p.post_id, p.new_comments, p.comment_count, p.created_at].join(':');
+  }).join('|') + '#' + (state.search || '') + '#'
+    + (state.activePost ? state.activePost.post_id : '')
+    + '#' + state.platform + '#' + state.bizId;
+  if (sig === state.postsSig) return;      // 沒變 → 不重繪（同上：避免打斷點擊）
+  state.postsSig = sig;
   if (!posts.length) {
     list.innerHTML = '<div class="empty">' + (state.search ? '沒有符合的貼文' : '尚無貼文') + '</div>';
     return;
@@ -1714,7 +1793,7 @@ function renderPosts() {
     var badge = p.new_comments > 0
       ? '<span class="post-badge new">' + p.new_comments + ' 新</span>' : '';
     return '<div class="post-card' + (active ? ' active' : '') + '"'
-      + ' data-post="' + esc(p.post_id) + '" data-acc="' + esc(p.bp_account_id || '') + '"'
+      + ' data-post="' + esc(p.post_id) + '" data-bp="' + esc(p.bp_account_id || '') + '"'
       + ' onclick="openPost(\'' + esc(p.post_id) + '\',' + (p.bp_account_id || 0) + ')">'
       + '<div class="post-thumb">' + thumb + '</div>'
       + '<div class="post-meta"><div class="post-name">'
@@ -1906,6 +1985,31 @@ function sendReply() {
   state.sending = true;
   $('sendBtn').disabled = true;
 
+  // ★ 樂觀顯示：立刻把自己這條畫上去（標「正在送出…」），
+  //   不等伺服器回應 —— 否則按下送出後畫面要等好幾秒才有反應。
+  var localId = 'local-' + Date.now();
+  var localMsg = {
+    message_id: localId, direction: 'outbound', text: text,
+    ts: new Date().toISOString(), status: 'sending',
+    files: file ? [{ url: '', filename: file.name, isImage: /^image\//.test(file.type || ''),
+                     fileSize: file.size }] : [],
+  };
+  state.thread = (state.thread || []).concat([localMsg]);
+  renderMessages(state.thread, true);
+  if (ta) ta.value = '';
+  clearPendingFile();
+
+  function setLocal(status, extra) {
+    var arr = state.thread || [];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].message_id === localId) {
+        arr[i] = Object.assign({}, arr[i], { status: status }, extra || {});
+        break;
+      }
+    }
+    renderMessages(arr, true);
+  }
+
   var chain = Promise.resolve(null);
   if (file) {
     var fd = new FormData();
@@ -1928,14 +2032,19 @@ function sendReply() {
       assets: asset ? [asset] : []
     });
   }).then(function (res) {
-    if (!guard(res)) return;
-    showToast('已建立外送任務 #' + res.data.task_id);
-    if (ta) ta.value = '';
-    clearPendingFile();
-    setTimeout(function () { openConversation(state.activeKey); loadConversations(); }, 700);
+    if (!guard(res)) { setLocal('failed'); return; }
+    var taskId = res.data.task_id;
+    // 任務已建立 → 這一則改成「已送出，傳送中…」；真正的「已送達」
+    // 要等 Connector 送完落庫（message_id 變成 out-<task_id>），由輪詢接手。
+    setLocal('queued', { message_id: localId, _task_id: taskId });
+    // 快刷幾次，盡快讓它變成「已送達」；之後交給 20 秒的常規輪詢
+    [1200, 3000, 6000].forEach(function (ms) {
+      setTimeout(function () { refreshThread(false); loadConversations(); }, ms);
+    });
     loadAllCounts();
   }).catch(function (e) {
     showToast(e.message || '送出失敗');
+    setLocal('failed');
   }).then(function () {
     state.sending = false;
     $('sendBtn').disabled = false;
@@ -2148,7 +2257,10 @@ function renderPostCfg() {
 }
 
 function bindPostCfgEvents() {
-  Array.prototype.forEach.call(document.querySelectorAll('[data-pgroup]'), function (b) {
+  // 同 `bindOverviewEvents`：只在自己的容器裡找，不用 document 全域選取
+  var box = $('postCfgBody');
+  if (!box) return;
+  Array.prototype.forEach.call(box.querySelectorAll('[data-pgroup]'), function (b) {
     b.onclick = function () {
       var k = b.getAttribute('data-pgroup');
       state.postLayers[k] = !state.postLayers[k];
@@ -2156,7 +2268,7 @@ function bindPostCfgEvents() {
       renderPostCfg();
     };
   });
-  Array.prototype.forEach.call(document.querySelectorAll('[data-pck]'), function (c) {
+  Array.prototype.forEach.call(box.querySelectorAll('[data-pck]'), function (c) {
     c.onchange = function () { collectPostChecks(); };
   });
 }
@@ -2268,14 +2380,20 @@ function arPlatformScopeOn(platform) {
 }
 
 function bindOverviewEvents() {
-  Array.prototype.forEach.call(document.querySelectorAll('[data-scope]'), function (b) {
+  // ⚠️ 一律**只在自己的容器（#spBody）裡找**，絕不用 document.querySelectorAll ——
+  //    會話列表項 `.conv` 與貼文項 `.post` 也帶 `data-acc`（記錄 bp_account_id），
+  //    全域選取會把它們的 `onclick` **整組覆蓋**成「切換該帳號 AI 開關」：
+  //    症狀＝点会话打不开详情，而且**每点一下都静默改了那个账号的 AI 开关**（曾踩，P0）。
+  var box = $('spBody');
+  if (!box) return;
+  Array.prototype.forEach.call(box.querySelectorAll('[data-scope]'), function (b) {
     b.onclick = function () {
       var p = b.getAttribute('data-scope').split(':');
       apiJson('/console/agent/scope', { business_id: state.bizId, platform: p[0], scope: p[1],
         enabled: !b.classList.contains('on') }).then(function (r) { if (guard(r)) loadAutoSettingsAnd(); });
     };
   });
-  Array.prototype.forEach.call(document.querySelectorAll('[data-acc]'), function (b) {
+  Array.prototype.forEach.call(box.querySelectorAll('[data-acc]'), function (b) {
     b.onclick = function () {
       // 場景層該平台一個都沒勾 → 帳號層不可啟用（灰掉），點擊只提示
       if (b.getAttribute('data-locked')) {
@@ -2287,7 +2405,7 @@ function bindOverviewEvents() {
         enabled: !b.classList.contains('on') }).then(function (r) { if (guard(r)) loadAutoSettingsAnd(); });
     };
   });
-  Array.prototype.forEach.call(document.querySelectorAll('[data-layer]'), function (b) {
+  Array.prototype.forEach.call(box.querySelectorAll('[data-layer]'), function (b) {
     b.onclick = function () {
       apiJson('/console/agent/layer', { business_id: state.bizId, layer: b.getAttribute('data-layer'),
         enabled: !b.classList.contains('on') }).then(function (r) { if (guard(r)) loadAutoSettingsAnd(); });
@@ -5034,16 +5152,25 @@ function boot() {
 
   window.addEventListener('resize', function () { fitMerchantBar(); });
 
-  // ★ 紅點輪詢：新訊息是 webhook 推給 Connector 的，**不會主動通知前端** ——
-  //   沒有輪詢就只能靠手動刷新頁面，商家列與列表的數字也會各自留在舊值。
-  //   只更新數字（`loadAllCounts` 走簽名比較，不會亂重繪），切到背景時暫停。
+  // ★ 輪詢：新訊息是 webhook 推給 Connector 的，**不會主動通知前端** ——
+  //   沒有輪詢就只能靠手動刷新頁面。
+  //   ⚠️ 舊版這裡只呼叫 `loadAllCounts()`（僅更新紅點數字）→ **新訊息永遠不會
+  //      自己出現在列表或聊天框裡**，只能手動 F5。現在連內容一起刷：
+  //        · 紅點數字（`loadAllCounts`，有簽名比較不會亂重繪）
+  //        · 會話列表 / 貼文列表（依欄目）
+  //        · 目前開啟的那個會話的訊息（`refreshThread`，沒變就不重繪、保住滾動位置）
   setInterval(function () {
     if (document.hidden) return;
     loadAllCounts();
+    if (state.section === 'posts') loadPosts(); else loadConversations();
+    refreshThread(false);
   }, COUNT_POLL_MS);
   // 從背景切回來 → 立刻補一次（不然要等一輪才更新）
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) loadAllCounts();
+    if (document.hidden) return;
+    loadAllCounts();
+    if (state.section === 'posts') loadPosts(); else loadConversations();
+    refreshThread(false);
   });
 }
 

@@ -77,7 +77,10 @@ async def send_asset(platform: str, target_id: str, media_path: str,
     if m is None:
         return SendResult(ok=False, error=f"平台 {platform} 的發送尚未搬入 Connector（階段三）")
     if platform in ("ig", "fb"):
-        return await m.send_asset(target_id, media_path, caption, filename, credential or {})
+        # ★ igfb 一個模組同時服務 IG 與 FB，而兩者的 API host 與 token 不同 →
+        #   必須把 platform 傳進去（別的渠道模組是「一平台一模組」不需要）。
+        return await m.send_asset(target_id, media_path, caption, filename,
+                                  credential or {}, platform=platform)
     return await m.send_asset(target_id, media_path, caption, filename, credential or {})
 
 
