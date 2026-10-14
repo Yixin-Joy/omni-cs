@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 import psycopg2
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
@@ -16,6 +18,8 @@ from app.auth import session as session_mod
 from app.core import config
 from app.core.security import hash_password
 from app.internal import connector_client
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(deps.require_csrf)])
 
@@ -78,6 +82,15 @@ def create_business(payload: BusinessIn, sess: dict = Depends(deps.require_admin
         bid = repo.create_business(cur, name, (payload.business_memo or "").strip() or None)
         audit.log(cur, sess, "business_create", business_id=bid,
                   payload={"business_name": name})
+    # ★ 種入「舊系統的調校值」→ 新商家一出生就與 Epro_test 的檢索參數一致。
+    #   為什麼：`kb_param` 是按商家存的，不種就會退回 spec 預設
+    #   （`query_rewrite=False` / `max_per_doc=3` / `min_score=0.28`），RAG 明顯變差。
+    try:
+        from app.rag import kb_db
+
+        kb_db.seed_business_params(bid)
+    except Exception as e:  # noqa: BLE001 種不進去不該擋住建商家
+        log.warning("商家 %s 檢索參數初始值寫入失敗: %s", bid, e)
     return {"ok": True, "id": bid}
 
 
