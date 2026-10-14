@@ -139,18 +139,72 @@ function readPw() {
   await settle(500);
   const credBtn = await page.$('#acctRows [data-acct-cred]');
   if (credBtn) {
+    // ★★ 憑證回顯：後端有值就必須看得出來，不能是一片空白。
+    //    起因：Epro_test 轉發一切正常（憑證明明有值），但編輯框全空 →
+    //    管理員以為憑證沒填。修法＝非敏感欄位明文、敏感欄位 ••••••••。
+    const before = await page.evaluate(async () => {
+      const r = await fetch('/api/admin/accounts?business_id=1', { credentials: 'same-origin' });
+      const d = await r.json();
+      const it = (d.items || [])[0] || {};
+      return { filled: it.credential_filled, plain: it.credential_plain,
+               hasField: Object.prototype.hasOwnProperty.call(it, 'credential_filled') };
+    });
+    check(before.hasField,
+      '★ /api/admin/accounts 回 credential_filled（少了＝CRM 是舊代碼，請重啟 start_crm.bat）');
+
     await credBtn.click();
     await settle(400);
     const em = await page.evaluate(() => {
       const box = document.querySelector('#ovAcct .box');
+      const rows = Array.from(document.querySelectorAll('#acctCredBox .cred-fld')).map(d => {
+        const lab = d.querySelector('label'), inp = d.querySelector('input');
+        return { label: lab.textContent.replace('已填', '').trim(),
+                 marked: lab.textContent.indexOf('已填') >= 0,
+                 value: inp.value, masked: inp.dataset.masked === '1' };
+      });
       return {
+        rows,
         editing: document.getElementById('acctAdd').textContent.indexOf('儲存') >= 0,
         hasCancel: document.getElementById('acctReset').offsetParent !== null,
         scroll: box.scrollHeight > box.clientHeight + 1 || box.scrollWidth > box.clientWidth + 1,
+        // 顯示名稱是「給人看的標籤」→ 隨時可改；原生 ID 是兩庫對齊鍵 → 鎖住
+        displayEditable: !document.getElementById('acctDisplay').disabled,
+        nativeLocked: document.getElementById('acctNative').disabled,
       };
     });
     check(em.editing && em.hasCancel, '點「憑證」→ 左欄切編輯模式（可取消）');
     check(!em.scroll, '編輯模式下彈窗仍不捲動');
+    check(em.displayEditable && em.nativeLocked,
+      '★ 編輯模式：顯示名稱可改、原生 ID（對齊鍵）鎖住');
+
+    const anyFilled = em.rows.filter(r => r.marked);
+    check(anyFilled.length === em.rows.length,
+      '★ 每個已填欄位都有「已填」標記（不再讓人以為沒填）',
+      em.rows.map(r => r.label + (r.marked ? '✓' : '✗')).join(' / '));
+    check(em.rows.some(r => r.masked && r.value === '••••••••'),
+      '★ 敏感欄位以 •••••••• 佔位（不顯示明文）',
+      em.rows.filter(r => r.masked).map(r => r.label).join('、') || '（無）');
+    check(em.rows.some(r => !r.masked && r.value && r.value.length > 4),
+      '★ 非敏感欄位明文回顯（例：Page ID / AppID 看得見）',
+      em.rows.filter(r => !r.masked && r.value).map(r => r.label + '=' + r.value).join('、') || '（無）');
+
+    // ★ 迴歸：遮罩佔位符**不得**被當成新憑證提交。
+    //   「不改任何東西直接按儲存」必須讓憑證逐欄位完全相同（原本是整塊覆蓋 → 靜默遺失）。
+    await page.click('#acctAdd');
+    await settle(1600);
+    const after = await page.evaluate(async () => {
+      const r = await fetch('/api/admin/accounts?business_id=1', { credentials: 'same-origin' });
+      const d = await r.json();
+      const it = (d.items || [])[0] || {};
+      return { filled: it.credential_filled, plain: it.credential_plain };
+    });
+    check(JSON.stringify(after.filled) === JSON.stringify(before.filled)
+          && JSON.stringify(after.plain) === JSON.stringify(before.plain),
+      '★ 未改動直接儲存 → 憑證逐欄位不變（遮罩沒被寫成新值、也沒清掉其他欄位）',
+      JSON.stringify(after.filled));
+
+    await page.click('#acctRows [data-acct-cred]');
+    await settle(400);
     await page.click('#acctReset');
     await settle(300);
     const back = await page.evaluate(() => ({

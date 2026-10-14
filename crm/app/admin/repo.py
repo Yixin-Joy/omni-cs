@@ -84,11 +84,33 @@ def business_exists(cur, bid: int) -> bool:
 
 # ---------------------------------------------------------------- 平台帳號
 
+def credential_view(platform: str, credential) -> tuple[list[str], dict[str, str]]:
+    """把 credential 拆成「已填欄位清單」與「可安全回顯的明文值」。
+
+    ★ 為什麼不全回、也不全遮：
+      - **非敏感**欄位（`CREDENTIAL_FIELDS` 第三個元素為 False）＝ appid / page_id /
+        phone_number_id / ig_user_id 這類**識別碼**，本來就出現在 webhook URL 與平台後台，
+        明文回顯是安全的，也才不會讓管理員誤以為「憑證沒填」。
+      - **敏感**欄位（appsecret / access_token / encoding_aes_key）**值一律不回前端**，
+        只回「已填」的事實；前端用 `••••••••` 佔位。
+    """
+    cred = credential if isinstance(credential, dict) else {}
+    filled: list[str] = []
+    plain: dict[str, str] = {}
+    for key, _label, sensitive in config.CREDENTIAL_FIELDS.get(platform, []):
+        val = cred.get(key)
+        if val is None or str(val).strip() == "":
+            continue
+        filled.append(key)
+        if not sensitive:
+            plain[key] = str(val)
+    return filled, plain
+
+
 def list_accounts(business_id: int | None = None) -> list[dict]:
     sql = (
         "SELECT a.id, a.business_id, a.platform, a.platform_business_account_id, a.display_name,"
-        "       a.ai_auto_reply_enabled, a.enabled, a.created_at, b.business_name,"
-        "       (a.credential IS NOT NULL) AS has_credential"
+        "       a.ai_auto_reply_enabled, a.enabled, a.created_at, b.business_name, a.credential"
         "  FROM crm_business_platform_account a"
         "  LEFT JOIN crm_business b ON b.id = a.business_id"
     )
@@ -99,7 +121,16 @@ def list_accounts(business_id: int | None = None) -> list[dict]:
     sql += " ORDER BY a.business_id, a.platform, a.id"
     with ro() as cur:
         cur.execute(sql, params)
-        return [dict(r) for r in cur.fetchall()]
+        out = []
+        for r in cur.fetchall():
+            d = dict(r)
+            cred = d.pop("credential", None)
+            filled, plain = credential_view(d["platform"], cred)
+            d["has_credential"] = bool(filled)
+            d["credential_filled"] = filled      # 已填欄位的 key（永不泄露值）
+            d["credential_plain"] = plain        # 僅非敏感欄位的明文
+            out.append(d)
+        return out
 
 
 def create_account(cur, business_id: int, platform: str, native_id: str, display_name: str | None,
@@ -116,8 +147,17 @@ def create_account(cur, business_id: int, platform: str, native_id: str, display
 
 def update_account(cur, aid: int, display_name: str | None, ai_enabled: bool, enabled: bool,
                    credential: dict | None = None) -> None:
-    # updated_at 供 Connector 的帳號映射增量同步判斷變更（階段二）
-    # credential 傳 None = 不變動（避免誤清空）；傳 dict = 覆蓋
+    """更新平台帳號。`updated_at` 供 Connector 的帳號映射增量同步判斷變更（階段二）。
+
+    ★★ credential 的語義（**逐欄合併，不是整塊覆蓋**）：
+      - 傳 `None`  → 完全不動（呼叫端沒提供憑證）
+      - 傳 dict    → 用 JSONB `||` **只覆蓋有提供的 key**，其餘原封不動
+
+    ⚠️ 這裡原本是 `credential = %s::jsonb`（整塊覆蓋）。因為前端編輯框對敏感欄位
+      只顯示佔位符、不會回填原值，使用者「只想改 appsecret」就會把 appid 與
+      aes_key 一起清成 NULL —— **靜默的憑證遺失**，而且收發會偷偷退回 .env，
+      症狀是「憑證明明填過、卻像沒填」。改成合併後才對得上 UI 的「留空＝不改」。
+    """
     if credential is None:
         cur.execute(
             "UPDATE crm_business_platform_account SET display_name = %s, ai_auto_reply_enabled = %s,"
@@ -127,7 +167,8 @@ def update_account(cur, aid: int, display_name: str | None, ai_enabled: bool, en
     else:
         cur.execute(
             "UPDATE crm_business_platform_account SET display_name = %s, ai_auto_reply_enabled = %s,"
-            " enabled = %s, credential = %s::jsonb, updated_at = now() WHERE id = %s",
+            " enabled = %s, credential = COALESCE(credential, '{}'::jsonb) || %s::jsonb,"
+            " updated_at = now() WHERE id = %s",
             (display_name, ai_enabled, enabled,
              json.dumps(credential, ensure_ascii=False), aid),
         )

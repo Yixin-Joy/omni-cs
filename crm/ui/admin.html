@@ -201,7 +201,15 @@
 
   .cred-box { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
   .cred-fld { margin-bottom: 10px; }
-  .cred-fld > label { font-size: 12px; font-weight: 600; color: var(--text-soft); display: block; margin-bottom: 4px; }
+  .cred-fld > label { font-size: 12px; font-weight: 600; color: var(--text-soft);
+    display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  /* 憑證欄位右上角的「已填」小標：讓管理員一眼看出這個欄位後端真的有值 */
+  .cred-ok { font-size: 10.5px; font-weight: 700; color: var(--accent-dark);
+    background: var(--accent-soft); padding: 1px 6px; border-radius: 999px; flex-shrink: 0; }
+  /* 佔位符（••••••••）用灰底灰字 —— 一看就知道是「已填、未顯示」，不是要你重打 */
+  .cred-fld input[data-masked="1"] { color: var(--text-soft); background: #f6f8fa;
+    letter-spacing: 1px; cursor: default; }
+  .cred-fld input[data-masked="1"]:hover { background: #eef1f5; }
   .cred-fld input { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
     background: #fafbfc; font-size: 13px; outline: none; color: var(--text); font-family: inherit; }
   .chk { display: inline-flex; align-items: center; gap: 7px; margin: 0 14px 8px 0; cursor: pointer;
@@ -292,8 +300,12 @@
         <div class="card" style="box-shadow:none">
           <h3 id="acctFormTitle">新增綁定</h3>
           <div class="fld"><label>平台</label><select id="acctPlatform"></select></div>
-          <div class="fld"><label>平台原生帳號 ID</label><input type="text" id="acctNative" placeholder="例：1362588056935295"></div>
-          <div class="fld"><label>顯示名稱</label><input type="text" id="acctDisplay" placeholder="選填，例：客服主號"></div>
+          <div class="fld"><label>平台原生帳號 ID
+            <span class="infotip" data-tip="兩個服務的對齊鍵，綁定後不可修改（改了等於換一個帳號）。要換帳號請先刪除再重新綁定。">i</span></label>
+            <input type="text" id="acctNative" placeholder="例：1362588056935295"></div>
+          <div class="fld"><label>顯示名稱
+            <span class="infotip" data-tip="只是給人看的標籤，隨時可以改，不影響收發。">i</span></label>
+            <input type="text" id="acctDisplay" placeholder="選填，例：客服主號"></div>
           <div class="fld"><label>平台憑證
             <span class="infotip" data-tip="按商家區分的業務憑證（AppSecret / Access Token 等）。憑證存 CRM 資料庫，Connector 收發時自動取用；握手 token（驗證用）仍留在 .env。留空＝先不填，之後可再補。">i</span></label>
             <div id="acctCredBox" class="cred-box"></div>
@@ -903,29 +915,51 @@
   };
 
   // ---- 平台帳號彈窗
-  function renderCredFields(platform, existing) {
+  /* 敏感欄位的佔位符：代表「已填但不明文顯示」。
+     ⚠️ 這個字串不能當成真的憑證提交（見 collectCred）。 */
+  var CRED_MASK = '••••••••';
+
+  /* view = { plain: {key: 明文值}, filled: [key, ...] }
+     - 非敏感欄位（appid / page_id / phone_number_id / ig_user_id）→ **明文回顯**
+     - 敏感欄位（appsecret / access_token / aes_key）→ 已填則顯示 ••••••••，未填留空
+     ★ 之前的 bug：不管三七二十一傳 null → 全部欄位都是空的，
+       管理員看到「AppID 也沒有」會以為憑證沒填（其實後端有值、轉發也正常）。 */
+  function renderCredFields(platform, view) {
     var fields = CREDENTIAL_FIELDS[platform] || [];
+    var plain = (view && view.plain) || {};
+    var filled = (view && view.filled) || [];
     $('acctCredBox').innerHTML = fields.length
       ? fields.map(function (f) {
           var key = f[0], label = f[1], sensitive = f[2];
-          var val = (existing && existing[key]) ? existing[key] : '';
+          var isFilled = filled.indexOf(key) >= 0;
+          var val = plain[key] || '';
+          var masked = false;
+          if (isFilled && sensitive) { val = CRED_MASK; masked = true; }
           return '<div class="fld cred-fld">'
-            + '<label>' + esc(label) + '</label>'
-            + '<input type="' + (sensitive ? 'password' : 'text') + '" data-cred="' + key + '"'
-            + ' value="' + esc(val) + '" placeholder="' + (val ? '已填（留空＝不改）' : '選填') + '">'
+            + '<label>' + esc(label)
+            + (isFilled ? '<span class="cred-ok">已填</span>' : '')
+            + '</label>'
+            + '<input type="text" data-cred="' + key + '"'
+            + (masked ? ' data-masked="1"' : '')
+            + ' value="' + esc(val) + '"'
+            + ' placeholder="' + (isFilled ? '留空＝不改' : '選填') + '">'
             + '</div>';
         }).join('')
       : '<div class="muted" style="font-size:12px">此平台無需額外憑證。</div>';
   }
 
+  /* 收集使用者**實際輸入**的憑證。
+     ★ 未經改動的遮蔽值（••••••••）必須排除 —— 否則會把佔位符當成新憑證寫進 DB，
+       真的憑證就被一串圓點覆蓋掉。
+     ★ 回 null ＝「這次沒提供憑證」→ 後端走「完全不動」分支。 */
   function collectCred() {
     var out = {};
-    var anyFilled = false;
     $('acctCredBox').querySelectorAll('input[data-cred]').forEach(function (inp) {
       var v = inp.value.trim();
-      if (v) { out[inp.getAttribute('data-cred')] = v; anyFilled = true; }
+      if (inp.dataset.masked === '1' && v === CRED_MASK) return;   // 沒動過 → 不提交
+      if (v) out[inp.getAttribute('data-cred')] = v;
     });
-    return anyFilled ? out : null;
+    return Object.keys(out).length ? out : null;
   }
 
   function openAcct(bizId) {
@@ -977,20 +1011,21 @@
   }
 
   $('acctAdd').onclick = function () {
-    // 編輯憑證模式：走 update，只更新 credential
+    // 編輯模式：更新顯示名稱 + 憑證（未動的憑證欄位不提交 → 後端逐欄合併，原值保留）
     if ($('acctAdd').dataset.editCredId) {
       var editId = $('acctAdd').dataset.editCredId;
       var row = findAcct(parseInt(editId, 10));
       if (!row) return;
       api('/api/admin/accounts/update', 'POST', {
-        id: row.id, display_name: row.display_name,
+        id: row.id,
+        display_name: $('acctDisplay').value.trim(),   // ★ 取表單當下的值，不是舊值
         ai_auto_reply_enabled: row.ai_auto_reply_enabled, enabled: row.enabled,
         credential: collectCred()
       }).then(function (res) {
         if (!guard(res)) { ovErr('ovAcctErr', res.data.error || '儲存失敗'); return; }
         resetAcctForm();
-        toast('憑證已儲存');
-        loadAcct();
+        toast('已儲存');
+        loadAcct().then(function () { loadBiz().then(function () { if (state.tab === 'biz') viewBiz(); }); });
       });
       return;
     }
@@ -1026,23 +1061,25 @@
   }
   $('acctReset').onclick = function () { resetAcctForm(); ovErr('ovAcctErr', ''); };
 
-  // 編輯憑證：左欄表單切成「編輯模式」（不顯示舊明碼，留空＝不變）
+  /* 編輯模式：左欄表單帶入既有值。
+     - 平台 / 原生 ID（＝兩庫對齊鍵）**鎖住** —— 改它等於換一個帳號，要換就刪掉重綁。
+     - 顯示名稱**可改**（它只是給人看的標籤）。
+     - 憑證：非敏感明文、敏感用 ••••••••（留空＝不改）。 */
   function editCred(id) {
     var row = findAcct(parseInt(id, 10));
     if (!row) return;
-    renderCredFields(row.platform, null);
+    renderCredFields(row.platform, { plain: row.credential_plain, filled: row.credential_filled });
     $('acctNative').value = row.platform_business_account_id;
     $('acctNative').disabled = true;
     $('acctPlatform').value = row.platform;
     $('acctPlatform').disabled = true;
     $('acctDisplay').value = row.display_name || '';
-    $('acctDisplay').disabled = true;
-    $('acctAdd').textContent = '儲存憑證';
-    $('acctFormTitle').textContent = '編輯憑證 · ' + (PLATFORM_LABEL[row.platform] || row.platform);
+    $('acctDisplay').disabled = false;      // ★ 顯示名稱隨時可改
+    $('acctAdd').textContent = '儲存';
+    $('acctFormTitle').textContent = '編輯 · ' + (PLATFORM_LABEL[row.platform] || row.platform);
     $('acctReset').style.display = '';
     $('acctAdd').dataset.editCredId = id;
     ovErr('ovAcctErr', '');
-    // 表單在左欄，若有需要讓它滾到可見處（小視窗時）
     $('acctCredBox').scrollIntoView({ block: 'nearest' });
   }
 
