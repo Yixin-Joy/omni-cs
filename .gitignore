@@ -49,3 +49,6 @@ crm/_ck_samples/
 
 # 服務啟動 log（uvicorn 導向檔，服務在跑時檔案被佔用、本來也不該入庫）
 _uv*.log
+
+# 瀏覽器冒煙自檢的截圖輸出（每次跑重建）
+crm/tests/_browser_out/

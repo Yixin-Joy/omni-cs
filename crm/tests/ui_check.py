@@ -227,6 +227,22 @@ def main():
     common = (UI_DIR / "common.js").read_text(encoding="utf-8") if (UI_DIR / "common.js").exists() else ""
     check("can_switch" in common, "common.js 依 can_switch 決定是否顯示切換入口（單身分不顯示）")
     check("/api/auth/switch-role" in common, "common.js 打 /api/auth/switch-role")
+    # ★ 迴歸閘門：切換身分是 POST，後端有 CSRF 閘門（缺 token → 403）。
+    #   `common.js` 的 switchTo 必須帶 X-CSRF-Token，且每個呼叫 TopUser.init 的頁面
+    #   都必須把 csrf 傳進去 —— 漏傳 = csrf 為空字串 = 切換一律 403
+    #   （曾真實發生：admin.html / ops.html / placeholder.html 三頁都漏，切換全壞）。
+    check("X-CSRF-Token" in common, "common.js 的 switchTo 帶 X-CSRF-Token")
+    for f in sorted(UI_DIR.glob("*.html")):
+        t = f.read_text(encoding="utf-8")
+        idx = 0
+        while True:
+            i = t.find("TopUser.init(", idx)
+            if i < 0:
+                break
+            j = t.find(");", i)
+            seg = t[i:j if j > 0 else len(t)]
+            check("csrf" in seg, f"{f.name} 的 TopUser.init 有傳 csrf（否則切換 403）")
+            idx = (j + 2) if j > 0 else len(t)
 
     login = (UI_DIR / "login.html").read_text(encoding="utf-8")
     check("need_role" in login, "登入頁處理 need_role（多身分需選身分）")
