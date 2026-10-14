@@ -12,7 +12,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -146,4 +146,7 @@ def page_ops(request: Request):
 
 @app.get("/favicon.ico")
 def favicon():
-    return JSONResponse(status_code=204, content=None)
+    # ★ 必須回**空 body**：`JSONResponse(status_code=204, content=None)` 會產生 b'null'，
+    #   而 204 不帶 content-length → uvicorn 判定「body 比 Content-Length 長」直接斷連線，
+    #   瀏覽器每次載入頁面都打 favicon，keep-alive 連線被斷 → 後續跳轉間歇失敗。
+    return Response(status_code=204)
