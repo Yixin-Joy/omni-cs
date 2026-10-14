@@ -426,7 +426,14 @@ def _conv_dm_igfb_sql() -> str:
         f"       (array_agg(message_type ORDER BY {_ts} DESC NULLS LAST))[1] AS last_type,"
         f"       (array_agg(text ORDER BY {_ts} DESC NULLS LAST))[1] AS last_raw,"
         "       NULL::jsonb AS last_payload,"
-        f"       (array_agg(COALESCE(sender_name, '') ORDER BY {_ts} DESC NULLS LAST))[1] AS last_name,"
+        # ★★ 顯示名字：取**最近一則「有名字」的**，不能直接拿最後一則。
+        #   我方的 outbound（AI 回覆 / 客服回覆）`sender_name` 是空的，
+        #   而最後一則往往就是我們的回覆 → 名字會被蓋成空白
+        #   （症狀：一被回覆，會話列表上的用戶名就消失）。同一段的
+        #   forward_log SQL 早就加了這個 FILTER，IG/FB 這兩支漏了。
+        #   ⚠️ `array_agg` 不像 `string_agg` 會忽略 NULL —— 不能靠 COALESCE 蒙過去。
+        f"       (array_agg(COALESCE(sender_name, '') ORDER BY {_ts} DESC NULLS LAST)"
+        "        FILTER (WHERE COALESCE(sender_name, '') <> ''))[1] AS last_name,"
         "       NULL::text AS post_id"
         "  FROM igfb_dm"
         " WHERE platform = %s AND platform_business_account_id = %s"
@@ -459,7 +466,11 @@ def _conv_comment_sql() -> str:
         "       'comment'::text AS last_type,"
         f"       (array_agg(text ORDER BY {_ts} DESC NULLS LAST))[1] AS last_raw,"
         "       NULL::jsonb AS last_payload,"
-        f"       (array_agg(COALESCE(from_name, '') ORDER BY {_ts} DESC NULLS LAST))[1] AS last_name,"
+        # 同一道理由：只取有名字的那幾列（我方回覆的留言 `from_name` 是 '客服'，
+        # 但保險起見仍過濾空值）。留言的作者名另外靠
+        # `igfb_store.fill_comment_names_from_dm()` 用私訊名回填。
+        f"       (array_agg(COALESCE(from_name, '') ORDER BY {_ts} DESC NULLS LAST)"
+        "        FILTER (WHERE COALESCE(from_name, '') <> ''))[1] AS last_name,"
         f"       (array_agg(post_id ORDER BY {_ts} DESC NULLS LAST))[1] AS post_id"
         "  FROM igfb_comment"
         " WHERE platform = %s AND platform_business_account_id = %s"

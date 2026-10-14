@@ -508,3 +508,170 @@ def count_pending(platform: str, account_id: str, scope: str) -> int:
         return 0
     finally:
         conn.close()
+
+
+# ======================================================================
+# 名稱補齊（webhook 不帶名字 → 回頭查）
+#
+# ★ 為什麼需要（2026-10-14 小jo 回報「FB 私信和留言無法識別用戶名」）：
+#   **Meta 的 webhook 不帶使用者名稱**（FB 私訊的 sender 只有 id；FB 留言的 from
+#   連 name 欄位都不回 —— 實測 `GET /{comment}?fields=from{name}` 只有我們自己
+#   發的留言拿得到 name，客戶的拿不到）。舊單體靠 `sync_dm_names()` 在收到私訊後
+#   背景補名，**這段沒有搬進 Connector** → 新會話的名字永遠是空的。
+#
+#   兩條補名路徑（都實測過）：
+#     ① FB 私訊：`GET /{page_id}/conversations?fields=participants` →
+#        participants 裡「不是我方」那個的 `name`。
+#     ② IG 私訊：`GET /{igsid}?fields=username,name`（配 IG token）。
+#   留言的作者名 Graph **不給**，但他的 `from_id` 就是私訊的 PSID →
+#   可以拿 ① 補到的名字回頭填（同一批人）。
+# ======================================================================
+
+def conversations_without_name(platform: str, account_id: str) -> list[str]:
+    """這個帳號底下「還沒有名字」的**客戶來訊**會話鍵（省 API 用，只查缺的）。
+
+    ⚠️ 只看 `direction='inbound'`：我方的 outbound 本來就沒有 `sender_name`
+      （那是客戶的名字），把它們算進來會讓「每個被回覆過的會話」都變成缺名
+      → 每次收訊都白打一批 Graph API。
+    """
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT COALESCE(NULLIF(sender_id, ''), conversation_key) AS ckey"
+                "  FROM igfb_dm"
+                " WHERE platform=%s AND platform_business_account_id=%s"
+                "   AND direction='inbound'"
+                "   AND (sender_name IS NULL OR sender_name = '')"
+                " ORDER BY 1",
+                (platform, account_id))
+            return [r[0] for r in cur.fetchall() if r[0]]
+    finally:
+        conn.close()
+
+
+def set_dm_name(platform: str, account_id: str, sender_id: str, name: str) -> int:
+    """把某會話的名字補上（**只補空的**，不覆蓋既有名字）。回更新列數。"""
+    if not sender_id or not (name or "").strip():
+        return 0
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE igfb_dm SET sender_name = %s"
+                " WHERE platform=%s AND platform_business_account_id=%s"
+                "   AND (sender_id = %s OR conversation_key = %s)"
+                "   AND (sender_name IS NULL OR sender_name = '')",
+                (name.strip(), platform, account_id, sender_id, sender_id))
+            n = cur.rowcount
+        conn.commit()
+        return n
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        log.warning("補私訊名稱失敗 %s/%s: %s", platform, sender_id, e)
+        return 0
+    finally:
+        conn.close()
+
+
+def fill_comment_names_from_dm(platform: str, account_id: str) -> int:
+    """用**私訊的名字**回頭填留言的作者名（只填佔位值）。
+
+    ★ 為什麼可行：FB 留言的作者 `from_id` 就是他的 PSID，與 `igfb_dm.sender_id`
+      是同一個值；而私訊那邊我們補得到名字（participants）。
+      Graph 不給留言作者名（客戶的留言 `from` 直接不回），這是唯一能補的路。
+
+    ⚠️ 只覆蓋 `from_name` 是空或佔位（`用戶`）的列 —— **絕不動已經有真名的**。
+    """
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE igfb_comment c
+                   SET from_name = d.nm
+                  FROM (SELECT DISTINCT sender_id, sender_name AS nm
+                          FROM igfb_dm
+                         WHERE platform = %s AND platform_business_account_id = %s
+                           AND sender_id IS NOT NULL AND sender_id <> ''
+                           AND sender_name IS NOT NULL AND sender_name <> '') d
+                 WHERE c.platform = %s AND c.platform_business_account_id = %s
+                   AND c.from_id = d.sender_id
+                   AND (c.from_name IS NULL OR c.from_name = '' OR c.from_name = '用戶')
+                """,
+                (platform, account_id, platform, account_id))
+            n = cur.rowcount
+        conn.commit()
+        return n
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        log.warning("用私訊名補留言名失敗 %s/%s: %s", platform, account_id, e)
+        return 0
+    finally:
+        conn.close()
+
+
+async def sync_dm_names(platform: str, account: dict | None) -> dict:
+    """背景補齊這個帳號底下缺名字的私訊會話（+ 順手補留言作者名）。
+
+    從舊單體 `app/channels/igfb_db.py::sync_dm_names()` 搬過來（那段沒搬是
+    「新會話沒有用戶名」的根因）。**失敗只記 log，不影響收訊。**
+
+    回 `{updated, conversations, comments, reason}`。
+    """
+    from app.channels import igfb                       # 延後 import（避免循環）
+
+    native = str((account or {}).get("platform_business_account_id") or "")
+    cred = (account or {}).get("credential") or {}
+    out = {"updated": 0, "conversations": 0, "comments": 0, "reason": ""}
+    if not native:
+        out["reason"] = "查不到帳號（拿不到憑證）"
+        return out
+
+    missing = conversations_without_name(platform, native)
+    if not missing:
+        # 名字都齊了 → 還是要補一次留言（留言名靠私訊名回填）
+        out["comments"] = fill_comment_names_from_dm(platform, native)
+        out["reason"] = "沒有缺名的會話"
+        return out
+
+    pairs: list[tuple[str, str]] = []
+    try:
+        if platform == "fb":
+            page_id, token = igfb._fb_creds(cred)
+            if not page_id or not token:
+                out["reason"] = "FB 憑證缺少 page_id / page_access_token"
+                return out
+            # 一次拿整批會話的 participants（比逐一查 PSID 可靠：PSID 不支援直接 GET）
+            convs = await igfb.fb_conversations(page_id, token, limit=0)
+            me = page_id
+            for conv in convs:
+                for p in ((conv.get("participants") or {}).get("data") or []):
+                    pid = str(p.get("id") or "")
+                    nm = (p.get("name") or p.get("username") or "").strip()
+                    if pid and pid != me and nm:
+                        pairs.append((pid, nm))
+        else:
+            _ig_id, token = igfb._ig_creds(cred)
+            if not token:
+                out["reason"] = "IG 憑證缺少 ig_access_token"
+                return out
+            # IG 只能逐一查，所以只查「還缺名」的那些（省 API）
+            for ckey in missing:
+                nm = await igfb.ig_user_name(ckey, token)
+                if nm:
+                    pairs.append((ckey, nm))
+    except Exception as e:  # noqa: BLE001 —— 補名失敗不該影響收訊
+        out["reason"] = f"{type(e).__name__}: {e}"
+        log.warning("補名查詢失敗 %s/%s: %s", platform, native, e)
+
+    want = set(missing)
+    n = 0
+    for sid, nm in pairs:
+        if sid in want:
+            n += set_dm_name(platform, native, sid, nm)
+    out["updated"] = n
+    out["conversations"] = len({s for s, _ in pairs if s in want})
+    # 名字補到了 → 留言那邊也補一次（同一批人）
+    out["comments"] = fill_comment_names_from_dm(platform, native)
+    return out

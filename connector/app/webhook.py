@@ -344,6 +344,20 @@ async def _resolve_whatsapp_files(payload: dict, account: dict | None = None):
         f["fileSize"] = save_path.stat().st_size
 
 
+async def _bg_sync_dm_names(platform: str, account: dict | None) -> None:
+    """背景補私訊/留言的顯示名稱（失敗只記 log，不影響收訊）。
+
+    從舊單體 `app/channels/igfb_db.py::_bg_sync_dm_names()` 搬過來。
+    """
+    try:
+        got = await igfb_store.sync_dm_names(platform, account)
+        if got.get("updated") or got.get("comments"):
+            log.info("補名完成 %s：私訊 %s 筆 / 留言 %s 筆",
+                     platform, got.get("updated"), got.get("comments"))
+    except Exception as e:  # noqa: BLE001
+        log.warning("補名失敗 %s: %s", platform, e)
+
+
 async def _handle_igfb_event(ev: dict) -> None:
     """落地一則 IG/FB webhook 事件，並非同步通知 CRM。
 
@@ -364,6 +378,13 @@ async def _handle_igfb_event(ev: dict) -> None:
             log.warning("IG/FB 私訊附件處理失敗（帶原 url 繼續）: %s", e)
             atts = ev.get("attachments") or []
         await asyncio.to_thread(igfb_store.land_dm, platform, ev, account, atts)
+
+        # ★ 補名字：**Meta 的 webhook 不帶使用者名稱**（FB 私訊的 sender 只有 id；
+        #   FB 留言的 from 連 name 都不回）。沒有這一步，新會話在工作台上永遠是空的
+        #   —— 舊單體有 `sync_dm_names()` 在收訊後背景補，這段沒搬過來就是回歸。
+        #   背景執行（`create_task`）：補名要打 Graph API，不能卡住 webhook 回應。
+        if not (ev.get("sender_name") or "").strip():
+            asyncio.create_task(_bg_sync_dm_names(platform, account))
 
         _notify_inbound(
             platform, account,

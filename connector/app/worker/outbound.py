@@ -105,6 +105,39 @@ async def _send_one(platform: str, target: str, item: dict,
 
 # ---------------------------------------------------------------- 出站訊息落地
 
+def _mark_inbound_handled(cur, platform: str, target: str, scope: str) -> int:
+    """把「早於現在」的客戶來訊標為已處理（紅點＝來訊且未處理）。
+
+    ★ 為什麼在**這裡**（Connector 出站落地）而不是 CRM 建任務時：
+      紅點語義是「這則客戶訊息有沒有被回應」。任務建了 ≠ 送出去了（可能重試、
+      可能失敗），只有**回覆真的落地**時把它標掉才對。舊單體也是送成功後才標
+      （`igfb_db.mark_handled` / `autoreply_db.mark_forward_log_handled`）。
+
+    ⚠️ 用「早於這則出站訊息」而不是「把整個會話標掉」：回覆在途時客戶又發了
+       新訊息，那則還沒被回答，紅點必須留著。
+    ⚠️ 留言（scope='comment'）在上面的分支已把 `replied` 設 true，
+       而留言的 pending 條件本來就看 `replied` —— 這裡不用再動。
+    """
+    if scope == "comment":
+        return 0
+    if platform in ("wechat", "whatsapp"):
+        cur.execute(
+            "UPDATE forward_log SET is_handled = true"
+            " WHERE platform = %s AND sender_id = %s AND direction = 'inbound'"
+            "   AND COALESCE(is_handled, false) = false"
+            "   AND COALESCE(message_time, created_at) < now()",
+            (platform, target))
+        return cur.rowcount
+    cur.execute(
+        "UPDATE igfb_dm SET is_handled = true"
+        " WHERE platform = %s AND (sender_id = %s OR conversation_key = %s)"
+        "   AND direction = 'inbound'"
+        "   AND COALESCE(is_handled, false) = false"
+        "   AND COALESCE(created_at, inserted_at) < now()",
+        (platform, target, target))
+    return cur.rowcount
+
+
 def record_outbound_message(task: dict, items: list[dict]) -> None:
     """把送出的回覆也寫進訊息表（工作台才看得到回覆）。
 
@@ -183,6 +216,13 @@ def record_outbound_message(task: dict, items: list[dict]) -> None:
                 )
             else:
                 return
+            # ★★ 回覆真的送出去了 → 把這則之前的客戶來訊標為已處理（消除未讀紅點）。
+            #    舊單體就是這樣做的（IG/FB：`igfb_db.mark_handled(channel, to)`；
+            #    微信/WhatsApp：`autoreply_db.mark_forward_log_handled`），
+            #    搬到 Connector 時**漏掉了** → 症狀：AI 明明回了，紅點還在。
+            #    ⚠️ 條件用「早於這則出站訊息」的 inbound：回覆在途時客戶又發新訊息
+            #       不會被誤標（那則還沒被回答，紅點該留著）。
+            _mark_inbound_handled(cur, platform, target, scope)
         conn.commit()
     except Exception as e:  # noqa: BLE001
         conn.rollback()

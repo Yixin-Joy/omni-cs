@@ -141,6 +141,48 @@ def main() -> int:
             "kb_cache_dir": _cfg.KB_CACHE_DIR,
             "debug": dbg,
         }
+    elif mode == "sync-names":
+        # 補名（歷史資料 + 現在缺的）：<platform> [native_id]
+        from app import account_map
+        from app.channels import igfb_store
+
+        plat = args[1] if len(args) > 1 else "fb"
+        if len(args) > 2:
+            acc = account_map.lookup(plat, args[2]) or None
+        else:
+            from app.core import db as _db
+            _c = _db.connect()
+            try:
+                with _c.cursor() as _cur:
+                    _cur.execute("SELECT platform, platform_business_account_id"
+                                 " FROM connector_account_map"
+                                 " WHERE platform=%s AND enabled ORDER BY bp_account_id LIMIT 1",
+                                 (plat,))
+                    _row = _cur.fetchone()
+            finally:
+                _c.close()
+            acc = account_map.lookup(plat, _row[1]) if _row else None
+        if not acc:
+            out = {"error": f"找不到 {plat} 的帳號映射（先跑 sync-map）"}
+        else:
+            out = asyncio.run(igfb_store.sync_dm_names(plat, acc))
+            out["account"] = acc.get("platform_business_account_id")
+    elif mode == "mark-handled":
+        # 清紅點：把該會話「早於現在」的客戶來訊標為已處理
+        #   mark-handled <platform> <sender/target> <scope>
+        from app.core import db as _db
+        from app.worker import outbound as _ob
+
+        plat, target = args[1], args[2]
+        scope = args[3] if len(args) > 3 else "dm"
+        _c = _db.connect()
+        try:
+            with _c.cursor() as _cur:
+                n = _ob._mark_inbound_handled(_cur, plat, target, scope)
+            _c.commit()
+        finally:
+            _c.close()
+        out = {"handled": n}
     else:
         print(json.dumps({"error": f"unknown mode: {mode}"}))
         return 2

@@ -231,16 +231,49 @@ def _next_cursor(data: dict) -> str:
 # ---------------------------------------------------------------- FB 私訊
 
 async def fb_conversations(page_id: str, token: str, limit: int = 25) -> list[dict]:
-    """粉專的 Messenger 會話清單（participants / updated_time / snippet）。"""
+    """粉專的 Messenger 會話清單（participants / updated_time / snippet）。
+
+    `limit<=0` = **不設上限**（自動翻頁到完），補名時要整批 participants 用。
+    """
     if not page_id or not token:
         return []
     url = f"{FB_BASE}/{_ver()}/{page_id}/conversations"
-    status, data = await _get_json(url, token,
-                                   {"fields": "participants,updated_time,snippet", "limit": limit})
+    params: dict = {"fields": "participants,updated_time,snippet"}
+    if int(limit or 0) > 0:
+        params["limit"] = int(limit)
+    else:
+        params["limit"] = 100            # 單頁上限；靠 _next_cursor 翻完
+    out: list[dict] = []
+    for _ in range(_PAGE_MAX):           # 保險上限，避免無限迴圈
+        status, data = await _get_json(url, token, params)
+        if status != 200:
+            log.warning("fb_conversations 失敗 %s: %s", status, data)
+            break
+        out.extend(data.get("data") or [])
+        nxt = _next_cursor(data)
+        if int(limit or 0) > 0 or not nxt:
+            break
+        params = {"fields": "participants,updated_time,snippet", "limit": 100, "after": nxt}
+    return out
+
+
+# 翻頁保險上限（一次補名最多 20 頁）
+_PAGE_MAX = 20
+
+
+async def ig_user_name(igsid: str, token: str) -> str:
+    """取 IG 使用者的顯示名稱（username）。
+
+    IG 私訊的 webhook 事件**不帶使用者名稱**，要另外查這個端點補上
+    （從舊單體 `app/channels/igfb.py::ig_user_name` 搬過來）。
+    """
+    if not igsid or not token:
+        return ""
+    url = f"{IG_BASE}/{_ver()}/{igsid}"
+    status, data = await _get_json(url, token, {"fields": "username,name"})
     if status != 200:
-        log.warning("fb_conversations 失敗 %s: %s", status, data)
-        return []
-    return data.get("data") or []
+        return ""
+    return str(data.get("username") or data.get("name") or "")
 
 
 async def fb_thread_messages(thread_id: str, token: str, limit: int = 30) -> list[dict]:
