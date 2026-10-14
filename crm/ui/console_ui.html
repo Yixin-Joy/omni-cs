@@ -336,6 +336,9 @@
   .ar-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .ar-btn.off:hover { border-color: var(--red); color: var(--red); }
   .ar-btn[disabled] { opacity: .55; cursor: not-allowed; }
+  /* 場景層該平台沒勾 → 帳號層灰掉（仍可點，點了只提示，所以不用 disabled） */
+  .ar-btn.locked { opacity: .45; cursor: not-allowed; filter: grayscale(1); }
+  .ar-btn.locked:hover { border-color: var(--border); color: var(--text-soft); }
 
   /* 訊息 / 留言上的自動回復標記 */
   .tag-auto-faq, .tag-auto-table, .tag-auto-rag, .tag-auto-miss, .tag-auto-fail {
@@ -2216,8 +2219,10 @@ function renderSettingsTab() {
 function renderSettingsAutoreply(body) {
   if (!state.overview) { body.innerHTML = '<div class="empty">載入中…</div>'; return; }
   var o = state.overview;
-  var h = '<div class="card"><h3>商家 × 平台 × 場景（第一層）'
-    + infotip('實際是否回覆＝這一層 AND 該平台帳號自己的開關。兩層都開才會跑 AI。')
+  var h = '<div class="card"><h3>場景層'
+    + infotip('先決定「哪個平台的哪種場景」要用 AI：私訊與貼文留言是兩種獨立場景。'
+              + '這裡沒勾的平台場景，底下的帳號層會跟著變灰、不能啟用 —— '
+              + '因為場景整個關掉了，該帳號的開關就沒有意義。')
     + '<div style="display:flex;flex-wrap:wrap;gap:8px">';
   (o.scopes || []).forEach(function (s) {
     h += '<button class="ar-btn ' + (s.enabled ? 'on' : 'off') + '" data-scope="'
@@ -2226,12 +2231,21 @@ function renderSettingsAutoreply(body) {
   });
   h += '</div></div>';
 
-  h += '<div class="card"><h3>平台帳號（第二層）</h3><div style="display:flex;flex-wrap:wrap;gap:8px">';
+  h += '<div class="card"><h3>賬號層'
+    + infotip('實際是否回覆＝場景層 AND 這一層。該平台在場景層一個都沒勾時，這裡的帳號會變灰；'
+              + '兩層都開，該帳號才會跑 AI。')
+    + '<div style="display:flex;flex-wrap:wrap;gap:8px">';
   (o.accounts || []).forEach(function (a) {
-    h += '<button class="ar-btn ' + (a.ai_enabled ? 'on' : 'off') + '" data-acc="' + a.id + '">'
+    var live = arPlatformScopeOn(a.platform);   // 該平台在場景層是否至少開了一個
+    h += '<button class="ar-btn ' + (a.ai_enabled ? 'on' : 'off') + (live ? '' : ' locked') + '"'
+      + ' data-acc="' + a.id + '"' + (live ? '' : ' data-locked="1"')
+      + ' title="' + (live ? '' : '請先在「場景層」勾選該平台對應的場景') + '">'
       + esc(PLATFORM_LABEL[a.platform] || a.platform) + ' · '
       + esc(a.display_name || a.platform_business_account_id) + '</button>';
   });
+  if (!(o.accounts || []).length) {
+    h += '<span style="color:var(--text-soft)">尚未綁定平台帳號</span>';
+  }
   h += '</div></div>';
 
   h += '<div class="card"><h3>層開關</h3><div style="display:flex;gap:8px">';
@@ -2241,29 +2255,16 @@ function renderSettingsAutoreply(body) {
   });
   h += '</div></div>';
 
-  h += '<div class="card"><h3>啟用集（勾選＝這一層要用的資料；一個都沒勾＝這層不跑）</h3>';
-  h += bindListHtml('faq', o.faqs, o.bindings.faq);
-  h += bindListHtml('table', o.tables, o.bindings.table);
-  h += bindListHtml('kb', o.collections, o.bindings.kb);
-  h += '</div>';
   body.innerHTML = h;
   bindOverviewEvents();
 }
 
-function bindListHtml(kind, items, picked) {
-  var label = { faq: 'FAQ 問答對', table: '業務表格', kb: '知識庫' }[kind];
-  var set = {};
-  (picked || []).forEach(function (i) { set[i] = true; });
-  var h = '<div style="margin-bottom:12px"><div style="color:var(--text-soft);margin-bottom:6px">'
-    + label + '（勾 ' + (picked || []).length + ' / 共 ' + ((items || []).length) + '）</div>'
-    + '<div style="display:flex;flex-wrap:wrap;gap:8px">';
-  if (!items || !items.length) h += '<span style="color:var(--text-soft)">沒有可選項目</span>';
-  (items || []).forEach(function (it) {
-    var nm = it.question || it.name || it.title || ('#' + it.id);
-    h += '<button class="ar-btn ' + (set[it.id] ? 'on' : 'off') + '" data-bind="' + kind + ':' + it.id + '">'
-      + esc(nm) + '</button>';
-  });
-  return h + '</div></div>';
+/* 該平台在「場景層」是否至少勾了一個場景（dm／comment 任一）。
+   都沒勾 → 帳號層該平台的帳號變灰、點擊只提示。 */
+function arPlatformScopeOn(platform) {
+  var o = state.overview;
+  if (!o) return false;
+  return (o.scopes || []).some(function (s) { return s.platform === platform && s.enabled; });
 }
 
 function bindOverviewEvents() {
@@ -2276,6 +2277,11 @@ function bindOverviewEvents() {
   });
   Array.prototype.forEach.call(document.querySelectorAll('[data-acc]'), function (b) {
     b.onclick = function () {
+      // 場景層該平台一個都沒勾 → 帳號層不可啟用（灰掉），點擊只提示
+      if (b.getAttribute('data-locked')) {
+        showToast('請先在「場景層」勾選該平台對應的場景');
+        return;
+      }
       apiJson('/console/agent/account-ai', { business_id: state.bizId,
         bp_account_id: parseInt(b.getAttribute('data-acc'), 10),
         enabled: !b.classList.contains('on') }).then(function (r) { if (guard(r)) loadAutoSettingsAnd(); });
@@ -2287,31 +2293,14 @@ function bindOverviewEvents() {
         enabled: !b.classList.contains('on') }).then(function (r) { if (guard(r)) loadAutoSettingsAnd(); });
     };
   });
-  Array.prototype.forEach.call(document.querySelectorAll('[data-bind]'), function (b) {
-    b.onclick = function () {
-      var p = b.getAttribute('data-bind').split(':');
-      apiJson('/console/agent/binding', { business_id: state.bizId, kind: p[0],
-        item_id: parseInt(p[1], 10), enabled: !b.classList.contains('on') })
-        .then(function (r) { if (guard(r)) loadAutoSettingsAnd(); });
-    };
-  });
 }
 
 function loadAutoSettingsAnd() {
   api(qs('/console/agent/overview', [['business_id', state.bizId]])).then(function (res) {
     if (!guard(res)) return;
     state.overview = res.data;
-    Promise.all([
-      api(qs('/console/agent/faqs', [['business_id', state.bizId]])),
-      api(qs('/console/agent/tables', [['business_id', state.bizId]])),
-      api(qs('/console/agent/collections', [['business_id', state.bizId]]))
-    ]).then(function (rs) {
-      state.overview.faqs = (rs[0].data.items || []);
-      state.overview.tables = (rs[1].data.items || []);
-      state.overview.collections = (rs[2].data.items || []);
-      renderAutoBar();
-      if (state.settingsTab === 'autoreply') renderSettingsAutoreply($('spBody'));
-    });
+    renderAutoBar();
+    if (state.settingsTab === 'autoreply') renderSettingsAutoreply($('spBody'));
   });
 }
 
@@ -4578,22 +4567,7 @@ function ktSyncLayers(force) {
   stState.ktSynced = true;
 }
 
-function ktResetLayers() {
-  ktSyncLayers(true);
-  stRender(hittestTabHtml());
-}
-
-function ktAllLayers(on) {
-  stState.ktLayers = { faq: !!on, table: !!on, rag: !!on };
-  stState.ktSynced = true;      // 使用者動過了，別再被同步蓋掉
-  stRender(hittestTabHtml());
-}
-
 function hittestTabHtml() {
-  const s = state.overview;
-  const opts = s ? (s.scopes || []).map(sc =>
-    '<option value="' + sc.platform + '|' + sc.scope + '">' + esc(stScopeLabel(sc)) +
-      '</option>').join('') : '';
   const L = stState.ktLayers;
   const box = (key, label, sub) =>
     '<label class="switch-row' + (L[key] ? ' on' : '') + '" style="cursor:pointer;flex:1;min-width:190px">' +
@@ -4605,7 +4579,7 @@ function hittestTabHtml() {
   return '' +
     '<div class="card">' +
       '<h3>命中測試' +
-        infotip('用真實客戶問句試跑，看它會落在哪一層。不會發送任何訊息、不會改上面的開關、' +
+        infotip('用真實客戶問句試跑，看它會落在哪一層。不會發送任何訊息、不會改「自動回復」頁的開關、' +
                 '也不寫任何紀錄 —— 純粹是「我想知道這句會怎樣」的工具。' +
                 '勾選的層依固定順序由上而下嘗試（FAQ → 表格 → 知識庫）；' +
                 '全部取消勾選 = 直接看「降級人工」。') +
@@ -4614,8 +4588,6 @@ function hittestTabHtml() {
         '<input type="text" id="ktQuery" placeholder="例如：保固期內人為損壞要收費嗎？" ' +
           'onkeydown="if(event.key===\'Enter\')runHitTest()" ' +
           'style="flex:1;min-width:240px;padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
-        '<select id="ktTarget" style="padding:8px 11px;border:1px solid var(--border);border-radius:9px">' +
-          opts + '</select>' +
         '<button class="btn primary" onclick="runHitTest()">開始測試</button>' +
       '</div>' +
       '<div class="row">' + box('faq', '第一層 FAQ', '規則匹配，回覆最快') +
@@ -4644,15 +4616,6 @@ function hittestTabHtml() {
               '>這次強制關閉</option>' +
           '</select></label>' +
       '</div>' +
-      '<div class="row" style="margin-top:8px">' +
-        '<button class="btn sm" onclick="ktAllLayers(true)">全選</button>' +
-        '<button class="btn sm" onclick="ktAllLayers(false)">全不選</button>' +
-        '<button class="btn sm" onclick="ktResetLayers()">照目前開關重設</button>' +
-        '<span class="hint" style="margin:0">目前開關：' +
-          'FAQ <b>' + (s && s.faq_layer ? '開' : '關') + '</b>' +
-          ' · 表格 <b>' + (s && s.table_layer ? '開' : '關') + '</b>' +
-          ' · 知識庫 <b>' + (s && s.rag_layer ? '開' : '關') + '</b></span>' +
-      '</div>' +
     '</div>' +
     '<div id="ktResult">' + (r ? ktResultHtml(r) : '<div class="empty-note">還沒有測試結果</div>') + '</div>';
 }
@@ -4665,15 +4628,15 @@ function ktSetLayer(key, on) {
 
 async function runHitTest() {
   const qEl = document.getElementById('ktQuery');
-  const tEl = document.getElementById('ktTarget');
   const text = (qEl && qEl.value || '').trim();
   if (!text) { showToast('請先輸入一句客戶可能說的話'); return; }
-  const parts = ((tEl && tEl.value) || '|').split('|');
   const layers = Object.keys(stState.ktLayers).filter(k => stState.ktLayers[k]);
   const box = document.getElementById('ktResult');
   if (box) box.innerHTML = '<div class="empty-note">測試中…（勾到第二／三層會呼叫 DeepSeek，約需數秒）</div>';
+  // ★ 不指定平台／場景：測試只看「這句會落在哪一層」，與哪個平台無關
+  //   （後端用預設值；勾選的層才是決定性輸入）。
   const body = {
-    text: text, platform: parts[0], scope: parts[1],
+    text: text,
     layers: layers, with_history: !stState.ktNoHistory,
   };
   // '' = 不送，讓後端依知識庫參數（設定頁的勾選）決定

@@ -434,8 +434,27 @@ def update_collection(cid: int, fields: dict) -> bool:
     return execute(f"UPDATE kb_collection SET {', '.join(sets)} WHERE id=%s", tuple(params)) > 0
 
 
+def _sync_kb_binding(collection_ids: list[int], enabled: bool) -> None:
+    """把這幾個知識庫的**商家基準集**設成同一狀態（沿用各庫所屬的商家）。
+
+    ★ 為什麼要有這個：設定頁已無「啟用集」區塊（改由知識庫子頁自己控制），
+      而實際生效 = `business_kb_binding.enabled` **AND** `kb_collection.enabled`。
+      只改一邊，另一邊就會變成**看不見的障礙** —— 子頁顯示「啟用」卻檢索不到。
+      ⇒ 子頁的啟停用一律連動基準集，兩者永遠同值。
+    """
+    from app.autoreply import autoreply_db
+
+    for one in {int(i) for i in collection_ids}:
+        biz = business_of_collection(one)
+        if not biz:
+            continue
+        autoreply_db.set_binding(int(biz), "kb", one, bool(enabled))
+
+
 def set_collection_enabled(cid: int, enabled: bool) -> dict:
     """啟用／停用知識庫。**文檔庫停用時，它的圖片庫一併連動**（設計上的綁定）。
+
+    ★ 同時同步商家基準集（見 `_sync_kb_binding`）—— 知識庫子頁的啟停用是唯一入口。
 
     回傳 {"ok", "cascaded": [受影響的圖片庫 id]}。
     """
@@ -447,6 +466,7 @@ def set_collection_enabled(cid: int, enabled: bool) -> dict:
     if got:
         update_collection(int(got["id"]), {"enabled": enabled})
         cascaded.append(int(got["id"]))
+    _sync_kb_binding([cid] + cascaded, enabled)
     return {"ok": True, "cascaded": cascaded}
 
 

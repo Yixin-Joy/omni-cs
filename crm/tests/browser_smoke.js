@@ -513,7 +513,7 @@ function readPw() {
   //     · FAQ／表格的匯入匯出與紀錄頁的卡片式展示也是整批沒搬。
   //   下面的「每頁零錯誤 + 關鍵元素存在」是最直接的防線。
   const TAB_SPEC = [
-    { tab: 'autoreply', label: '自動回復', must: ['商家 × 平台 × 場景'] },
+    { tab: 'autoreply', label: '自動回復', must: ['場景層', '賬號層'] },
     { tab: 'faq', label: 'FAQ',
       must: ['FAQ 問答對', '匯入 Excel / CSV', '下載範本 xlsx', '下載範本 csv',
              '匯出目前 FAQ', '儲存全部修改'] },
@@ -521,7 +521,7 @@ function readPw() {
       must: ['業務表格（第二層）', '上傳 Excel / CSV 建新表', '下載範本 xlsx',
              '下載範本 csv'] },
     { tab: 'kb', label: '知識庫', must: ['知識庫概覽'] },
-    { tab: 'hittest', label: '命中測試', must: ['開始測試'] },
+    { tab: 'hittest', label: '命中測試', must: ['開始測試', '第一層 FAQ', '第二層 業務表格', '第三層 知識庫'] },
     { tab: 'logs', label: '紀錄',
       must: ['自動回復紀錄', '命中情況統計'] },
   ];
@@ -545,6 +545,52 @@ function readPw() {
     page.off('console', tap);
     page.off('pageerror', tapErr);
   }
+
+  // ★ 2026-10-14 小jo 的要求（防回退）：
+  //   ① 命中測試頁拿掉「全選／全不選／照目前開關重設」與平台選擇（直接勾層就好）
+  //   ② 自動回復頁拿掉「啟用集」（改由各子頁自己控制），兩層改名 場景層／賬號層
+  await page.click('.sp-tab[data-tab="hittest"]');
+  await settle(1200);
+  const kt = await page.evaluate(() => {
+    const t = (document.getElementById('spBody') || {}).textContent || '';
+    return {
+      hasSelect: !!document.querySelector('#spBody select#ktTarget'),
+      all: t.indexOf('全選') >= 0,
+      none: t.indexOf('全不選') >= 0,
+      reset: t.indexOf('照目前開關重設') >= 0,
+    };
+  });
+  check(!kt.hasSelect, '命中測試頁沒有平台選擇下拉', kt.hasSelect ? '仍存在 #ktTarget' : 'ok');
+  check(!kt.all && !kt.none && !kt.reset,
+    '命中測試頁沒有全選／全不選／照目前開關重設', JSON.stringify(kt));
+
+  await page.click('.sp-tab[data-tab="autoreply"]');
+  await settle(1200);
+  const arTxt = (await page.textContent('#spBody')) || '';
+  check(arTxt.indexOf('啟用集') < 0, '自動回復頁已移除「啟用集」',
+    arTxt.indexOf('啟用集') >= 0 ? '仍存在' : 'ok');
+  check(arTxt.indexOf('場景層') >= 0 && arTxt.indexOf('賬號層') >= 0,
+    '兩層已改名為 場景層／賬號層',
+    arTxt.replace(/\s+/g, ' ').slice(0, 60));
+
+  // 賬號層的灰階必須與場景層一致：該平台在場景層一個都沒勾 → 該平台帳號 locked
+  const lockChk = await page.evaluate(() => {
+    const ov = (window.state || {}).overview || {};
+    const scopes = ov.scopes || [];
+    const accs = Array.from(document.querySelectorAll('#spBody [data-acc]'));
+    if (!accs.length) return { skip: true };
+    const bad = [];
+    accs.forEach(b => {
+      const a = (ov.accounts || []).filter(x => String(x.id) === b.getAttribute('data-acc'))[0];
+      if (!a) return;
+      const live = scopes.some(s => s.platform === a.platform && s.enabled);
+      const locked = !!b.getAttribute('data-locked');
+      if (live === locked) bad.push(a.platform + ' live=' + live + ' locked=' + locked);
+    });
+    return { bad: bad, n: accs.length };
+  });
+  check(lockChk.skip || lockChk.bad.length === 0, '賬號層灰階與場景層一致',
+    lockChk.skip ? '（該商家無平台帳號，略過）' : JSON.stringify(lockChk.bad));
 
   // FAQ 清單真的載入（不是只有外框）
   await page.click('.sp-tab[data-tab="faq"]');

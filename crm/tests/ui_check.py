@@ -365,6 +365,34 @@ def check_port_completeness(html: str, js: str) -> None:
             ("ktRewrite", "可切換查詢改寫"),
         ):
             check(marker in js, f"命中測試具備：{why}")
+        # ★ 2026-10-14 小jo 要求：測試頁只要「勾層 + 開始測試」，
+        #   平台選擇沒有意義、三個批量按鈕也拿掉。
+        for gone, why in (
+            ("ktTarget", "平台選擇下拉"),
+            ("全選", "全選按鈕"),
+            ("全不選", "全不選按鈕"),
+            ("照目前開關重設", "照目前開關重設按鈕"),
+            ("ktAllLayers", "批次勾選函式"),
+            ("ktResetLayers", "重設函式"),
+        ):
+            check(gone not in js, f"命中測試已移除：{why}")
+
+    # [e2] 自動回復：兩層改名 場景層／賬號層、移除「啟用集」、賬號層跟場景層連動
+    if "function renderSettingsAutoreply" in js:
+        for marker, why in (
+            ("場景層", "第一層叫場景層"),
+            ("賬號層", "第二層叫賬號層"),
+            ("arPlatformScopeOn", "賬號層依場景層連動"),
+            ("data-locked", "未勾場景的帳號標記為鎖定"),
+        ):
+            check(marker in js, f"自動回復設定具備：{why}")
+        for gone, why in (
+            ("啟用集", "啟用集區塊（改由各子頁自己控制）"),
+            ("bindListHtml", "啟用集的渲染函式"),
+            ("'商家 × 平台 × 場景", "舊的第一層標題"),
+            ("平台帳號（第二層）", "舊的第二層標題"),
+        ):
+            check(gone not in js, f"自動回復設定已移除：{why}")
 
     # [f] 移植過來的那幾塊：全部走 stApi/stApiJson/stUpload/stDownload（自動帶
     #     business_id 與 CSRF）。⚠️ 只看移植區 —— CRM 原本就有的對話頁附件上傳

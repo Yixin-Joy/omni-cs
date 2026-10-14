@@ -449,6 +449,12 @@ def faq_update(payload: FaqUpdateIn, sess: dict = Depends(deps.require_csrf)):
         return _err(400, "沒有可更新欄位")
     if not autoreply_db.update_faq(int(payload.id), fields):
         return _err(404, "找不到該 FAQ")
+    # ★ 設定頁已無「啟用集」區塊 → FAQ 子頁的「啟用」是唯一入口。
+    #   實際生效 = business_faq_binding.enabled AND autoreply_faq.enabled，
+    #   只改一邊會讓另一邊變成看不見的障礙（子頁顯示啟用卻不生效）→ 一起改。
+    if "enabled" in fields:
+        autoreply_db.set_binding(int(payload.business_id), "faq", int(payload.id),
+                                 bool(fields["enabled"]))
     _refresh_engine()
     return {"ok": True}
 
@@ -538,6 +544,10 @@ def table_update(payload: TableUpdateIn, sess: dict = Depends(deps.require_csrf)
         fields["columns"] = [str(c).strip() for c in (fields["columns"] or []) if str(c).strip()]
     if not fields or not autoreply_db.update_table(int(payload.id), fields):
         return _err(404, "沒有可更新欄位或找不到該表")
+    # ★ 同 FAQ：表格子頁的「啟用」是唯一入口，連動基準集以免出現隱形障礙
+    if "enabled" in fields:
+        autoreply_db.set_binding(int(payload.business_id), "table", int(payload.id),
+                                 bool(fields["enabled"]))
     _refresh_engine()
     return {"ok": True}
 
