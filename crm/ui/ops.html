@@ -73,6 +73,72 @@
   .topbar h2 { font-size: 17px; font-weight: 700; }
   .topbar .sp { flex: 1; }
   .body { flex: 1; overflow-y: auto; padding: 20px 22px 40px; }
+  /* ★ 審計頁專用：三段式（篩選固定 / 表格填滿 / 分頁固定），整頁**不滾動**。
+     目的（2026-10-20 小jo）：一頁 N 條要在一屏裡全部看到，不要用滾輪，
+     翻頁請按頁碼／上一頁下一頁。 */
+  .body.as-audit { overflow: hidden; padding: 14px 22px 12px; display: flex;
+                   flex-direction: column; gap: 10px; min-height: 0; }
+  .audit-bar { flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
+  .audit-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .audit-line .lbl { font-size: 12.5px; font-weight: 700; color: var(--text-soft);
+                     min-width: 30px; flex-shrink: 0; }
+  .chip {
+    padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border);
+    background: #fafbfc; color: var(--text-soft); cursor: pointer;
+    font-size: 12.5px; font-weight: 600; font-family: inherit; transition: all .12s;
+    white-space: nowrap; display: inline-flex; align-items: center; gap: 5px;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+  .chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-dark); }
+  .chip .n { font-size: 11px; font-weight: 700; opacity: .62; font-variant-numeric: tabular-nums; }
+  .chip:disabled { opacity: .38; cursor: not-allowed; }
+  .chip:disabled:hover { border-color: var(--border); color: var(--text-soft); }
+
+  /* 表格區：填滿剩餘高度；只有「展開明細」後才允許這裡內部滾動 */
+  .audit-tw { flex: 1; min-height: 0; overflow: hidden; display: flex; }
+  .audit-tw.scroll { overflow-y: auto; }
+  .audit-tw table { margin: 0; }
+  .audit-tw thead th {
+    position: sticky; top: 0; z-index: 1; background: #fafbfc;
+    padding: 8px 10px;
+  }
+  .audit-tw td {
+    padding: 0 10px; height: 100%; font-size: 12.5px;
+    /* ★ 固定行高才能「按可視高度算一頁幾條」；不固定的話算出來的數字不準 */
+    vertical-align: middle; overflow: hidden;
+  }
+  /* 一行只允許單行省略；要看全文請點該行展開 */
+  .a-cell { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap; }
+  .a-row { cursor: pointer; height: 34px; }
+  .a-row td { border-bottom: 1px solid #f0f2f5; }
+  .a-row.open { background: var(--accent-soft); }
+  .a-row.open td { border-bottom-color: transparent; }
+  /* 展開的明細行：不佔固定行高，內容多時由 .audit-tw.scroll 內部滾動 */
+  .a-detail td { background: #fcfdfe; padding: 10px 12px 12px; border-bottom: 1px solid var(--border); }
+  .a-detail pre {
+    margin: 0; padding: 9px 11px; background: #f7f9fb; border: 1px solid var(--border);
+    border-radius: 8px; font-size: 12px; line-height: 1.6; white-space: pre-wrap;
+    word-break: break-all; max-height: 220px; overflow-y: auto;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  .a-kv { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12px; color: var(--text-soft);
+          margin-bottom: 8px; }
+  .a-kv b { color: var(--text); font-weight: 600; }
+
+  /* 分頁 */
+  .audit-pg { flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+              padding-top: 2px; flex-wrap: wrap; }
+  .audit-pg .info { font-size: 12.5px; color: var(--text-soft); margin-right: auto; }
+  .pg-btn {
+    min-width: 30px; padding: 5px 9px; border-radius: 7px; border: 1px solid var(--border);
+    background: #fff; color: var(--text-soft); cursor: pointer; font-size: 12.5px;
+    font-weight: 600; font-family: inherit; font-variant-numeric: tabular-nums;
+  }
+  .pg-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .pg-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .pg-btn:disabled { opacity: .42; cursor: not-allowed; }
+  .pg-gap { color: var(--text-soft); padding: 0 2px; font-size: 12px; }
 
   /* ---------- 元件 ---------- */
   button.primary, button.ghost, button.danger {
@@ -262,6 +328,8 @@
 
   var PLATFORM_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
   var ROLE_LABEL = { admin: '管理員', agent: '客服坐席', ops: '運維' };
+  // 平台顯示名（審計頁「對象」欄用；沒有就退回原始 key）
+  var PLAT_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', fb: 'Facebook' };
   var STATUS_LABEL = { pending: '待處理', processing: '處理中', sent: '已送出',
     failed: '失敗', uncertain: '待確認' };
   var STATUS_CLASS = { pending: 'info', processing: 'info', sent: 'ok', failed: 'off', uncertain: 'warn' };
@@ -292,6 +360,18 @@
     config: [], configFlat: {},
     alerts: [], alertsOpenOnly: true,
     audit: [], auditAll: false,
+    // ★ 審計頁狀態（2026-10-20 重新設計）
+    auditQ: '',                 // 搜尋字
+    auditRange: '7d',           // today | yday | 7d | 30d | all | custom
+    auditFrom: '', auditTo: '', // custom 時的 yyyy-mm-dd
+    auditGroups: [],            // 勾選的組 key（空 = 全部組）
+    auditTypes: [],             // 勾選的具體類型（優先於組）
+    auditFailed: false,         // 只看失敗
+    auditRows: [], auditTotal: 0, auditPage: 1, auditSize: 20,
+    auditOpen: {},              // id -> true（展開明細）
+    auditFacets: null,          // 各組計數
+    auditLabels: {},            // type -> 人話標籤
+    auditGroupDefs: [],
     openTaskId: null, mailReady: false
   };
 
@@ -439,6 +519,7 @@
 
   // -------------------------------------------------- 分頁：概覽
   function viewDash() {
+    var _v = $('view'); if (_v) _v.className = 'body';   // 離開審計頁要復位（見 .body.as-audit）
     $('pageCtl').innerHTML = '';
     renderActs([{ label: '重新整理', cls: 'ghost', onClick: loadDash }]);
     var d = state.dash;
@@ -522,6 +603,7 @@
   }
 
   function viewTasks() {
+    var _v = $('view'); if (_v) _v.className = 'body';   // 離開審計頁要復位（見 .body.as-audit）
     taskFilterCtl();
     renderActs([
       { label: '重新整理', cls: 'ghost', onClick: loadTasks },
@@ -666,6 +748,7 @@
 
   // -------------------------------------------------- 分頁：重試參數
   function viewConfig() {
+    var _v = $('view'); if (_v) _v.className = 'body';   // 離開審計頁要復位（見 .body.as-audit）
     $('pageCtl').innerHTML = '';
     renderActs([{ label: '重新整理', cls: 'ghost', onClick: loadConfig }]);
     if (!state.config.length) { $('view').innerHTML = '<div class="empty">載入中…</div>'; return; }
@@ -730,6 +813,7 @@
 
   // -------------------------------------------------- 分頁：告警
   function viewAlerts() {
+    var _v = $('view'); if (_v) _v.className = 'body';   // 離開審計頁要復位（見 .body.as-audit）
     $('pageCtl').innerHTML = '';
     renderActs([
       { label: state.alertsOpenOnly ? '顯示全部' : '只看未確認', cls: 'ghost', onClick: function () {
@@ -781,38 +865,503 @@
   }
 
   // -------------------------------------------------- 分頁：審計
-  function viewAudit() {
-    $('pageCtl').innerHTML = '';
-    renderActs([
-      { label: '重新整理', cls: 'ghost', onClick: loadAudit },
-      { label: state.auditAll ? '只看運維相關' : '顯示全部', cls: 'ghost', onClick: function () {
-        state.auditAll = !state.auditAll; loadAudit(); } }
-    ]);
-    if (!state.audit.length) { $('view').innerHTML = '<div class="empty">暫無紀錄。</div>'; return; }
-    var rows = state.audit.map(function (a) {
-      return '<tr>'
-        + '<td class="num" style="white-space:nowrap">' + esc(fmtTime(a.operate_at)) + '</td>'
-        + '<td>' + esc(a.staff_name || '—') + '</td>'
-        + '<td><span class="tag">' + esc(a.operate_type) + '</span></td>'
-        + '<td class="num">' + (a.business_id === null || a.business_id === undefined ? '—' : a.business_id) + '</td>'
-        + '<td class="muted" style="font-size:12px;word-break:break-all">'
-        + esc(a.payload ? JSON.stringify(a.payload) : '') + '</td></tr>';
-    }).join('');
-    $('view').innerHTML =
-      '<table><thead><tr><th>時間</th><th>操作人</th><th>類型</th><th>商家</th><th>明細</th></tr></thead>'
-      + '<tbody>' + rows + '</tbody></table>'
-      + '<div class="muted" style="font-size:12.5px;margin-top:10px">'
-      + (state.auditAll ? '顯示全部操作類型。' : '只顯示運維相關類型（重跑 / 參數變更 / 告警處置）。')
-      + '</div>';
+  /* ================================================================
+     審計日誌（2026-10-20 重新設計）
+     —— 需求：① 時間/類型可篩選；② 分頁；③ 不用下拉就能看內容（每行直接可讀）；
+              ④ **一頁的條數要剛好在一屏內全部顯示**，不要滾輪。
+     ★ 一屏怎麼保證：整頁三段式（篩選固定 / 表格填滿 / 分頁固定），
+       並且 `_auditFit()` 用**實際可視高度 ÷ 行高**算出每頁條數
+       （所以 1080p 可能是 22 條、筆電可能 14 條，都是「剛好一屏」）。
+       展開明細後才允許表格區內部滾動。
+     ================================================================ */
+
+  var AUDIT_ROW_H = 34;        // 與 CSS .a-row height 一致（算每頁條數用）
+  var AUDIT_HEAD_H = 33;       // 表頭高度
+
+  /* 時間範圍 → [from, to) 的 ISO 字串。to 用「隔天 0 點」＝含今天整天。 */
+  function _auditRange() {
+    function midnight(d) { var x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+    var now = new Date();
+    var today = midnight(now);
+    function iso(d) { return d.toISOString(); }
+    var r = state.auditRange;
+    if (r === 'today') return [iso(today), iso(new Date(today.getTime() + 864e5))];
+    if (r === 'yday') {
+      var y = new Date(today.getTime() - 864e5);
+      return [iso(y), iso(today)];
+    }
+    if (r === '7d') return [iso(new Date(today.getTime() - 6 * 864e5)),
+                            iso(new Date(today.getTime() + 864e5))];
+    if (r === '30d') return [iso(new Date(today.getTime() - 29 * 864e5)),
+                             iso(new Date(today.getTime() + 864e5))];
+    if (r === 'all') return ['', ''];
+    // custom：用 <input type=date> 的值（含頭不含尾 → to 加一天）
+    var f = state.auditFrom ? new Date(state.auditFrom + 'T00:00:00') : null;
+    var t = state.auditTo ? new Date(state.auditTo + 'T00:00:00') : null;
+    if (t) t = new Date(t.getTime() + 864e5);
+    return [f ? iso(f) : '', t ? iso(t) : ''];
   }
 
+  /* 目前要查的 types：勾了具體類型就優先用它，否則用勾選的組，都沒有 = 全部組 */
+  function _auditTypes() {
+    if (state.auditTypes.length) return state.auditTypes.slice();
+    var gs = state.auditGroups.length
+      ? state.auditGroups : (state.auditGroupDefs || []).map(function (g) { return g.key; });
+    var out = [];
+    (state.auditGroupDefs || []).forEach(function (g) {
+      if (gs.indexOf(g.key) >= 0) out = out.concat(g.types);
+    });
+    return out;
+  }
+
+  function _auditQS(page, size) {
+    var rg = _auditRange();
+    var parts = [];
+    function add(k, v) { if (v !== '' && v !== null && v !== undefined) parts.push(k + '=' + encodeURIComponent(v)); }
+    add('limit', size); add('offset', (page - 1) * size);
+    add('types', _auditTypes().join(','));
+    add('q', state.auditQ);
+    add('time_from', rg[0]); add('time_to', rg[1]);
+    if (state.auditFailed) add('only_failed', 'true');
+    return '/console/ops/audit?' + parts.join('&');
+  }
+
+  /* ★ 用實際可用高度算「一頁幾條」—— 這就是「一屏內全部顯示」的實作。
+     上下各留 2px 誤差，避免算出剛好多 1 條卻被裁掉。 */
+  function _auditFit() {
+    var tw = document.querySelector('.audit-tw');
+    if (!tw) return 20;
+    var h = tw.clientHeight - AUDIT_HEAD_H - 4;
+    var n = Math.floor(h / AUDIT_ROW_H);
+    return Math.max(5, Math.min(80, n || 20));
+  }
+
+  function _auditTypeLabel(t) { return state.auditLabels[t] || t; }
+
+  /* payload → 一句人話（列表主視線用） */
+  function _auditAction(a) {
+    var p = a.payload || {};
+    var t = a.operate_type;
+    function j(v) { return (v === null || v === undefined) ? '' : String(v); }
+    switch (t) {
+      case 'ai_switch_change': {
+        var sc = p.scope === 'comment' ? '留言' : (p.scope === 'dm' ? '私訊' : '');
+        var layer = p.layer === 'scope' ? '場景層' : (p.layer === 'account' ? '賬號層' : (p.layer || ''));
+        return (p.platform ? j(p.platform) + ' ' : '') + (sc ? sc + ' ' : '')
+          + layer + ' AI：' + (p.enabled ? '開啟' : '關閉');
+      }
+      case 'reply_send':
+        return '送出回覆' + (p.task_id ? ' #' + p.task_id : '')
+          + (p.text ? '：' + String(p.text).slice(0, 60) : '');
+      case 'ops_config_change':
+        return j(p.key) + '：' + j(p.from) + ' → ' + j(p.to);
+      case 'task_retry':
+        return '重跑任務 ' + ((p.retried || []).length
+          ? (p.retried || []).map(function (x) { return '#' + x; }).join('、')
+          : '（無）') + ((p.skipped || []).length ? '，跳過 ' + p.skipped.length + ' 筆' : '');
+      case 'login_failed':
+        return '登入失敗' + (p.account ? '（' + p.account + '）' : '') + '：' + j(p.reason);
+      case 'login':
+        return '登入' + (p.account ? '（' + p.account + '）' : '') + '，身分 ' + j(p.role);
+      case 'sync_history': {
+        var tt = p.totals || {};
+        var bits = [];
+        if (tt.dm_new) bits.push('私訊 +' + tt.dm_new);
+        if (tt.comments_new) bits.push('留言 +' + tt.comments_new);
+        if (tt.posts) bits.push('貼文 ' + tt.posts);
+        if (tt.errors && tt.errors.length) bits.push('錯誤 ' + tt.errors.length);
+        return '補拉歷史' + (bits.length ? '：' + bits.join('、') : '（無新增）');
+      }
+      case 'message_handle': return '處理訊息' + (p.updated ? ' ' + p.updated + ' 則' : '');
+      case 'comment_handle': return '標記留言已處理' + (p.updated ? '（' + p.updated + ' 則）' : '');
+      case 'post_config_change':
+        return (p.removed ? '移除貼文配置' : '更新貼文配置')
+          + (p.post_id ? '（' + String(p.post_id).slice(-8) + '）' : '');
+      case 'post_ai_config_change': return '更新貼文 AI 配置';
+      case 'business_update':
+        return '更新商家' + (p.business_name ? '「' + p.business_name + '」' : '')
+          + (p.meta_app_changed ? '（含 Meta App 變更）' : '')
+          + (p.enabled === false ? '（停用）' : '');
+      case 'business_create': return '新增商家' + (p.business_name ? '「' + p.business_name + '」' : '');
+      case 'platform_account_bind': return '綁定平台帳號' + (p.platform_business_account_id ? ' ' + p.platform_business_account_id : '');
+      case 'platform_account_unbind': return '解綁平台帳號' + (p.enabled === false ? '（停用）' : '');
+      case 'alert_ack': return '確認告警' + (p.all ? '（全部）' : (p.id ? ' #' + p.id : ''));
+      case 'alert_notify':
+        return '發送告警' + (p.test ? '（測試）' : '')
+          + (p.to && p.to.length ? ' 至 ' + p.to.join('、') : '')
+          + (p.sent === false ? '（失敗）' : '');
+      case 'staff_role_change':
+        return '變更員工角色：' + ((p.before || []).join('/') || '—')
+          + ' → ' + ((p.after || []).join('/') || '—');
+      case 'staff_business_permission_grant':
+        return '授予商家權限 ' + ((p.business_ids || []).join('、') || '');
+      case 'staff_create':
+        return '新增員工' + (p.login_account ? '（' + p.login_account + '）' : '')
+          + ((p.roles || []).length ? ' 角色 ' + p.roles.join('/') : '');
+      case 'binding_change':
+        return '綁定變更（' + j(p.kind) + '）：' + (p.enabled ? '啟用' : '停用')
+          + (p.reason ? '，' + String(p.reason).slice(0, 40) : '');
+      case 'kb_collection_toggle':
+        return '知識庫開關：' + (p.enabled ? '啟用' : '停用')
+          + (p.reason ? '，' + String(p.reason).slice(0, 40) : '');
+      case 'faq_import':
+        return '匯入 FAQ' + (p.written ? ' ' + p.written + ' 組' : '')
+          + (p.mode ? '（' + (p.mode === 'append' ? '附加' : '覆寫') + '）' : '');
+      case 'force_logout': return '強制登出' + (p.killed ? ' ' + p.killed + ' 個 session' : '');
+      case 'staff_password_reset': return '重設員工密碼' + (p.staff_id ? '（#' + p.staff_id + '）' : '');
+      case 'logout': return '登出';
+      default:
+        // 沒特別寫的類型：把 payload 壓成 key=value 一行，仍比原始 JSON 好讀
+        var ks = Object.keys(p).slice(0, 4);
+        return _auditTypeLabel(t) + (ks.length
+          ? '：' + ks.map(function (k) { return k + '=' + j(p[k]).slice(0, 24); }).join('，')
+          : '');
+    }
+  }
+
+  /* 對象：優先顯示人能認的東西（商家 / 平台帳號 / 留言尾碼 / 客戶） */
+  function _auditTarget(a) {
+    var bits = [];
+    if (a.business_id !== null && a.business_id !== undefined) bits.push('商家 ' + a.business_id);
+    if (a.platform) bits.push(PLAT_LABEL[a.platform] || a.platform);
+    if (a.business_platform_account_id) bits.push('帳號 ' + a.business_platform_account_id);
+    if (a.end_user_sender_id) {
+      var s = String(a.end_user_sender_id);
+      bits.push('客戶 ' + (s.length > 12 ? s.slice(-8) : s));
+    }
+    return bits.length ? bits.join(' · ') : '—';
+  }
+
+  function _auditFailedRow(a) {
+    if (a.fail_reason) return true;
+    if (a.operate_type === 'login_failed') return true;
+    var p = a.payload || {};
+    if (p.sent === false) return true;
+    if (p.errors && p.errors.length) return true;
+    return false;
+  }
+
+  function viewAudit() {
+    $('pageCtl').innerHTML = '';
+    var isAdmin = !!(state.me && (state.me.roles_all || []).indexOf('admin') >= 0);
+    renderActs([
+      { label: '重新整理', cls: 'ghost', onClick: function () { loadAudit(); } }
+    ]);
+    if (isAdmin) {
+      // 管理員可切「全部類型」（含安全事件與其他身分的操作）
+      var btn = document.createElement('button');
+      btn.className = 'ghost';
+      btn.textContent = state.auditAll ? '只看運維範圍' : '顯示全部類型';
+      btn.onclick = function () { state.auditAll = !state.auditAll; state.auditPage = 1; loadAudit(); };
+      $('pageActs').appendChild(btn);
+    }
+
+    var v = $('view');
+    v.className = 'body as-audit';       // ★ 三段式：整頁不滾動
+    v.innerHTML =
+      '<div class="audit-bar" id="auditBar"></div>'
+      + '<div class="audit-tw" id="auditTw"><div class="empty">載入中…</div></div>'
+      + '<div class="audit-pg" id="auditPg"></div>';
+
+    paintAuditBar();
+    paintAuditTable();
+    paintAuditPager();
+  }
+
+  /* ---------- 篩選列 ---------- */
+  var AUDIT_RANGES = [
+    { k: 'today', label: '今天' }, { k: 'yday', label: '昨天' },
+    { k: '7d', label: '近 7 天' }, { k: '30d', label: '近 30 天' },
+    { k: 'all', label: '全部' }
+  ];
+
+  function paintAuditBar() {
+    var bar = $('auditBar');
+    if (!bar) return;
+    var fc = state.auditFacets;
+    var h = '';
+
+    // 第 1 行：時間
+    h += '<div class="audit-line"><span class="lbl">時間</span>';
+    AUDIT_RANGES.forEach(function (r) {
+      h += '<button class="chip' + (state.auditRange === r.k ? ' on' : '') + '"'
+        + ' data-act="range" data-k="' + r.k + '">' + esc(r.label) + '</button>';
+    });
+    h += '<button class="chip' + (state.auditRange === 'custom' ? ' on' : '') + '"'
+      + ' data-act="range" data-k="custom">自訂</button>';
+    if (state.auditRange === 'custom') {
+      h += '<input type="date" id="auditFrom" value="' + esc(state.auditFrom) + '" style="width:150px">'
+        + '<span class="muted" style="font-size:12px">至</span>'
+        + '<input type="date" id="auditTo" value="' + esc(state.auditTo) + '" style="width:150px">';
+    }
+    h += '</div>';
+
+    // 第 2 行：類型組（含筆數）
+    h += '<div class="audit-line"><span class="lbl">類型</span>';
+    h += '<button class="chip' + (!state.auditGroups.length && !state.auditTypes.length ? ' on' : '')
+      + '" data-act="grp" data-k="">全部</button>';
+    (state.auditGroupDefs || []).forEach(function (g) {
+      var on = state.auditGroups.indexOf(g.key) >= 0;
+      var n = g.count !== undefined ? g.count : (fc && fc.groups
+        ? ((fc.groups.filter(function (x) { return x.key === g.key; })[0] || {}).count || 0) : null);
+      h += '<button class="chip' + (on ? ' on' : '') + '" data-act="grp" data-k="' + esc(g.key) + '"'
+        + ' title="' + esc(g.hint || '') + '"'
+        + (n === 0 ? ' disabled' : '') + '>'
+        + esc(g.label)
+        + (n !== null && n !== undefined ? '<span class="n">' + n + '</span>' : '')
+        + '</button>';
+    });
+    h += '</div>';
+
+    // 第 3 行：展開選中組的具體類型 + 搜尋 + 只看失敗
+    var sel = (state.auditGroupDefs || []).filter(function (g) {
+      return state.auditGroups.indexOf(g.key) >= 0;
+    });
+    if (sel.length) {
+      h += '<div class="audit-line"><span class="lbl">細項</span>';
+      sel.forEach(function (g) {
+        g.types.forEach(function (t) {
+          var n = fc && fc.counts ? (fc.counts[t] || 0) : null;
+          var on = state.auditTypes.indexOf(t) >= 0;
+          h += '<button class="chip' + (on ? ' on' : '') + '" data-act="type" data-k="' + esc(t) + '"'
+            + (n === 0 ? ' disabled' : '') + '>'
+            + esc(_auditTypeLabel(t))
+            + (n !== null ? '<span class="n">' + n + '</span>' : '') + '</button>';
+        });
+      });
+      h += '</div>';
+    }
+
+    h += '<div class="audit-line">'
+      + '<input type="text" id="auditQ" placeholder="搜尋 操作人 / 身分 / 商家 / 內容…"'
+      + ' value="' + esc(state.auditQ) + '" style="width:280px">'
+      + '<button class="chip' + (state.auditFailed ? ' on' : '') + '" data-act="failed">只看失敗</button>'
+      + (state.auditQ || state.auditGroups.length || state.auditTypes.length
+         || state.auditFailed || state.auditRange !== '7d'
+         ? '<button class="chip" data-act="reset">重置</button>' : '')
+      + '<span class="muted" style="font-size:12px;margin-left:auto">'
+      + '共 <b>' + state.auditTotal + '</b> 筆，一頁 ' + state.auditSize + ' 筆（依螢幕高度自動）'
+      + '</span></div>';
+
+    bar.innerHTML = h;
+
+    // 事件（限定在 bar 內，絕不用全域選取）
+    Array.prototype.forEach.call(bar.querySelectorAll('[data-act]'), function (b) {
+      b.onclick = function () { onAuditAct(this); };
+    });
+    var q = bar.querySelector('#auditQ');
+    if (q) {
+      var timer = null;
+      q.oninput = function () {
+        var val = this.value;
+        clearTimeout(timer);
+        timer = setTimeout(function () {
+          state.auditQ = val; state.auditPage = 1; loadAudit();
+        }, 300);
+      };
+    }
+    ['auditFrom', 'auditTo'].forEach(function (id) {
+      var el = bar.querySelector('#' + id);
+      if (el) el.onchange = function () {
+        if (id === 'auditFrom') state.auditFrom = this.value; else state.auditTo = this.value;
+        state.auditPage = 1; loadAudit();
+      };
+    });
+  }
+
+  function onAuditAct(el) {
+    var act = el.getAttribute('data-act');
+    var k = el.getAttribute('data-k') || '';
+    if (act === 'range') {
+      state.auditRange = k; state.auditPage = 1;
+      if (k !== 'custom') { state.auditFrom = ''; state.auditTo = ''; }
+      loadAudit(); return;
+    }
+    if (act === 'grp') {
+      if (!k) { state.auditGroups = []; state.auditTypes = []; }
+      else {
+        var i = state.auditGroups.indexOf(k);
+        if (i >= 0) state.auditGroups.splice(i, 1); else state.auditGroups.push(k);
+        state.auditTypes = [];          // 換組 → 細項選擇作廢
+      }
+      state.auditPage = 1; loadAudit(); return;
+    }
+    if (act === 'type') {
+      var j = state.auditTypes.indexOf(k);
+      if (j >= 0) state.auditTypes.splice(j, 1); else state.auditTypes.push(k);
+      state.auditPage = 1; loadAudit(); return;
+    }
+    if (act === 'failed') {
+      state.auditFailed = !state.auditFailed; state.auditPage = 1; loadAudit(); return;
+    }
+    if (act === 'reset') {
+      state.auditQ = ''; state.auditRange = '7d'; state.auditFrom = ''; state.auditTo = '';
+      state.auditGroups = []; state.auditTypes = []; state.auditFailed = false;
+      state.auditPage = 1; state.auditOpen = {}; loadAudit(); return;
+    }
+  }
+
+  /* ---------- 表格 ---------- */
+  function paintAuditTable() {
+    var tw = $('auditTw');
+    if (!tw) return;
+    if (!state.auditRows.length) {
+      tw.className = 'audit-tw';
+      tw.innerHTML = '<div class="empty">沒有符合條件的紀錄。</div>';
+      return;
+    }
+    var rows = '';
+    state.auditRows.forEach(function (a) {
+      var failed = _auditFailedRow(a);
+      var open = !!state.auditOpen[a.id];
+      rows += '<tr class="a-row' + (open ? ' open' : '') + '" data-id="' + a.id + '">'
+        + '<td class="num" style="width:96px"><span class="a-cell">' + esc(shortTime(a.operate_at)) + '</span></td>'
+        + '<td style="width:132px"><span class="a-cell">' + esc(a.staff_name || '—')
+        + (a.staff_role ? ' <span class="pill">' + esc(ROLE_LABEL[a.staff_role] || a.staff_role) + '</span>' : '')
+        + '</span></td>'
+        + '<td style="width:110px"><span class="a-cell"><span class="tag">'
+        + esc(_auditTypeLabel(a.operate_type)) + '</span></span></td>'
+        + '<td><span class="a-cell">' + esc(_auditAction(a)) + '</span></td>'
+        + '<td style="width:230px"><span class="a-cell muted">' + esc(_auditTarget(a)) + '</span></td>'
+        + '<td style="width:52px">'
+        + (failed ? '<span class="pill off">失敗</span>' : '<span class="muted">—</span>')
+        + '</td></tr>';
+      if (open) {
+        var meta = [];
+        meta.push('時間 <b>' + esc(fmtTime2(a.operate_at)) + '</b>');
+        meta.push('操作人 <b>' + esc(a.staff_name || '—') + '</b>');
+        if (a.staff_role) meta.push('生效身分 <b>' + esc(ROLE_LABEL[a.staff_role] || a.staff_role) + '</b>');
+        if ((a.staff_roles || []).length) {
+          meta.push('可用身分 <b>' + esc(a.staff_roles.map(function (r) {
+            return ROLE_LABEL[r] || r; }).join('/')) + '</b>');
+        }
+        meta.push('類型 <b>' + esc(a.operate_type) + '</b>');
+        if (a.business_id !== null && a.business_id !== undefined) meta.push('商家 <b>' + a.business_id + '</b>');
+        if (a.platform) meta.push('平台 <b>' + esc(PLAT_LABEL[a.platform] || a.platform) + '</b>');
+        if (a.business_platform_account_id) meta.push('帳號 <b>' + a.business_platform_account_id + '</b>');
+        if (a.end_user_sender_id) meta.push('客戶 <b class="mono">' + esc(a.end_user_sender_id) + '</b>');
+        rows += '<tr class="a-detail"><td colspan="6">'
+          + '<div class="a-kv">' + meta.join('') + '</div>'
+          + (a.fail_reason ? '<div style="margin-bottom:8px"><span class="pill off">失敗原因</span> '
+             + esc(a.fail_reason) + '</div>' : '')
+          + (a.payload ? '<pre>' + esc(JSON.stringify(a.payload, null, 2)) + '</pre>' : '')
+          + '</td></tr>';
+      }
+    });
+
+    // ★ 有展開明細 → 允許表格區內部滾動（否則一屏放不下）
+    var anyOpen = Object.keys(state.auditOpen).length > 0;
+    tw.className = 'audit-tw' + (anyOpen ? ' scroll' : '');
+    tw.innerHTML = '<table><thead><tr>'
+      + '<th>時間</th><th>操作人</th><th>動作</th><th>內容</th><th>對象</th><th>結果</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>';
+
+    Array.prototype.forEach.call(tw.querySelectorAll('.a-row'), function (tr) {
+      tr.onclick = function () {
+        var id = Number(this.getAttribute('data-id'));
+        if (state.auditOpen[id]) delete state.auditOpen[id]; else state.auditOpen[id] = true;
+        paintAuditTable();
+      };
+    });
+  }
+
+  /* ---------- 分頁 ---------- */
+  function paintAuditPager() {
+    var pg = $('auditPg');
+    if (!pg) return;
+    var size = state.auditSize || 20;
+    var pages = Math.max(1, Math.ceil(state.auditTotal / size));
+    var cur = Math.min(Math.max(1, state.auditPage), pages);
+    var h = '<span class="info">第 <b>' + cur + '</b> / ' + pages + ' 頁'
+      + '（共 ' + state.auditTotal + ' 筆）</span>';
+
+    if (cur > 1) h += '<button class="pg-btn" data-p="' + (cur - 1) + '">‹ 上一頁</button>';
+    // 頁碼：頭尾 + 當前附近，其餘用 …
+    var nums = [];
+    for (var i = 1; i <= pages; i++) {
+      if (i === 1 || i === pages || Math.abs(i - cur) <= 2) nums.push(i);
+    }
+    var last = 0;
+    nums.forEach(function (n) {
+      if (last && n - last > 1) h += '<span class="pg-gap">…</span>';
+      h += '<button class="pg-btn' + (n === cur ? ' on' : '') + '" data-p="' + n + '">' + n + '</button>';
+      last = n;
+    });
+    if (cur < pages) h += '<button class="pg-btn" data-p="' + (cur + 1) + '">下一頁 ›</button>';
+
+    pg.innerHTML = h;
+    Array.prototype.forEach.call(pg.querySelectorAll('[data-p]'), function (b) {
+      b.onclick = function () {
+        state.auditPage = Number(this.getAttribute('data-p')) || 1;
+        state.auditOpen = {};
+        loadAudit();
+      };
+    });
+  }
+
+  /* 表的時間：今天只顯示時分，其他顯示月-日 時分（列表要窄） */
+  function shortTime(s) {
+    if (!s) return '—';
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return String(s);
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    var now = new Date();
+    var sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()
+      && d.getDate() === now.getDate();
+    if (sameDay) return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' '
+      + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function fmtTime2(s) {
+    if (!s) return '—';
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return String(s);
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+      + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  /* ---------- 載入 ---------- */
   function loadAudit() {
-    return api('/console/ops/audit?limit=200' + (state.auditAll ? '&all=true' : ''))
+    // ★ 先依螢幕算出「一頁幾條」，再帶進查詢 —— 這樣回來剛好填滿一屏
+    var size = _auditFit();
+    if (size !== state.auditSize) { state.auditSize = size; }
+    return api(_auditQS(state.auditPage, size))
       .then(function (res) {
         if (!guard(res)) return;
-        state.audit = res.data.items || [];
-        if (state.tab === 'audit') viewAudit();
+        var d = res.data;
+        state.auditRows = d.items || [];
+        state.auditTotal = d.total || 0;
+        state.auditSize = d.limit || size;
+        if (d.groups) state.auditGroupDefs = d.groups;
+        if (d.type_labels) state.auditLabels = d.type_labels;
+        // 分頁越界（例如篩選後變少）→ 回到最後一頁重查
+        var pages = Math.max(1, Math.ceil(state.auditTotal / state.auditSize));
+        if (state.auditPage > pages) {
+          state.auditPage = pages;
+          return loadAudit();
+        }
+        if (state.tab === 'audit') {
+          viewAudit();          // 第一次進來時 viewAudit 會建 DOM；之後只是重繪
+          loadAuditFacets();
+        }
       });
+  }
+
+  /* 各組筆數（chip 上的數字）—— 只依時間範圍變，跟類型選擇無關 */
+  function loadAuditFacets() {
+    var rg = _auditRange();
+    var qs = '/console/ops/audit/facets?';
+    var parts = [];
+    if (rg[0]) parts.push('time_from=' + encodeURIComponent(rg[0]));
+    if (rg[1]) parts.push('time_to=' + encodeURIComponent(rg[1]));
+    return api(qs + parts.join('&')).then(function (res) {
+      if (!res.data || !res.data.ok) return;
+      state.auditFacets = res.data;
+      if (res.data.groups) state.auditGroupDefs = res.data.groups;
+      var bar = $('auditBar');
+      if (bar) paintAuditBar();
+    });
   }
 
   // -------------------------------------------------- 渲染 / 載入
@@ -825,6 +1374,22 @@
     else if (state.tab === 'alerts') { viewAlerts(); loadAlerts(); }
     else { viewAudit(); loadAudit(); }
   }
+
+  /* ★ 視窗大小變了 → 可視高度變了 → 「一頁幾條」也要跟著變，否則會出現空白或被裁掉。
+     只在審計頁作用；debounce 300ms 避免拖曳時連發請求。 */
+  var _auditResizeTimer = null;
+  window.addEventListener('resize', function () {
+    if (state.tab !== 'audit') return;
+    clearTimeout(_auditResizeTimer);
+    _auditResizeTimer = setTimeout(function () {
+      var size = _auditFit();
+      if (size === state.auditSize) return;      // 條數沒變就不用重查
+      state.auditSize = size;
+      state.auditPage = 1;
+      state.auditOpen = {};
+      loadAudit();
+    }, 300);
+  });
 
   function loadMe() {
     return api('/api/auth/me').then(function (res) {

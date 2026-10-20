@@ -156,11 +156,18 @@ CREATE TABLE IF NOT EXISTS crm_audit_log (
     staff_id                     bigint,
     staff_name                   text,
     staff_roles                  text[],
+    -- ★ 「以什麼身分做的」—— 一個帳號有多個身分時（管理員可切成客服/運維），
+    --   staff_roles 只說「他有哪些身分」，這裡才是**當時生效的那個**。
+    --   排查時最常問的就是這句（2026-10-20 小jo）。
+    staff_role                   text,
     operate_type                 text NOT NULL,
     platform                     text,
     business_platform_account_id bigint,
     end_user_sender_id           text,
     payload                      jsonb,
+    -- ★ 失敗原因（成功為 NULL）。原本只有 payload 裡零散放 reason/errors，
+    --   列表要「一眼看失敗」就得解析 JSON —— 提到欄位上才能直接用 SQL 篩。
+    fail_reason                  text,
     operate_at                   timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_audit_business ON crm_audit_log(business_id, operate_at);
@@ -509,6 +516,17 @@ MIGRATIONS = (
     #   留空 = 用系統級（connector/.env）。詳見 crm_business 建表註解。
     "ALTER TABLE crm_business ADD COLUMN IF NOT EXISTS meta_app_id text",
     "ALTER TABLE crm_business ADD COLUMN IF NOT EXISTS meta_app_secret text",
+    # 審計日誌重新設計（2026-10-20）：加「以什麼身分做的」與「失敗原因」
+    "ALTER TABLE crm_audit_log ADD COLUMN IF NOT EXISTS staff_role text",
+    "ALTER TABLE crm_audit_log ADD COLUMN IF NOT EXISTS fail_reason text",
+    # 列表最常按「時間新→舊」翻頁，且常同時篩類型 → 補一個合用的複合索引
+    "CREATE INDEX IF NOT EXISTS idx_audit_type_at ON crm_audit_log(operate_type, operate_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_at ON crm_audit_log(operate_at DESC)",
+    # 回填：加欄位之前的歷史記錄沒有 staff_role → 用「可用身分的第一個」近似
+    #   （真正的生效身分已無法得知，這比顯示空白好；新記錄一律寫真實的 active_role）
+    "UPDATE crm_audit_log SET staff_role = staff_roles[1]"
+    "  WHERE staff_role IS NULL AND staff_roles IS NOT NULL"
+    "    AND array_length(staff_roles, 1) >= 1",
 )
 
 # 運維可配置參數（設計案 §15.3 建議值），首次建庫寫入；已存在不覆蓋。

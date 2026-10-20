@@ -20,7 +20,11 @@ TASK_STATUSES = ("pending", "processing", "sent", "failed", "uncertain")
 DEFAULT_FAIL_STATUSES = ("failed", "uncertain")
 
 # ops 身分在審計頁看得到的操作類型（admin 不受限）
+# 運維端「預設看得到」的類型 —— **唯一真相已移到 `router.AUDIT_GROUPS`**
+# （2026-10-20 重新設計：按「你會問什麼」分組，而不是 4 個孤零零的原始類型）。
+# 這裡保留這個名字只為相容舊自檢；新程式請用 `AUDIT_GROUPS` 的聯集。
 OPS_AUDIT_TYPES = ("task_retry", "ops_config_change", "alert_ack", "alert_notify")
+
 
 # 可寫入的運維參數白名單 —— **唯一真相在 schema.OPS_CONFIG_DEFAULTS**
 CONFIG_KEYS = frozenset(schema.OPS_CONFIG_DEFAULTS.keys())
@@ -411,8 +415,47 @@ def recent_failed_count(window_minutes: int, business_id: int = 0) -> int:
 
 # ================================================================ 審計
 
-def list_audit(*, limit: int = 100, offset: int = 0, types=None,
-               business_id: int = 0) -> dict:
+def audit_type_counts(*, business_id: int = 0, time_from=None, time_to=None,
+                      types=None) -> dict[str, int]:
+    """當前時間範圍內「每個類型各有幾筆」。給前端 chip 顯示數字用。
+
+    ⚠️ 用 `GROUP BY operate_type` 一次查完，不要每個類型各查一次（27 次往返）。
+    """
+    where: list[str] = []
+    args: list = []
+    if business_id:
+        where.append("business_id = %s")
+        args.append(int(business_id))
+    if time_from:
+        where.append("operate_at >= %s::timestamptz")
+        args.append(time_from)
+    if time_to:
+        where.append("operate_at < %s::timestamptz")
+        args.append(time_to)
+    if types:
+        where.append("operate_type = ANY(%s)")
+        args.append(list(types))
+    tail = (" WHERE " + " AND ".join(where)) if where else ""
+    with ro() as cur:
+        cur.execute("SELECT operate_type, count(*) AS n FROM crm_audit_log"
+                    f"{tail} GROUP BY operate_type", tuple(args) or None)
+        return {str(r["operate_type"]): int(r["n"]) for r in _rows(cur)}
+
+
+def list_audit(*, limit: int = 50, offset: int = 0, types=None,
+               business_id: int = 0, time_from=None, time_to=None,
+               q: str = "", only_failed: bool = False) -> dict:
+    """審計列表（篩選 + 分頁）。回 `{items, total, limit, offset, has_more}`。
+
+    ★ 重新設計（2026-10-20 小jo）：
+      · `time_from` / `time_to`：時間區間（ISO 字串，含頭不含尾）
+      · `types`：多選類型（空 = 不限）
+      · `q`：模糊搜尋 —— 操作人 / 商家 id / 有效身分 / 失敗原因 / payload 全文
+        （payload 用 `::text ILIKE`，能搜到「#536」「122116181475…」這種具體 id）
+      · `only_failed`：只看失敗（`fail_reason IS NOT NULL`）
+    ⚠️ 一律 `ORDER BY id DESC`（等於時間新→舊，且 id 是主鍵，比 operate_at 更穩、
+      分頁也不會因為同時寫入而重複／漏行 —— operate_at 可能相同）。
+    """
     where: list[str] = []
     args: list = []
     if types:
@@ -421,20 +464,48 @@ def list_audit(*, limit: int = 100, offset: int = 0, types=None,
     if business_id:
         where.append("business_id = %s")
         args.append(int(business_id))
+    if time_from:
+        where.append("operate_at >= %s::timestamptz")
+        args.append(time_from)
+    if time_to:
+        where.append("operate_at < %s::timestamptz")
+        args.append(time_to)
+    if only_failed:
+        # ★ 三種「失敗」都要算進來：
+        #   ① 新記錄的 `fail_reason`；② 登入失敗（本來就是一種結果，不必再帶原因）；
+        #   ③ 舊資料把錯誤塞在 payload（`errors` 非空 / `sent=false`）——
+        #      不加這條，「只看失敗」對加欄位之前的歷史資料會永遠是 0 筆。
+        where.append(
+            "(fail_reason IS NOT NULL OR operate_type = 'login_failed'"
+            " OR (payload ? 'errors' AND jsonb_array_length("
+            "      CASE WHEN jsonb_typeof(payload->'errors') = 'array'"
+            "           THEN payload->'errors' ELSE '[]'::jsonb END) > 0)"
+            " OR payload->>'sent' = 'false')")
+    if q:
+        like = "%" + str(q).strip() + "%"
+        where.append(
+            "(COALESCE(staff_name, '') ILIKE %s OR COALESCE(staff_role, '') ILIKE %s"
+            " OR COALESCE(fail_reason, '') ILIKE %s OR COALESCE(payload::text, '') ILIKE %s"
+            " OR CAST(COALESCE(business_id, 0) AS text) LIKE %s"
+            " OR COALESCE(operate_type, '') ILIKE %s)")
+        args.extend([like] * 6)
     tail = (" WHERE " + " AND ".join(where)) if where else ""
-    lim = max(1, min(int(limit or 100), 500))
+    lim = max(1, min(int(limit or 50), 200))
+    off = max(0, int(offset or 0))
     with ro() as cur:
         cur.execute(f"SELECT count(*) AS n FROM crm_audit_log{tail}", tuple(args) or None)
         total = int((_rows(cur) or [{"n": 0}])[0]["n"])
         cur.execute(
-            "SELECT id, business_id, staff_id, staff_name, staff_roles, operate_type,"
-            "       platform, business_platform_account_id, end_user_sender_id, payload, operate_at"
+            "SELECT id, business_id, staff_id, staff_name, staff_role, staff_roles,"
+            "       operate_type, platform, business_platform_account_id,"
+            "       end_user_sender_id, payload, fail_reason, operate_at"
             f" FROM crm_audit_log{tail} ORDER BY id DESC LIMIT %s OFFSET %s",
-            tuple(args) + (lim, max(0, int(offset or 0))),
+            tuple(args) + (lim, off),
         )
         items = _rows(cur)
     for it in items:
         v = it.get("operate_at")
         if v is not None and hasattr(v, "isoformat"):
             it["operate_at"] = v.isoformat()
-    return {"items": items, "total": total, "limit": lim}
+    return {"items": items, "total": total, "limit": lim, "offset": off,
+            "has_more": off + len(items) < total}

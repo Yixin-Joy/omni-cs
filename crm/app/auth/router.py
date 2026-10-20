@@ -213,8 +213,9 @@ def switch_role(payload: SwitchRoleIn, sess: dict = Depends(deps.require_csrf)):
     old = rbac.active_role(sess)
     if role != old:
         session_mod.set_active_role(sess.get("session_id"), role)
-        audit.log_standalone({**sess, "active_role": role}, "role_switch",
-                             payload={"from": old, "to": role})
+        # ★ 不記審計（2026-10-20 小jo）：身分切換本身不是業務動作，
+        #   「當時用什麼身分做的」已寫在每條審計的 `staff_role` 欄，不用再單獨記一條。
+        #   （這個動作 301 筆，是原本最大的噪音來源之一。）
     return {
         "ok": True,
         "active_role": role,

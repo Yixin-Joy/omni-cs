@@ -482,11 +482,9 @@ def mark_read(payload: ReadIn, sess: dict = Depends(deps.require_csrf)):
         n = connector_client.mark_message(plat, message_id=payload.message_id, handled=True)
     else:
         n = connector_client.mark_message(plat, end_user_sender_id=payload.key, handled=True)
-    audit.log_standalone(sess, "conversation_read", business_id=int(payload.business_id),
-                         platform=plat, bp_account_id=int(payload.bp_account_id),
-                         end_user_sender_id=payload.key,
-                         payload={"scope": payload.scope, "updated": n,
-                                  "message_id": payload.message_id})
+    # ★ 不記審計（2026-10-20 小jo）：「打開會話／清紅點」是最高頻、排查價值最低的動作，
+    #   記下來只會把真正的問題埋掉。要做到「誰看了什麼」應該查訊息本身的 is_handled，
+    #   不需要在審計日誌裡留一份。
     return {"ok": True, "updated": n, "message_id": payload.message_id}
 
 
