@@ -112,7 +112,11 @@ def _ui(name: str, media: str = "text/html; charset=utf-8") -> HTMLResponse:
 
 
 # 可公開取的 UI 靜態資源（白名單，避免任意路徑讀檔）
-UI_ASSETS = {"common.js": "application/javascript; charset=utf-8"}
+# ★ 審計日誌的視圖是共用模組（admin.html / ops.html 都引用），必須在白名單裡
+UI_ASSETS = {
+    "common.js": "application/javascript; charset=utf-8",
+    "audit_view.js": "application/javascript; charset=utf-8",
+}
 
 
 @app.get("/ui/{name}")

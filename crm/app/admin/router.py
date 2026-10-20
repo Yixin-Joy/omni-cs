@@ -18,6 +18,9 @@ from app.auth import session as session_mod
 from app.core import config
 from app.core.security import hash_password
 from app.internal import connector_client
+# ★ 審計查詢與分組定義跟運維台共用同一份（見檔尾「審計」段）
+from app.ops import repo as ops_repo
+from app.ops import router as ops_router
 
 log = logging.getLogger(__name__)
 
@@ -499,10 +502,59 @@ def bulk_ai_switch(payload: AiSwitchBulkIn, sess: dict = Depends(deps.require_ad
 
 # ================================================================ 審計
 
+# ★ 2026-10-20 小jo：「管理員後臺的審計日志一起改了」—— 管理台與運維台
+#   共用同一套前端（`/ui/audit_view.js`），所以後端也要給同樣的篩選能力。
+#   這裡直接復用 `ops.repo.list_audit`（含 staff_role / fail_reason / total / 分頁），
+#   不再走 `admin.repo.list_audit` 那個只能 limit 的舊版本。
 @router.get("/audit")
-def list_audit(limit: int = Query(default=100, ge=1, le=500),
-               business_id: int | None = Query(default=None),
-               operate_type: str | None = Query(default=None),
+def list_audit(limit: int = Query(default=20, ge=1, le=200),
+               offset: int = Query(default=0, ge=0),
+               types: str = Query(default=""),
+               q: str = Query(default=""),
+               time_from: str = Query(default=""),
+               time_to: str = Query(default=""),
+               only_failed: bool = Query(default=False),
+               all: bool = Query(default=False),
+               business_id: int = Query(default=0),
                sess: dict = Depends(deps.require_admin)):
-    return {"ok": True, "items": repo.list_audit(limit=limit, business_id=business_id,
-                                                 operate_type=operate_type)}
+    """審計列表（篩選 + 分頁）。
+
+    `all=true` → 連已下線類型的歷史紀錄一起看（例如舊的 conversation_read／
+    role_switch）。預設只看現行 5 組，否則「合計」會跟各組加起來對不上。
+    """
+    picked = [t.strip() for t in (types or "").split(",") if t.strip()]
+    if all:
+        picked = []        # ★ 全部類型＝不加 types 條件（前端帶的 5 組要忽略）
+    elif not picked:
+        # ⚠️ 這裡必須是 `elif`：寫成「先清空、再 if not picked 補預設」
+        #    會又把 5 組塞回去 → all=true 形同無效（踩過）
+        picked = sorted({t for g in ops_router.AUDIT_GROUPS for t in g["types"]})
+    return {"ok": True,
+            **ops_repo.list_audit(limit=int(limit), offset=int(offset),
+                                  types=(picked or None),
+                                  business_id=int(business_id or 0),
+                                  time_from=(time_from or None), time_to=(time_to or None),
+                                  q=(q or ""), only_failed=bool(only_failed)),
+            "groups": ops_router.AUDIT_GROUPS,
+            "type_labels": ops_router.AUDIT_TYPE_LABELS}
+
+
+@router.get("/audit/facets")
+def audit_facets(time_from: str = Query(default=""), time_to: str = Query(default=""),
+                 all: bool = Query(default=False),
+                 business_id: int = Query(default=0),
+                 sess: dict = Depends(deps.require_admin)):
+    """各組／各類型在當前時間範圍內有幾筆（chip 上的數字）。"""
+    allowed = None if all else sorted(
+        {t for g in ops_router.AUDIT_GROUPS for t in g["types"]})
+    counts = ops_repo.audit_type_counts(business_id=int(business_id or 0),
+                                        time_from=(time_from or None),
+                                        time_to=(time_to or None), types=allowed)
+    groups = []
+    for g in ops_router.AUDIT_GROUPS:
+        groups.append({"key": g["key"], "label": g["label"], "hint": g["hint"],
+                       "types": g["types"],
+                       "count": sum(counts.get(t, 0) for t in g["types"])})
+    return {"ok": True, "groups": groups, "counts": counts,
+            "total": sum(g["count"] for g in groups),
+            "total_all": sum(counts.values())}

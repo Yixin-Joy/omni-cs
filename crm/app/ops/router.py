@@ -306,7 +306,10 @@ def audit_logs(limit: int = Query(default=50), offset: int = Query(default=0),
         # ★ 非管理員：只能在自己看得到的類型裡挑，不能靠傳 types 越權看別人的操作
         allowed = {t for g in AUDIT_GROUPS for t in g["types"]}
         picked = [t for t in picked if t in allowed]
-    types_arg = None if want_all and not picked else (picked or None)
+    # ★ 切「顯示全部類型」時**必須忽略 types**：前端永遠會帶上 5 組的 types，
+    #   若這裡再要求「picked 為空才 all」，那顆按鈕就永遠只改文字、資料不變
+    #   （2026-10-20 真瀏覽器自檢抓到：643 → 643）。
+    types_arg = None if want_all else (picked or None)
 
     # 不傳 types 且不是「全部」→ 用預設組（排除已下線的噪音類型）
     if types_arg is None and not want_all:
@@ -324,6 +327,7 @@ def audit_logs(limit: int = Query(default=50), offset: int = Query(default=0),
 @router.get("/audit/facets")
 def audit_facets(business_id: int = Query(default=0),
                  time_from: str = Query(default=""), time_to: str = Query(default=""),
+                 all: bool = Query(default=False),
                  sess: dict = Depends(deps.require_ops)):
     """各組／各類型在**當前時間範圍**內有幾筆 —— 前端 chip 上顯示數字用。
 
@@ -331,7 +335,9 @@ def audit_facets(business_id: int = Query(default=0),
       跟著列表一起回也可以，但列表帶分頁、facets 要全範圍統計，分開更清楚也更好快取。
     """
     is_admin = rbac.ROLE_ADMIN in rbac.roles_all(sess)
-    allowed = sorted({t for g in AUDIT_GROUPS for t in g["types"]}) if not is_admin \
+    # ★ 前端切「顯示全部類型」時要一起算（否則 chip 的數字跟列表對不上）
+    want_all = bool(all) and is_admin
+    allowed = sorted({t for g in AUDIT_GROUPS for t in g["types"]}) if not want_all \
         else None
     counts = repo.audit_type_counts(business_id=int(business_id or 0),
                                     time_from=(time_from or None),

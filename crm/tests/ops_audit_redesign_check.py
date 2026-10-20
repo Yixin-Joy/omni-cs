@@ -46,6 +46,11 @@ def check(ok: bool, what: str, detail: str = "") -> None:
 
 
 OPS_UI = (_ROOT / "crm" / "ui" / "ops.html").read_text(encoding="utf-8")
+ADMIN_UI = (_ROOT / "crm" / "ui" / "admin.html").read_text(encoding="utf-8")
+# ★ 審計視圖是共用模組（admin.html / ops.html 都引用同一份）
+AUDIT_JS = (_ROOT / "crm" / "ui" / "audit_view.js").read_text(encoding="utf-8")
+ADMIN_PY = (_ROOT / "crm" / "app" / "admin" / "router.py").read_text(encoding="utf-8")
+MAIN_PY = (_ROOT / "crm" / "main.py").read_text(encoding="utf-8")
 AUDIT_PY = (_ROOT / "crm" / "app" / "audit.py").read_text(encoding="utf-8")
 OPS_R = (_ROOT / "crm" / "app" / "ops" / "router.py").read_text(encoding="utf-8")
 OPS_REPO = (_ROOT / "crm" / "app" / "ops" / "repo.py").read_text(encoding="utf-8")
@@ -153,81 +158,98 @@ def part_b() -> None:
 
 # ---------------------------------------------------------------- [C] 前端接線
 def part_c() -> None:
-    print("\n[C] 前端：三段式佈局 / chip 篩選 / 頁碼 / 依高度算條數")
+    print("\n[C] 前端：共用視圖（兩台一致）/ 三段式 / 一頁 20 條 / 不足靠上留空")
 
-    check(".body.as-audit" in OPS_UI, "★ 審計頁三段式佈局（整頁不滾動）")
-    check("overflow: hidden" in OPS_UI.split(".body.as-audit")[1][:200],
+    # ★ 2026-10-20 小jo：「管理員後臺的審計日志一起改了呀」—— 抽成一份共用模組，
+    #   兩頁只差打哪支端點。以下斷言就是防它再退化成「兩套長相」。
+    check("audit_view.js" in OPS_UI and '/ui/audit_view.js' in OPS_UI,
+          "★★ 運維台引用共用審計視圖")
+    check("audit_view.js" in ADMIN_UI and '/ui/audit_view.js' in ADMIN_UI,
+          "★★ 管理台引用同一份共用審計視圖")
+    check("AuditView.mount" in OPS_UI and "AuditView.mount" in ADMIN_UI,
+          "★ 兩頁都 mount 共用視圖")
+    check("/api/admin/audit?limit=100" not in ADMIN_UI,
+          "★★ 管理台不再走「只能 limit 的舊端點」")
+    check("AUDIT_GROUPS" in ADMIN_PY and "ops_repo.list_audit" in ADMIN_PY,
+          "★★ 管理台端點復用 ops 的查詢（staff_role / fail_reason / total / 分頁）")
+    for a in ("only_failed", "time_from", "time_to", "types", "offset"):
+        check(a in ADMIN_PY.split('def list_audit')[1][:1200],
+              f"管理台端點支援 {a}")
+    check("@router.get(\"/audit/facets\")" in ADMIN_PY, "★ 管理台也有 facets（chip 上的數字）")
+
+    # ---- 佈局（在共用模組裡） ----
+    check(".body.as-audit" in AUDIT_JS, "★ 審計頁三段式佈局（整頁不滾動）")
+    check("overflow: hidden" in AUDIT_JS.split(".body.as-audit")[1][:200],
           "★ 審計頁 #view 不滾動")
-    check(".audit-tw" in OPS_UI and "flex: 1" in OPS_UI,
-          "★ 表格區填滿剩餘高度")
-    check(".audit-tw.scroll" in OPS_UI, "★ 只有展開明細時才允許表格區內部滾動")
+    check(".audit-tw" in AUDIT_JS and "flex: 1" in AUDIT_JS, "★ 表格區填滿剩餘高度")
+    check(".audit-tw.scroll" in AUDIT_JS, "★ 只有展開明細時才允許表格區內部滾動")
     # ★★ 條數不足時要「靠上排、下面留空」，不能被 flex 預設的 stretch 撐高
     #    （撐高後瀏覽器會把多餘高度分攤給各列 → 行距被拉開，看起來像散落幾行）
-    tw_css = OPS_UI.split(".audit-tw {")[1][:260] if ".audit-tw {" in OPS_UI else ""
+    tw_css = AUDIT_JS.split("'.audit-tw {")[1][:260] if "'.audit-tw {" in AUDIT_JS else ""
     check("align-items: flex-start" in tw_css,
           "★★ 表格區靠上對齊（不足 20 條時下面留空，不拉開行距）", tw_css[:120])
-    check('height: var(--audit-row-h' in OPS_UI,
+    check('height: var(--audit-row-h' in AUDIT_JS,
           "★ 列高走 CSS 變數（JS 依螢幕調 28~34px，好讓 20 條塞得下）")
-    check("AUDIT_ROW_MIN = 28" in OPS_UI, "★ 行高下限 28px（再小就看不清了）")
+    check("ROW_MIN = 28" in AUDIT_JS, "★ 行高下限 28px（再小就看不清了）")
 
-    check("function _auditFit" in OPS_UI, "★★ 一頁幾條的計算")
-    fit = OPS_UI[OPS_UI.index("function _auditFit"):][:900]
-    check("AUDIT_PAGE_MAX = 20" in OPS_UI, "★ 一頁 20 條")
+    check("function fit()" in AUDIT_JS, "★★ 一頁幾條的計算")
+    fit = AUDIT_JS[AUDIT_JS.index("function fit()"):][:900]
+    check("PAGE_MAX = 20" in AUDIT_JS, "★ 一頁 20 條")
     check("clientHeight" in fit, "★ 用真實可視高度（不是寫死）", fit[:160])
     check("--audit-row-h" in fit, "★ 算完把行高寫回 CSS 變數")
-    check("AUDIT_ROW_MIN" in fit, "★ 矮螢幕才減條數（先壓行高保 20 條）")
+    check("ROW_MIN" in fit, "★ 矮螢幕才減條數（先壓行高保 20 條）")
 
-    check("function paintAuditBar" in OPS_UI, "有篩選列")
-    check("AUDIT_RANGES" in OPS_UI, "★ 時間範圍 chip（今天/昨天/近7天/近30天/全部）")
+    check("function paintBar" in AUDIT_JS, "有篩選列")
+    check("RANGES = [" in AUDIT_JS, "★ 時間範圍 chip（今天/昨天/近7天/近30天/全部）")
     for k in ("today", "yday", "7d", "30d", "all", "custom"):
-        check(f"'{k}'" in OPS_UI, f"時間選項 {k}")
-    check('data-act="grp"' in OPS_UI, "★ 類型組 chip")
-    check('data-act="type"' in OPS_UI, "★ 細項類型 chip（點組才展開）")
-    check('data-act="failed"' in OPS_UI, "★ 只看失敗 chip")
-    check('id="auditQ"' in OPS_UI, "★ 搜尋框")
-    check('type="date"' in OPS_UI, "★ 自訂時間用 date input")
+        check(f"'{k}'" in AUDIT_JS, f"時間選項 {k}")
+    check('data-act="grp"' in AUDIT_JS, "★ 類型組 chip")
+    check('data-act="type"' in AUDIT_JS, "★ 細項類型 chip（點組才展開）")
+    check('data-act="failed"' in AUDIT_JS, "★ 只看失敗 chip")
+    check('id="auditQ"' in AUDIT_JS, "★ 搜尋框")
+    check('type="date"' in AUDIT_JS, "★ 自訂時間用 date input")
 
-    check("function paintAuditPager" in OPS_UI, "★ 有分頁")
-    pg = OPS_UI[OPS_UI.index("function paintAuditPager"):][:1400]
+    check("function paintPager" in AUDIT_JS, "★ 有分頁")
+    pg = AUDIT_JS[AUDIT_JS.index("function paintPager"):][:1400]
     check("上一頁" in pg and "下一頁" in pg, "★ 上一頁 / 下一頁")
     check('data-p="' in pg, "★ 可點頁碼")
-    check("Math.ceil(state.auditTotal / size)" in pg, "★ 頁數依總筆數算")
+    check("Math.ceil(S.total / size)" in pg, "★ 頁數依總筆數算")
 
-    check("function paintAuditTable" in OPS_UI, "有表格渲染")
-    check("a-row" in OPS_UI and "a-detail" in OPS_UI, "★ 列可點開明細")
-    check("JSON.stringify(a.payload, null, 2)" in OPS_UI,
+    check("function paintTable" in AUDIT_JS, "有表格渲染")
+    check("a-row" in AUDIT_JS and "a-detail" in AUDIT_JS, "★ 列可點開明細")
+    check("JSON.stringify(a.payload, null, 2)" in AUDIT_JS,
           "★ 原始 payload 只在展開時顯示（不佔主視線）")
 
     # 事件必須限定容器（MEMORY 的 P0 教訓）
     def fn_body(name: str) -> str:
         """取一個函式的完整 body（到下一個同層 `function ` 為止）。
         ⚠️ 不要用固定字數切片 —— 函式長度會變，切太短會誤報（這裡踩過）。"""
-        i = OPS_UI.index("function " + name)
-        nxt = OPS_UI.find("\n  function ", i + 10)
-        return OPS_UI[i:nxt if nxt > 0 else len(OPS_UI)]
+        i = AUDIT_JS.index("function " + name)
+        nxt = AUDIT_JS.find("\n  function ", i + 10)
+        return AUDIT_JS[i:nxt if nxt > 0 else len(AUDIT_JS)]
 
-    bar = fn_body("paintAuditBar")
+    bar = fn_body("paintBar")
     check("bar.querySelectorAll" in bar, "★ 事件綁定限定在 bar 內（不用全域選取）")
-    tw = fn_body("paintAuditTable")
+    tw = fn_body("paintTable")
     check("tw.querySelectorAll" in tw, "★ 表格事件也限定在自己容器內")
 
-    check("window.addEventListener('resize'" in OPS_UI,
+    check("window.addEventListener('resize'" in AUDIT_JS,
           "★ 視窗大小變了會重算每頁條數（否則會出現空白/被裁掉）")
+    check("API._mounted" in fn_body("mount"),
+          "★ mount 冪等（每次進分頁都 mount，resize 只能掛一次）")
     # 其它頁要復位 class，否則會繼承 overflow:hidden 導致不能滾
     check(OPS_UI.count("_v.className = 'body'") >= 4,
           "★ 離開審計頁時復位 #view 的 class（不然別頁內容被裁）")
+    check("UI_ASSETS" in MAIN_PY and "audit_view.js" in MAIN_PY,
+          "★ 共用模組在 /ui 白名單裡（否則 404 → 整頁空）")
 
 
 # ---------------------------------------------------------------- [D] 人話轉換
 def part_d() -> None:
     print("\n[D] 人話轉換（用真實 payload 在 Node 實跑）")
 
-    def cut(start: str, end: str) -> str:
-        i = OPS_UI.index(start)
-        j = OPS_UI.index(end, i)
-        return OPS_UI[i:j]
-
-    code = cut("function _auditTypeLabel", "function _auditTarget")
+    code = AUDIT_JS[AUDIT_JS.index("function typeLabel"):
+                    AUDIT_JS.index("/* 對象：")]
 
     # 用真實資料當測資（沒資料就用定型樣本）
     samples = []
@@ -261,10 +283,8 @@ def part_d() -> None:
     ]
 
     harness = r"""
-var ROLE_LABEL = { admin: '管理員', agent: '客服坐席', ops: '運維' };
-var state = { auditLabels: {} };
 var LABELS = """ + json.dumps(_labels(), ensure_ascii=False) + r""";
-state.auditLabels = LABELS;
+var S = { labels: LABELS };
 """ + code + r"""
 var SAMPLES = """ + json.dumps(samples, ensure_ascii=False) + r""";
 var out = [];
@@ -273,7 +293,7 @@ function t(ok, label, extra) { out.push([ok, label, extra || '']); }
 // 1) 每一種都要產出非空、且**不是原始 JSON** 的描述
 var bad = [];
 SAMPLES.forEach(function (s) {
-  var txt = _auditAction(s);
+  var txt = actionText(s);
   if (!txt || !String(txt).trim()) { bad.push(s.operate_type + ':空'); return; }
   if (txt.charAt(0) === '{' || txt.indexOf('":"') >= 0) {
     bad.push(s.operate_type + ':像JSON');
@@ -282,48 +302,44 @@ SAMPLES.forEach(function (s) {
 t(bad.length === 0, '★★ 所有類型都轉成人話（不再是原始 JSON）', bad.join('、'));
 
 // 2) 關鍵類型的具體文案
-function find(type) {
-  for (var i = 0; i < SAMPLES.length; i++) if (SAMPLES[i].operate_type === type) return SAMPLES[i];
-  return null;
-}
-var a = _auditAction({operate_type: 'ai_switch_change',
+var a = actionText({operate_type: 'ai_switch_change',
   payload: {layer: 'scope', scope: 'dm', enabled: true, platform: 'fb'}});
 t(a.indexOf('私訊') >= 0 && a.indexOf('開啟') >= 0,
   '★★ AI 開關 → 「…私訊 …開啟」（不是 {"layer":"scope"...}）', a);
 
-var b = _auditAction({operate_type: 'reply_send',
+var b = actionText({operate_type: 'reply_send',
   payload: {text: '我們的a套餐是全日套餐', task_id: 536}});
 t(b.indexOf('#536') >= 0 && b.indexOf('a套餐') >= 0,
   '★ 送出回覆帶任務號與內容摘要', b);
 
-var c = _auditAction({operate_type: 'ops_config_change',
+var c = actionText({operate_type: 'ops_config_change',
   payload: {key: 'outbound.max_retry', from: 3, to: 7}});
 t(c.indexOf('outbound.max_retry') >= 0 && c.indexOf('3') >= 0 && c.indexOf('7') >= 0,
   '★ 參數變更顯示 old → new', c);
 
-var d = _auditAction({operate_type: 'task_retry', payload: {retried: [73], skipped: []}});
+var d = actionText({operate_type: 'task_retry', payload: {retried: [73], skipped: []}});
 t(d.indexOf('#73') >= 0, '★ 重跑任務帶任務號', d);
 
-var e = _auditAction({operate_type: 'login_failed',
+var e = actionText({operate_type: 'login_failed',
   payload: {reason: '帳號或密碼錯誤', account: 'admin'}});
 t(e.indexOf('admin') >= 0 && e.indexOf('帳號或密碼錯誤') >= 0,
   '★ 登入失敗帶帳號與原因', e);
 
-var f = _auditAction({operate_type: 'sync_history',
+var f = actionText({operate_type: 'sync_history',
   payload: {totals: {posts: 9, dm_new: 1, errors: []}}});
 t(f.indexOf('私訊 +1') >= 0, '★ 補拉歷史顯示新增數量', f);
 
 // 3) 未知類型也要有合理輸出（不能空白、不能噴）
-var g = _auditAction({operate_type: 'weird_new_type', payload: {foo: 'bar'}});
+var g = actionText({operate_type: 'weird_new_type', payload: {foo: 'bar'}});
 t(!!g && g.indexOf('foo') >= 0, '★ 未知類型也有 key=value 摘要（不會空白）', g);
 
-var h = _auditAction({operate_type: 'ai_switch_change', payload: {}});
+var h = actionText({operate_type: 'ai_switch_change', payload: {}});
 t(!!h && h.indexOf('undefined') < 0, '★ payload 缺欄位也不會印 undefined', h);
 
 // 4) 標籤
-t(_auditTypeLabel('ai_switch_change') === 'AI 開關', '★ 類型有中文標籤',
-  _auditTypeLabel('ai_switch_change'));
-t(_auditTypeLabel('no_such') === 'no_such', '未知類型回原始 key（不炸）');
+t(typeLabel('ai_switch_change') === 'AI 開關', '★ 類型有中文標籤',
+  typeLabel('ai_switch_change'));
+t(typeLabel('no_such') === 'no_such', '未知類型回原始 key（不炸）');
 
 var fails = out.filter(function (x) { return !x[0]; });
 out.forEach(function (x) {

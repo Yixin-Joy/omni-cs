@@ -427,6 +427,7 @@
 <div id="toast"></div>
 
 <script src="/ui/common.js"></script>
+<script src="/ui/audit_view.js"></script>
 <script>
 (function () {
   'use strict';
@@ -487,7 +488,8 @@
 
   var state = {
     tab: 'biz', csrf: '', me: null,
-    businesses: [], staff: [], accounts: [], aiSwitch: [], aiBizId: null, audit: [],
+    businesses: [], staff: [], accounts: [], aiSwitch: [], aiBizId: null,
+    // ★ 審計的狀態在 /ui/audit_view.js（頁面不持有）
     permStaffId: null, acctBizId: null, editBizId: null, editStaffId: null
   };
 
@@ -581,8 +583,7 @@
       b.onclick = function () {
         state.tab = t.key;
         // 審計日誌的資料不在 reloadAll() 裡（避免每次登入都拉），切到此分頁才載入
-        if (state.tab === 'audit') loadAudit().then(render);
-        else render();
+        render();
       };
       nav.appendChild(b);
     });
@@ -778,22 +779,35 @@
     openOv('ovPwd');
   }
 
-  // -------------------------------------------------- 分頁：審計
+  // -------------------------------------------------- 分頁：審計（共用視圖）
+  /* ★ 與 ops.html 共用 `/ui/audit_view.js`（2026-10-20 小jo：兩邊要一起改）：
+       · 時間 / 類型 / 搜尋 / 只看失敗 篩選 + 一頁 20 條 + 翻頁
+       · 內容人話化（不是原始 JSON），點列展開明細
+       · 一頁 20 條一定在一屏內；不足 20 條靠上排、下面留空
+     管理員是全局視角，所以預設就看全部 5 組；另有「顯示全部類型」
+     可看到已下線類型的歷史紀錄（例如舊的 conversation_read）。 */
+  function auditOpts() {
+    return {
+      api: api, esc: esc, host: function () { return $('view'); },
+      listUrl: '/api/admin/audit', facetsUrl: '/api/admin/audit/facets',
+      plats: PLATFORM_LABEL, roles: ROLE_LABEL
+    };
+  }
+
   function viewAudit() {
-    renderActs([{ label: '重新整理', cls: 'ghost', onClick: loadAudit }]);
-    var rows = state.audit.map(function (a) {
-      return '<tr>'
-        + '<td class="num" style="white-space:nowrap">' + esc(fmtTime(a.operate_at)) + '</td>'
-        + '<td>' + esc(a.staff_name || '—') + '</td>'
-        + '<td><span class="tag">' + esc(a.operate_type) + '</span></td>'
-        + '<td class="num">' + (a.business_id === null || a.business_id === undefined ? '—' : a.business_id) + '</td>'
-        + '<td class="muted" style="font-size:12px;word-break:break-all">'
-        + esc(a.payload ? JSON.stringify(a.payload) : '') + '</td></tr>';
-    }).join('');
-    $('view').innerHTML = state.audit.length
-      ? '<table><thead><tr><th>時間</th><th>操作人</th><th>類型</th><th>商家</th><th>明細</th></tr></thead><tbody>'
-        + rows + '</tbody></table>'
-      : '<div class="empty">暫無紀錄。</div>';
+    renderActs([{ label: '重新整理', cls: 'ghost',
+                  onClick: function () { AuditView.reload(); } }]);
+    var btn = document.createElement('button');
+    btn.className = 'ghost';
+    btn.textContent = AuditView.state.all ? '只看現行類型' : '顯示全部類型';
+    btn.onclick = function () {
+      AuditView.setAll(!AuditView.state.all);
+      btn.textContent = AuditView.state.all ? '只看現行類型' : '顯示全部類型';
+    };
+    $('pageActs').appendChild(btn);
+
+    AuditView.mount(auditOpts());
+    AuditView.show();
   }
 
   function fmtTime(s) {
@@ -816,7 +830,7 @@
     if (state.tab === 'biz') viewBiz();
     else if (state.tab === 'ai') viewAi();
     else if (state.tab === 'staff') viewStaff();
-    else viewAudit();
+    else { viewAudit(); loadAudit(); }
   }
 
   function loadMe() {
@@ -855,9 +869,8 @@
     });
   }
   function loadAudit() {
-    return api('/api/admin/audit?limit=100').then(function (res) {
-      if (guard(res)) { state.audit = res.data.items || []; if (state.tab === 'audit') viewAudit(); }
-    });
+    AuditView.mount(auditOpts());
+    return AuditView.reload();
   }
 
   function reloadAll() {
