@@ -115,7 +115,14 @@ def enqueue_reply(*, business_id: int, platform: str, platform_account_id: int, 
                   source: str = "ai", staff_id: int | None = None) -> dict:
     """建立外送任務（命中後不再直發）。回傳 `{task_id}`。"""
     from app.internal import repo
-    content: dict = {"text": text or ""}
+
+    # ★★ `scope` 一定要寫進 message_content（2026-10-20 修：FB 留言自動回復不發送）
+    #    Connector `process_task()` 是 `scope = mc.get("scope") or "dm"`：
+    #    少了這個欄位 → 留言回覆被**當成私訊**發出去 →
+    #      · IG：真的發成一條 DM（客戶收不到公開回覆，留言 `replied` 仍是 false）
+    #      · FB：把 comment_id 當 PSID 發 → Meta 400 `(#10) 不在允許期間`
+    #    （人工回覆那條 `agent/repo.create_manual_reply` 一直有帶 scope，所以只有自動回復壞）
+    content: dict = {"text": text or "", "scope": scope}
     items = _asset_items(assets or [])
     if items:
         content["assets"] = items

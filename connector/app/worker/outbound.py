@@ -252,6 +252,16 @@ async def process_task(task: dict) -> str:
 
     mc = task.get("message_content") if isinstance(task.get("message_content"), dict) else {}
     scope = (mc or {}).get("scope") or "dm"   # dm（預設）| comment
+    if scope == "comment":
+        # ★ 留言回覆的 target **必須是 comment_id**（Graph 端點吃的是留言節點）。
+        #   自動回復那條任務的 `end_user_sender_id` 存的是客戶 PSID（方便追溯），
+        #   comment_id 另放在 message_content 裡 —— 所以要覆寫。
+        #   ⚠️ 原本沒有這一段：scope 一旦是 comment 而 target 還是 PSID，
+        #      就會 POST /{psid}/comments → Meta 400 `(#10) 不在允許期間`。
+        #   （人工回覆那條把 sender_id 直接設成 comment_id，所以兩邊都兼容）
+        comment_target = str(mc.get("comment_id") or "").strip()
+        if comment_target:
+            target = comment_target
 
     # ★ 多租戶：發送憑證從帳號映射快取讀（真相在 CRM），不再讀 config/.env
     cred = account_map.credential_of(platform, native_id) if native_id else {}

@@ -4829,8 +4829,12 @@ function ktResultHtml(d) {
 
 function logsTabHtml() {
   const s = state.overview;
+  // ⚠️ overview.scopes 的欄位是 `platform`（**不是** `channel`），也沒有 `label`。
+  //    原本寫 `sc.channel` / `sc.label` → 每個選項的 value 變成 "undefined|dm"、
+  //    文字變成「undefined」→ 客服一選渠道就查不到任何紀錄（看起來像「沒有記錄」）。
   const opts = s ? (s.scopes || []).map(sc =>
-    '<option value="' + sc.channel + '|' + sc.scope + '">' + esc(sc.label) + '</option>').join('') : '';
+    '<option value="' + esc(sc.platform) + '|' + esc(sc.scope) + '">' + esc(stScopeLabel(sc)) +
+      '</option>').join('') : '';
   const items = stState.logs.length
     ? stState.logs.map(logItemHtml).join('')
     : '<div class="empty-note">尚無自動回復紀錄</div>';
