@@ -180,6 +180,29 @@ def get_task(task_id: int) -> dict | None:
         return dict(r) if r else None
 
 
+def _sync_log_send_status(cur, task_id: int, status: str) -> int:
+    """把**自動回復紀錄**的 `send_status` 跟任務終態對齊；回受影響列數。
+
+    ★ 為什麼需要（2026-10-14 小jo：「記錄中明明已經發出了為麼顯示未送出」）：
+      `autoreply_log.send_status` 只在**建立紀錄那一刻**寫一次
+      （`not_sent` / `queued` / `failed`），任務真的送成功、`crm_outbound_task`
+      變成 `sent` 之後，**沒有任何地方回頭更新它** → 記錄頁永遠停在「未送出」。
+
+    ⚠️ 連帶影響（比顯示更嚴重）：`recent_reply_count()` / `today_reply_count()`
+      都用 `send_status='sent'` 判斷，所以**冷卻與每日上限一直是失效的**
+      （永遠算 0 則 → AI 可以無視 3 秒冷卻、無視每日 30 則上限連發）。
+      回寫補上之後這兩個防護才真的生效。
+
+    ⚠️ 用 `outbound_task_id` 關聯（有 `idx_autoreply_log_task`）；
+      人工回覆的任務沒有對應紀錄 → rowcount=0，無害。
+    """
+    cur.execute(
+        "UPDATE autoreply_log SET send_status=%s WHERE outbound_task_id=%s",
+        (status, int(task_id)),
+    )
+    return cur.rowcount
+
+
 def update_task_status(task_id: int, status: str, fail_reason: str | None = None,
                        is_temp_error: bool | None = None) -> dict | None:
     """Connector 回調任務狀態（設計案 §4.1 / §11）。
@@ -207,6 +230,8 @@ def update_task_status(task_id: int, status: str, fail_reason: str | None = None
                 " fail_reason=NULL, is_temp_error=NULL, next_retry_at=NULL WHERE id=%s",
                 (task_id,),
             )
+            # ★ 回寫紀錄（否則記錄頁永遠「未送出」、冷卻／上限永不生效）
+            _sync_log_send_status(cur, task_id, "sent")
             return {"task_id": task_id, "status": "sent", "retried": False}
 
         if status == "uncertain":
@@ -215,6 +240,7 @@ def update_task_status(task_id: int, status: str, fail_reason: str | None = None
                 " fail_reason=%s, is_temp_error=true WHERE id=%s",
                 (fail_reason, task_id),
             )
+            _sync_log_send_status(cur, task_id, "uncertain")
             return {"task_id": task_id, "status": "uncertain", "retried": False}
 
         # status == 'failed'
@@ -237,6 +263,8 @@ def update_task_status(task_id: int, status: str, fail_reason: str | None = None
             " fail_reason=%s, is_temp_error=%s WHERE id=%s",
             (fail_reason, bool(is_temp_error), task_id),
         )
+        # ★ 重試耗盡 → 紀錄標「送出失敗」（不再停在「傳送中」誤導人）
+        _sync_log_send_status(cur, task_id, "failed")
         return {"task_id": task_id, "status": "failed", "retried": False}
 
 
@@ -276,7 +304,10 @@ def mark_uncertain(task_id: int, reason: str) -> bool:
             " WHERE id=%s AND status='processing'",
             (reason, task_id),
         )
-        return cur.rowcount > 0
+        ok = cur.rowcount > 0
+        if ok:
+            _sync_log_send_status(cur, task_id, "uncertain")
+        return ok
 
 
 def mark_sent_recovered(task_id: int, reason: str) -> bool:
@@ -287,7 +318,11 @@ def mark_sent_recovered(task_id: int, reason: str) -> bool:
             " WHERE id=%s AND status='processing'",
             (reason, task_id),
         )
-        return cur.rowcount > 0
+        ok = cur.rowcount > 0
+        # ★ 逾時補記成功也要回寫，否則紀錄頁還是「未送出」
+        if ok:
+            _sync_log_send_status(cur, task_id, "sent")
+        return ok
 
 
 # ================================================================ AI 入站佇列

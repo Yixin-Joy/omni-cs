@@ -567,6 +567,8 @@
   .pill.on { background: var(--accent-soft); color: var(--accent-dark); }
   .pill.off { background: #eef1f5; color: var(--text-soft); }
   .pill.miss { background: #fdeaea; color: #b42318; }
+  .pill.wait { background: #eaf2fb; color: #2c6aa0; }
+  .pill.warn { background: #fff6e6; color: #b25e09; }
 
   .empty-note { padding: 24px; text-align: center; color: var(--text-soft); font-size: 13px; }
   .test-result {
@@ -4876,6 +4878,22 @@ function logsTabHtml() {
     '<div id="logList">' + items + '</div>';
 }
 
+/* 送出狀態 → [pill 樣式, 文案]。
+   ★ `queued` 是「任務已建立、Connector 正在送」，**不是未送出** ——
+     原本只把 `sent` 當已送出、其餘一律「未送出」，於是剛發出的訊息全被標成
+     「未送出」（小jo 2026-10-14 回報）。`send_status` 由 CRM 在收到 Connector
+     回調時回寫（`repo._sync_log_send_status`）。 */
+var LOG_SEND_LABEL = {
+  sent: ['on', '已送出'],
+  queued: ['wait', '傳送中'],
+  pending: ['wait', '傳送中'],
+  processing: ['wait', '傳送中'],
+  uncertain: ['warn', '待確認'],
+  failed: ['miss', '送出失敗'],
+  not_sent: ['off', '未送出'],
+  skipped: ['off', '未送出']
+};
+
 function logItemHtml(r) {
   let tierTag;
   if (r.tier === 'faq') {
@@ -4889,10 +4907,8 @@ function logItemHtml(r) {
   } else {
     tierTag = '<span class="tag-auto-miss">自動回復未命中</span>';
   }
-  const sendTag = r.send_status === 'sent'
-    ? '<span class="pill on">已送出</span>'
-    : (r.send_status === 'failed' ? '<span class="pill miss">送出失敗</span>'
-      : '<span class="pill off">未送出</span>');
+  var _sd = LOG_SEND_LABEL[r.send_status] || ['off', '未送出'];
+  var sendTag = '<span class="pill ' + _sd[0] + '">' + _sd[1] + '</span>';
   const label = AR_CHANNEL_LABEL[r.platform] || r.channel;
   // 只有真的寫過檢索明細的紀錄才值得點開（舊資料沒有這個欄位）
   const hasRows = !!r.has_matched_rows;

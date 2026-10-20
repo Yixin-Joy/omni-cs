@@ -355,6 +355,24 @@ def check_port_completeness(html: str, js: str) -> None:
         ):
             check(marker in js, f"紀錄頁具備：{why}")
 
+    # [d2] 送出狀態：★ `queued` 是「傳送中」不是「未送出」
+    #      （2026-10-14 小jo 回報「明明已發出卻顯示未送出」）
+    if "LOG_SEND_LABEL" in js:
+        check("LOG_SEND_LABEL[r.send_status]" in js, "送出狀態走查表映射")
+        for st, label in (("sent", "已送出"), ("queued", "傳送中"),
+                          ("uncertain", "待確認"), ("failed", "送出失敗"),
+                          ("not_sent", "未送出")):
+            # 在查表區塊裡找 `st: [... 'label']`
+            check(f"{st}: [" in js, f"送出狀態涵蓋 {st}")
+        for why, marker in (("queued 顯示「傳送中」", "傳送中"),
+                            ("uncertain 顯示「待確認」", "待確認")):
+            check(marker in js, why)
+        # 舊的「只有 sent 算送出、其餘都是未送出」寫法不能回來
+        check("r.send_status === 'sent'\n    ? '<span class=\"pill on\">已送出</span>'" not in js,
+              "已移除「非 sent 一律未送出」的舊寫法")
+    else:
+        check(False, "紀錄頁有送出狀態查表（LOG_SEND_LABEL）")
+
     # [e] 命中測試：勾層 + 試跑 + 結果（含召回明細）
     if "function hittestTabHtml" in js:
         for marker, why in (
