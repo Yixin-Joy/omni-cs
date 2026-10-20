@@ -506,8 +506,15 @@
     padding: 8px 16px; border-radius: 9px 9px 0 0; border: 1px solid var(--border);
     border-bottom: none; background: #f6f8fa; color: var(--text-soft); cursor: pointer;
     font-size: 13px; font-weight: 700;
+    position: relative;            /* 讓「未保存」小圓點定位到右上角 */
   }
   .sp-tab.active { background: #fff; color: var(--accent-dark); border-color: var(--accent); }
+  /* 該分頁有「編輯了但還沒保存」的內容 → 右上角小圓點（橘色，別跟紅點混淆） */
+  .sp-tab .sp-dirty {
+    position: absolute; top: 3px; right: 4px;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #f59e0b; box-shadow: 0 0 0 2px #fff;
+  }
   .sp-body { flex: 1; overflow-y: auto; padding: 18px 20px 28px; border-top: 1px solid var(--border); }
 
   .card {
@@ -2874,17 +2881,168 @@ function savePostCfg(remove) {
 /* ---------------------------------------------------------------- 設定面板（⚙） */
 function openSettings(tab) {
   state.settingsTab = tab || 'autoreply';
+  _spDirty = {};                      // 每次開啟都是全新狀態（避免上次殘留的髒標記）
+  _spPendingTab = null;
+  var ov = $('spUnsavedOverlay');
+  if (ov) ov.classList.remove('open');
   $('settingsOverlay').classList.add('open');
   switchSettingsTab(state.settingsTab);
 }
-function closeSettings() { $('settingsOverlay').classList.remove('open'); }
+
+/* ================================================================
+   「有未保存的更改」守門（2026-10-20 小jo）
+   —— 需求：① 設定面板**只有 ✕ 能關**（點窗外不關）；
+            ② 有未保存的配置就按 ✕ → 先問「保存／不保存／取消」。
+   ★ 為什麼要有：FAQ 問答對是「編輯 → 按保存」才寫庫的模式，
+     舊版點一下窗外就關掉、改動**靜默消失**，使用者還以為存好了。
+     業務表格雖然逐格 onchange 自動保存，但**正在打的那一格還沒觸發 change**
+     （沒失焦），關窗同樣會丟。
+   ================================================================ */
+var _spDirty = {};           // tab -> Set(發生改動的元素 / 'faq')
+
+function spMarkDirty(tab, el) {
+  if (!_spDirty[tab]) _spDirty[tab] = new Set();
+  _spDirty[tab].add(el || 'x');
+  spPaintDirtyDots();
+}
+
+function spClearDirty(tab, el) {
+  var s = _spDirty[tab];
+  if (!s) return;
+  if (el) s.delete(el); else _spDirty[tab] = null;
+  if (_spDirty[tab] && !_spDirty[tab].size) _spDirty[tab] = null;
+  spPaintDirtyDots();
+}
+
+function spIsDirty(tab) {
+  var s = _spDirty[tab === undefined ? state.settingsTab : tab];
+  return !!(s && s.size);
+}
+
+/* 分頁上的小圓點 —— 沒有它，「按 ✕ 才被問」會顯得很突然。 */
+function spPaintDirtyDots() {
+  Array.prototype.forEach.call(document.querySelectorAll('.sp-tab[data-tab]'), function (t) {
+    var tab = t.getAttribute('data-tab');
+    var on = spIsDirty(tab);
+    var dot = t.querySelector('.sp-dirty');
+    if (on && !dot) {
+      dot = document.createElement('span');
+      dot.className = 'sp-dirty';
+      t.appendChild(dot);
+    } else if (!on && dot) {
+      dot.parentNode.removeChild(dot);
+    }
+  });
+}
+
+/* 保存「當前分頁」的未保存內容。回傳 Promise<boolean>（true = 存好／沒有要存的）。 */
+function spSaveCurrentTab() {
+  var tab = state.settingsTab;
+  if (!spIsDirty(tab)) return Promise.resolve(true);
+
+  if (tab === 'faq') {
+    var items = collectFaqs();                 // 問題或答案為空的先擋下來
+    var empty = items.filter(function (it) { return !it.question || !it.answer; }).length;
+    if (empty) {
+      showToast('有 ' + empty + ' 組的「問題」或「答案」是空的，無法保存 —— 請補齊或刪除該列', 6000);
+      return Promise.resolve(false);
+    }
+    // ★ 一定要看 saveAllFaqs 的**回傳值**：它內部若還有 ok:false 的列會回 false，
+    //   這裡若無條件回 true，就會「明明沒存成功還把面板關掉」→ 改動全丟。
+    return saveAllFaqs().then(function (ok) {
+      if (ok === false) return false;          // 停在面板，讓使用者把錯誤補齊
+      spClearDirty('faq');
+      return true;
+    }).catch(function () { return false; });
+  }
+
+  if (tab === 'table') {
+    // 業務表格是逐格 onchange 自動存的 → 只要讓「正在打的那一格」失焦就會自己存。
+    var ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')
+        && $('spBody') && $('spBody').contains(ae)) {
+      ae.blur();                               // 觸發 change → updateRow
+    }
+    // 等一輪 microtask（updateRow 是非同步的），再放行
+    return new Promise(function (res) {
+      setTimeout(function () { spClearDirty('table'); res(true); }, 350);
+    });
+  }
+
+  // 其他分頁（自動回復／知識庫…）都是「點一下就存」→ 沒東西要存
+  spClearDirty(tab);
+  return Promise.resolve(true);
+}
+
+/* 未保存確認彈窗：三選一（保存 / 不保存 / 取消）。 */
+var _spUnsavedCb = null;
+
+function spAskUnsaved(mode) {
+  var ov = $('spUnsavedOverlay');
+  if (!ov) {                         // 沒有節點（理論上不會）→ 不阻擋
+    if (_spUnsavedCb) _spUnsavedCb('discard');
+    return;
+  }
+  var tabName = ({ autoreply: '自動回復', faq: 'FAQ 問答對', table: '業務表格',
+                   kb: '知識庫', hittest: '命中測試', logs: '紀錄' })[state.settingsTab]
+                || state.settingsTab;
+  $('spUnsavedMsg').innerHTML = '「' + esc(tabName) + '」有尚未保存的更改。'
+    + (mode === 'switch' ? '切換分頁會丟失這些改動。' : '關閉後這些改動會丟失。');
+  $('spUnsavedSave').textContent = (mode === 'switch' ? '保存並切換' : '保存並關閉');
+  _spUnsavedCb = function (what) {
+    ov.classList.remove('open');
+    var cb = _spUnsavedCb; _spUnsavedCb = null;
+    if (what === 'save') {
+      spSaveCurrentTab().then(function (ok) {
+        if (ok) { spUnsavedProceed(mode); }
+        // 保存失敗（例如答案空白）→ 停在面板，讓使用者修
+      });
+    } else if (what === 'discard') {
+      spClearDirty(state.settingsTab);
+      spUnsavedProceed(mode);
+    }
+    // cancel → 什麼都不做
+  };
+  ov.classList.add('open');
+}
+
+function spUnsavedProceed(mode) {
+  if (mode === 'switch') spDoSwitchTab(_spPendingTab);
+  else closeSettingsNow();
+}
+
+function spUnsavedPick(what) { if (_spUnsavedCb) _spUnsavedCb(what); }
+
+function closeSettingsNow() {
+  $('settingsOverlay').classList.remove('open');
+}
+
+/* ✕ 的入口：髒了就先問，乾淨才直接關。 */
+function closeSettings() {
+  if (spIsDirty()) { spAskUnsaved('close'); return; }
+  closeSettingsNow();
+}
 
 function switchSettingsTab(tab) {
+  // 在「別的分頁還有未保存改動」時切走 = 靜默丟失，所以先問
+  if (tab !== state.settingsTab && spIsDirty(state.settingsTab)) {
+    _spPendingTab = tab;
+    spAskUnsaved('switch');
+    return;
+  }
+  spDoSwitchTab(tab);
+}
+
+var _spPendingTab = null;
+
+function spDoSwitchTab(tab) {
   state.settingsTab = tab;
+  _spPendingTab = null;
   Array.prototype.forEach.call(document.querySelectorAll('.sp-tab'), function (t) {
     t.className = 'sp-tab' + (t.getAttribute('data-tab') === tab ? ' active' : '');
   });
   renderSettingsTab();
+  spPaintDirtyDots();
 }
 
 function renderSettingsTab() {
@@ -4521,6 +4679,13 @@ function closeKbParams() {
 // Esc 關掉參數彈窗（點背景也關，見上面的 onclick）
 document.addEventListener('keydown', function (e) {
   if (e.key !== 'Escape') return;
+  // ★ 未保存確認彈窗最上層：ESC = 取消（不是「不保存」，避免手滑丟資料）
+  var uns = $('spUnsavedOverlay');
+  if (uns && uns.classList.contains('open')) { spUnsavedPick('cancel'); return; }
+  // ★ 設定面板：ESC 不可以繞過「只有 ✕ 能關」的規則 ——
+  //   髒了就走同一條詢問流程，乾淨才直接關。
+  var sp = $('settingsOverlay');
+  if (sp && sp.classList.contains('open')) { closeSettings(); return; }
   const ov = document.getElementById('kbParamsOverlay');
   if (ov && ov.classList.contains('open')) closeKbParams();
 });
@@ -4934,7 +5099,10 @@ function faqRowHtml(f) {
   '</tr>';
 }
 
-function markFaqDirty() { /* 目前改動即時收集，這裡只作為 oninput 掛勾 */ }
+/* 編輯 FAQ 的任一欄（勾選啟用 / 問題 / 答案 / 關鍵詞）→ 標記「這一頁有未保存改動」。
+   ⚠️ 這裡**只標記、不自動保存** —— FAQ 是「編輯完按保存」的模式，
+      自動存會讓半成品（問題寫了答案還沒寫）直接進資料庫、被檢索到。 */
+function markFaqDirty(el) { spMarkDirty('faq', el || 'faq'); }
 
 function collectFaqs() {
   const out = [];
@@ -5010,7 +5178,11 @@ async function saveAllFaqs() {
     if (res.data.ok) ok++; else bad++;
   }
   showToast('已儲存 ' + ok + ' 組' + (bad ? '，' + bad + ' 組有問題（問題與答案不可為空）' : ''));
+  // 存完了 → 清掉「未保存」標記（有 bad 的話仍算髒，讓使用者回去修）
+  if (!bad) spClearDirty('faq');
   await loadFaqs();
+  spPaintDirtyDots();
+  return !bad;
 }
 
 async function addFaq() {
@@ -5102,7 +5274,10 @@ function tableCardHtml(t) {
     const trs = rows.length
       ? rows.map(r => '<tr>' +
           cols.map(c => '<td><input type="text" value="' + esc((r.data || {})[c] || '') +
-            '" onchange="updateRow(' + r.id + ',' + t.id + ',' + JSON.stringify(c) + ',this.value)"></td>').join('') +
+            // ★ oninput 只標記「這一格有未保存改動」；真正的保存是 onchange（失焦才觸發）。
+            //   所以要靠 spSaveCurrentTab() 在關窗前把 focus 挪走，否則正在打的那一格會丟。
+            '" oninput="spMarkDirty(\'table\', this)"' +
+            ' onchange="updateRow(' + r.id + ',' + t.id + ',' + JSON.stringify(c) + ',this.value,this)"></td>').join('') +
           '<td style="text-align:center"><button class="btn sm danger" onclick="deleteRow(' + r.id + ',' + t.id + ')">刪</button></td>' +
         '</tr>').join('')
       : '<tr><td colspan="' + (cols.length + 1) + '"><div class="empty-note">尚無資料列</div></td></tr>';
@@ -5174,13 +5349,15 @@ async function addRow(tableId) {
   await loadTables();
 }
 
-async function updateRow(rowId, tableId, column, value) {
+async function updateRow(rowId, tableId, column, value, el) {
   const t = stState.tables.find(x => x.id === tableId);
   const row = t && (t.rows || []).find(r => r.id === rowId);
   const data = Object.assign({}, (row && row.data) || {});
   data[column] = value;
   const res = await stApiJson('/console/agent/table-row', { action: 'update', id: rowId, data: data });
-  if (res.data.error) showToast('更新失敗：' + res.data.error);
+  if (res.data.error) { showToast('更新失敗：' + res.data.error); return; }
+  // 這一格存好了 → 從「未保存」集合裡拿掉（別的格若還沒 commit 仍會被算進去）
+  spClearDirty('table', el);
 }
 
 async function deleteRow(rowId, tableId) {
@@ -5840,8 +6017,12 @@ boot();
   </div>
 </div>
 
-<!-- ========== AI 自動回復設定面板 ========== -->
-<div class="settings-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
+<!-- ========== AI 自動回復設定面板 ==========
+     ★ 刻意**不掛** onclick="if(event.target===this)close..." —— 設定面板裡有很多
+       編輯中的內容（FAQ 問答對、業務表格、檢索參數…），點到窗外就關掉會讓使用者
+       誤以為「已保存」而實際丟失（2026-10-20 小jo 要求：只有 ✕ 能關）。
+       若當下分頁有未保存改動，✕ 會先問「保存／不保存／取消」。 -->
+<div class="settings-overlay" id="settingsOverlay">
   <div class="settings-panel">
     <div class="sp-head">
       <h2>AI 自動回復設定</h2>
@@ -5941,6 +6122,28 @@ boot();
     <div class="sp-head" style="border-top:1px solid var(--border);border-bottom:none">
       <div class="spacer"></div>
       <button class="btn" onclick="closeStChoose()">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 設定面板「未保存更改」確認 ==========
+     ★ 刻意不掛「點窗外關閉」：這是個必須明確表態的決定（保存/丟棄/取消），
+       誤點一下窗外就當成「丟棄」會讓人痛不欲生。 -->
+<div class="faq-overlay" id="spUnsavedOverlay">
+  <div class="faq-box" style="width:min(460px,100%)">
+    <div class="sp-head">
+      <h2>有未保存的更改</h2>
+      <div class="spacer"></div>
+      <button class="sp-close" onclick="spUnsavedPick('cancel')" title="取消">✕</button>
+    </div>
+    <div class="fm-body">
+      <div id="spUnsavedMsg" style="font-size:13.5px;line-height:1.65;color:var(--text)"></div>
+    </div>
+    <div class="sp-head" style="border-top:1px solid var(--border);border-bottom:none;gap:8px">
+      <div class="spacer"></div>
+      <button class="btn" onclick="spUnsavedPick('cancel')">取消</button>
+      <button class="btn" onclick="spUnsavedPick('discard')">不保存</button>
+      <button class="btn primary" id="spUnsavedSave" onclick="spUnsavedPick('save')">保存並關閉</button>
     </div>
   </div>
 </div>

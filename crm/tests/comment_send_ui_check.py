@@ -61,13 +61,26 @@ UI = (_ROOT / "crm" / "ui" / "console_ui.html").read_text(encoding="utf-8")
 
 
 def some_tasks(n: int = 3) -> list[tuple[int, str, int]]:
-    """抓幾筆真實任務：(id, status, business_id)。"""
+    """抓幾筆真實任務：(id, status, business_id)，**全部來自同一個商家**。
+
+    ★ 一定要同商家：`task_status` 會用 `business_id` 過濾（防越權），
+      若這批 id 跨了不同商家，回傳筆數一定少於請求筆數 —— 那是**測試自己的 bug**，
+      不是端點壞了（2026-10-20 踩過：刪掉某商家的任務後，最新 3 筆跨了兩家 → 誤報）。
+    """
     conn = db.connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
+                "SELECT business_id FROM crm_outbound_task"
+                " GROUP BY business_id HAVING count(*) >= %s"
+                " ORDER BY max(id) DESC LIMIT 1", (int(n),))
+            row = cur.fetchone()
+            if not row:
+                return []
+            bid = int(row[0])
+            cur.execute(
                 "SELECT id, status, business_id FROM crm_outbound_task"
-                "  ORDER BY id DESC LIMIT %s", (int(n),))
+                "  WHERE business_id = %s ORDER BY id DESC LIMIT %s", (bid, int(n)))
             return [(int(r[0]), r[1], int(r[2])) for r in cur.fetchall()]
     finally:
         conn.close()
