@@ -94,8 +94,14 @@
   .chip:disabled { opacity: .38; cursor: not-allowed; }
   .chip:disabled:hover { border-color: var(--border); color: var(--text-soft); }
 
-  /* 表格區：填滿剩餘高度；只有「展開明細」後才允許這裡內部滾動 */
-  .audit-tw { flex: 1; min-height: 0; overflow: hidden; display: flex; }
+  /* 表格區：填滿剩餘高度；只有「展開明細」後才允許這裡內部滾動
+     ★ align-items:flex-start 很重要 —— 預設 stretch 會把 table 撐成容器高度，
+       條數不足時瀏覽器就把多餘高度**分攤給各列**（行距被拉開、像散落的幾行）。
+       改成靠上對齊後：有幾條排幾條，排到哪裡算哪裡，下面自然留空。 */
+  .audit-tw { flex: 1; min-height: 0; overflow: hidden; display: flex;
+              align-items: flex-start; }
+  .audit-tw > table { flex: 0 0 auto; width: 100%; }
+  .audit-tw > .empty { width: 100%; }   /* 空清單置中（不然 flex 會縮成內容寬） */
   .audit-tw.scroll { overflow-y: auto; }
   .audit-tw table { margin: 0; }
   .audit-tw thead th {
@@ -110,7 +116,8 @@
   /* 一行只允許單行省略；要看全文請點該行展開 */
   .a-cell { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
             white-space: nowrap; }
-  .a-row { cursor: pointer; height: 34px; }
+  /* 行高由 JS 設定（--audit-row-h，28~34px）—— 目的是讓「一頁 20 條」在多數螢幕都塞得下 */
+  .a-row { cursor: pointer; height: var(--audit-row-h, 34px); }
   .a-row td { border-bottom: 1px solid #f0f2f5; }
   .a-row.open { background: var(--accent-soft); }
   .a-row.open td { border-bottom-color: transparent; }
@@ -868,15 +875,19 @@
   /* ================================================================
      審計日誌（2026-10-20 重新設計）
      —— 需求：① 時間/類型可篩選；② 分頁；③ 不用下拉就能看內容（每行直接可讀）；
-              ④ **一頁的條數要剛好在一屏內全部顯示**，不要滾輪。
+              ④ **一頁 20 條要在一屏內全部顯示**，不要滾輪；
+                 不足 20 條就從上往下排，排到哪裡算哪裡，**下面留空**（不拉開、不置中）。
      ★ 一屏怎麼保證：整頁三段式（篩選固定 / 表格填滿 / 分頁固定），
-       並且 `_auditFit()` 用**實際可視高度 ÷ 行高**算出每頁條數
-       （所以 1080p 可能是 22 條、筆電可能 14 條，都是「剛好一屏」）。
+       `_auditFit()` = 基準 20 條，螢幕矮到放不下才降（見該函式）。
+       表格區 `align-items:flex-start` 讓 table 不被撐高 → 條數不足自然留白。
        展開明細後才允許表格區內部滾動。
      ================================================================ */
 
-  var AUDIT_ROW_H = 34;        // 與 CSS .a-row height 一致（算每頁條數用）
+  var AUDIT_ROW_H = 34;        // 預設行高（也當上限：再高就只是浪費空間）
+  var AUDIT_ROW_MIN = 28;      // 為了塞進 20 條可以壓到的最小行高
   var AUDIT_HEAD_H = 33;       // 表頭高度
+  var AUDIT_PAGE_MAX = 20;     // ★ 一頁 20 條（螢幕矮到 28px×20 都放不下時才往下調）
+  var _auditRowH = AUDIT_ROW_H;
 
   /* 時間範圍 → [from, to) 的 ISO 字串。to 用「隔天 0 點」＝含今天整天。 */
   function _auditRange() {
@@ -926,14 +937,25 @@
     return '/console/ops/audit?' + parts.join('&');
   }
 
-  /* ★ 用實際可用高度算「一頁幾條」—— 這就是「一屏內全部顯示」的實作。
-     上下各留 2px 誤差，避免算出剛好多 1 條卻被裁掉。 */
+  /* ★ 一頁幾條：**基準 20 條**，用「可視高度」反推行高（28~34px）讓 20 條一定塞得下。
+     —— 螢幕夠高 → 行高 34px、20 條，下面留空；
+        螢幕普通 → 行高降到 30/28px，還是 20 條（先保住 20 條，不要少給）；
+        螢幕矮到 28px×20 都放不下 → 才減條數（寧可少，也不要讓使用者滾輪）。
+     回傳條數，同時把行高寫進 `--audit-row-h`（JS 每頁都會重算）。 */
   function _auditFit() {
     var tw = document.querySelector('.audit-tw');
-    if (!tw) return 20;
-    var h = tw.clientHeight - AUDIT_HEAD_H - 4;
-    var n = Math.floor(h / AUDIT_ROW_H);
-    return Math.max(5, Math.min(80, n || 20));
+    var avail = tw ? tw.clientHeight - AUDIT_HEAD_H - 4 : 0;
+    if (avail <= 0) { _auditRowH = AUDIT_ROW_H; return AUDIT_PAGE_MAX; }  // 還沒排版完
+    var rh = Math.min(AUDIT_ROW_H, Math.floor(avail / AUDIT_PAGE_MAX));
+    var size;
+    if (rh >= AUDIT_ROW_MIN) { size = AUDIT_PAGE_MAX; }
+    else {
+      rh = AUDIT_ROW_MIN;
+      size = Math.min(AUDIT_PAGE_MAX, Math.max(1, Math.floor(avail / AUDIT_ROW_MIN)));
+    }
+    _auditRowH = rh;
+    document.documentElement.style.setProperty('--audit-row-h', rh + 'px');
+    return size;
   }
 
   function _auditTypeLabel(t) { return state.auditLabels[t] || t; }
@@ -1140,7 +1162,8 @@
          || state.auditFailed || state.auditRange !== '7d'
          ? '<button class="chip" data-act="reset">重置</button>' : '')
       + '<span class="muted" style="font-size:12px;margin-left:auto">'
-      + '共 <b>' + state.auditTotal + '</b> 筆，一頁 ' + state.auditSize + ' 筆（依螢幕高度自動）'
+      + '共 <b>' + state.auditTotal + '</b> 筆，一頁 ' + state.auditSize + ' 筆'
+      + (state.auditSize < 20 ? '（螢幕較矮）' : '')
       + '</span></div>';
 
     bar.innerHTML = h;

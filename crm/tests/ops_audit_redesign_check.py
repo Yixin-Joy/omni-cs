@@ -7,11 +7,12 @@
      空間，點擊頁碼或下一頁再看後面的内容，而不是要用滾輪下拉查看」
   4. 「conversation_read直接不計，非必要的操作記錄直接選擇不計，身份切換不需要保留，
      且某個重要動作是由誰、以什麽身份做的就可以」
+  5. （補充）「如果列表裏的内容不足20條，就從上往下排排到哪裏算哪裏，下面留空」
 
 本自檢：
   [A] 記錄端：噪音類型已下線、staff_role 有寫入、fail_reason 有寫入
   [B] 後端：分組/標籤/篩選/分頁/未來相容（不越權）
-  [C] 前端靜態接線：三段式佈局、chip 篩選、頁碼、依高度算條數
+  [C] 前端靜態接線：三段式佈局、chip 篩選、頁碼、一頁 20 條（不足留空不拉開）
   [D] 人話轉換：把 `_auditAction` 抽到 Node，用**真實 payload** 跑，斷言不再是原始 JSON
 
 跑法（repo 根）：
@@ -160,14 +161,21 @@ def part_c() -> None:
     check(".audit-tw" in OPS_UI and "flex: 1" in OPS_UI,
           "★ 表格區填滿剩餘高度")
     check(".audit-tw.scroll" in OPS_UI, "★ 只有展開明細時才允許表格區內部滾動")
-    check(".a-row { cursor: pointer; height: 34px; }" in OPS_UI,
-          "★ 列高固定 34px（算每頁條數的前提）")
+    # ★★ 條數不足時要「靠上排、下面留空」，不能被 flex 預設的 stretch 撐高
+    #    （撐高後瀏覽器會把多餘高度分攤給各列 → 行距被拉開，看起來像散落幾行）
+    tw_css = OPS_UI.split(".audit-tw {")[1][:260] if ".audit-tw {" in OPS_UI else ""
+    check("align-items: flex-start" in tw_css,
+          "★★ 表格區靠上對齊（不足 20 條時下面留空，不拉開行距）", tw_css[:120])
+    check('height: var(--audit-row-h' in OPS_UI,
+          "★ 列高走 CSS 變數（JS 依螢幕調 28~34px，好讓 20 條塞得下）")
+    check("AUDIT_ROW_MIN = 28" in OPS_UI, "★ 行高下限 28px（再小就看不清了）")
 
-    check("function _auditFit" in OPS_UI, "★★ 用實際可視高度算「一頁幾條」")
-    fit = OPS_UI[OPS_UI.index("function _auditFit"):][:520]
-    check("clientHeight" in fit and "AUDIT_ROW_H" in fit,
-          "★ 高度 ÷ 行高（不是寫死 20）", fit[:160])
-    check("Math.max(5" in fit and "Math.min(80" in fit, "有下限/上限保護")
+    check("function _auditFit" in OPS_UI, "★★ 一頁幾條的計算")
+    fit = OPS_UI[OPS_UI.index("function _auditFit"):][:900]
+    check("AUDIT_PAGE_MAX = 20" in OPS_UI, "★ 一頁 20 條")
+    check("clientHeight" in fit, "★ 用真實可視高度（不是寫死）", fit[:160])
+    check("--audit-row-h" in fit, "★ 算完把行高寫回 CSS 變數")
+    check("AUDIT_ROW_MIN" in fit, "★ 矮螢幕才減條數（先壓行高保 20 條）")
 
     check("function paintAuditBar" in OPS_UI, "有篩選列")
     check("AUDIT_RANGES" in OPS_UI, "★ 時間範圍 chip（今天/昨天/近7天/近30天/全部）")
