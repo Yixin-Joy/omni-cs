@@ -362,6 +362,104 @@ def part_c() -> None:
         hs._PERM_PROBE_LAST.clear()
 
 
+# ---------------------------------------------------------------- [E] 欄位降級
+def part_e() -> None:
+    """★★ `from` 欄位被 Meta 拒時的**自動降級** —— 這是本次真正的根因。
+
+    實測（商家123，頁面 1267436386458261，貼文 ..._122116181475485140）：
+        fields=id,message        → 200  ✅ 內容讀得到
+        fields=id,created_time   → 200  ✅
+        fields=id,like_count     → 200  ✅
+        fields=id,from           → 400  ❌ ← 只有這個欄位被拒
+        fields=id,parent         → 200  ✅
+    而 token 明明有 `pages_read_engagement` + `pages_read_user_content`
+    （用商家 App 的 app token 跑 debug_token，granular_scopes 也確實授權到該粉專）。
+    舊程式把 `from{name,id}` 寫死在 fields 裡 → **一個欄位拖垮整個請求**
+    → 400 → 被吞成 `[]` → 看起來像「完全沒權限／沒人留言」。
+    """
+    print("\n[E] 欄位降級（`from` 被拒仍要讀到留言內容）")
+
+    from app.channels import igfb
+
+    orig = igfb._get_json
+    igfb._NOFROM_WARNED.clear()
+
+    calls: list = []
+
+    def make(deny_from: bool):
+        async def fake(url, token, params=None):
+            params = params or {}
+            fl = params.get("fields", "")
+            calls.append(fl)
+            if deny_from and "from{" in fl:
+                # 模擬 Meta：帶 from 就整體 400
+                return 400, {"error": {"code": 100, "message":
+                    "Object does not exist ... This endpoint requires the "
+                    "'pages_read_engagement' permission"}}
+            return 200, {"data": [
+                {"id": "c1", "message": "hi", "created_time": "2026-10-20T04:46:33+0000",
+                 "like_count": 0},
+                {"id": "c2", "message": "second", "created_time": "2026-10-20T05:00:00+0000"},
+            ]}
+        return fake
+
+    try:
+        # 1) 正常情況：一次就成功，不降級
+        calls.clear()
+        igfb._get_json = make(deny_from=False)
+        out = asyncio.run(igfb.fb_comments("P1", "tok", 10, strict=True))
+        check(len(out) == 2, "★ 正常時一次就拿到 2 則留言", str(out)[:100])
+        check(len(calls) == 1, "★ 正常時只打一次（不做多餘降級）", f"calls={len(calls)}")
+
+        # 2) from 被拒 → 降級，內容仍拿到
+        calls.clear()
+        igfb._NOFROM_WARNED.clear()
+        igfb._get_json = make(deny_from=True)
+        out = asyncio.run(igfb.fb_comments("P1", "tok", 10, strict=True))
+        check(len(out) == 2, "★★ `from` 被拒 → 降級後仍讀到 2 則留言（不再是空清單）",
+              str(out)[:140])
+        check(out and out[0].get("message") == "hi", "★ 留言內容正確", str(out[:1])[:140])
+        check(len(calls) == 2, "★ 先試完整欄位、失敗再試降級版（共 2 次）", f"calls={len(calls)}")
+        check("from{" in calls[0] and "from{" not in calls[1],
+              "★ 第二次真的去掉了 from", str([c[:28] for c in calls]))
+        check(igfb._NOFROM_WARNED, "★ 降級有記錄（只記一次，不刷 log）")
+
+        # 3) strict=True 也不會因為「from 被拒」就拋錯（那是可降級的）
+        raised = False
+        try:
+            asyncio.run(igfb.fb_comments("P1", "tok", 10, strict=True))
+        except igfb.GraphError:
+            raised = True
+        check(not raised, "★ from 被拒屬「可降級」，strict=True 不該拋錯")
+
+        # 4) 真的無解（降級也失敗）→ strict 才拋
+        async def always400(url, token, params=None):
+            calls.append((params or {}).get("fields", ""))
+            return 400, {"error": {"code": 100, "message": "nope"}}
+
+        igfb._get_json = always400
+        raised = False
+        try:
+            asyncio.run(igfb.fb_comments("P1", "tok", 10, strict=True))
+        except igfb.GraphError:
+            raised = True
+        check(raised, "★ 降級後仍失敗 → strict=True 拋 GraphError")
+
+        out = asyncio.run(igfb.fb_comments("P1", "tok", 10))
+        check(out == [], "★ 非 strict 時仍回 []（舊呼叫端行為不變）")
+
+        # 5) IG 也有同樣保護
+        calls.clear()
+        igfb._NOFROM_WARNED.clear()
+        igfb._get_json = make(deny_from=True)
+        out_ig = asyncio.run(igfb.ig_comments("M1", "tok", 10, strict=True))
+        check(len(calls) == 2, "★ IG 也會降級重試", f"calls={len(calls)}")
+        check(isinstance(out_ig, list), "IG 降級後回 list 不炸", str(out_ig)[:80])
+    finally:
+        igfb._get_json = orig
+        igfb._NOFROM_WARNED.clear()
+
+
 # ---------------------------------------------------------------- [D] 回歸
 def part_d() -> None:
     print("\n[D] 回歸：strict=False 仍然「失敗回 []」")
@@ -395,6 +493,7 @@ def main() -> int:
     part_a()
     part_b()
     part_c()
+    part_e()
     part_d()
     print(f"\n{'=' * 62}\n  貼文留言週期補拉：PASS {_pass} / FAIL {len(_fail)}")
     if _fail:

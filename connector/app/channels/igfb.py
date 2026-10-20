@@ -386,26 +386,87 @@ class GraphError(RuntimeError):
 
     ★ 為什麼需要（2026-10-20 小jo「商戶123，收不到最新的貼文留言」）：
       `fb_comments()` 舊版在 status != 200 時只 `log.warning` 然後回 `[]` ——
-      於是「缺 pages_read_engagement，/comments 一直 400」在上層看起來
-      完全是「這篇貼文沒人留言」。留言列表永遠空、也不會告警。
+      於是「/comments 一直 400」在上層看起來完全是「這篇貼文沒人留言」。
+      留言列表永遠空、也不會告警。
     """
+
+
+# ============================================================== 留言欄位降級
+# ★★ 為什麼需要（2026-10-20 實測定位，這是最容易誤判的一個坑）：
+#   商家123 的 token **有** `pages_read_engagement` + `pages_read_user_content`
+#   （用商家 App 的 app token 跑 debug_token 確認，granular_scopes 也確實授權到該粉專），
+#   但 `/{post}/comments` 還是回 400 #100「requires pages_read_engagement」。
+#   逐個欄位試才發現**只有 `from` 會炸**：
+#       fields=id,message        → 200 ✅（內容讀得到）
+#       fields=id,created_time   → 200 ✅
+#       fields=id,like_count     → 200 ✅
+#       fields=id,from           → 400 ❌ ← 一個欄位拖垮整個請求
+#       fields=id,parent         → 200 ✅
+#   → Meta 對「留言作者」收得很緊（要額外的 feature/審核），但**留言內容本來就讀得到**。
+#   舊程式把 `from{name,id}` 寫死在 fields 裡 → 整批 400 → 被吞成空列表
+#   → 看起來像「完全沒權限／沒人留言」。
+#   對策：**先試完整欄位，400 就退回不含 from 的版本**。內容、時間、巢狀回覆都照收，
+#   只是作者名缺（由 `fill_comment_names_from_dm` 或私訊名之後補）。
+_FB_COMMENT_FIELDS_FULL = (
+    "id,message,from{name,id},created_time,like_count,"
+    "comments{id,message,from{name,id},created_time,like_count}")
+_FB_COMMENT_FIELDS_NOFROM = (
+    "id,message,created_time,like_count,"
+    "comments{id,message,created_time,like_count}")
+
+# 降級只記一次 log（每帳號/貼文都印會洗版）
+_NOFROM_WARNED: set[str] = set()
+
+
+def _looks_like_from_denied(data) -> bool:
+    """400 是不是「from 欄位被拒」那一種？
+
+    Meta 的錯誤訊息很泛用（`Object does not exist... requires pages_read_engagement`），
+    所以**不靠文案判斷**：只要「帶 from 失敗、去掉 from 成功」就是它。
+    這裡只看是否為 400/403 權限類，實際判定由呼叫端用第二次請求證明。
+    """
+    err = ((data or {}).get("error") or {}) if isinstance(data, dict) else {}
+    code = err.get("code")
+    return code in (100, 10, 200, 283) or "permission" in str(err.get("message") or "").lower()
 
 
 async def fb_comments(post_id: str, token: str, limit: int = 50,
                       strict: bool = False) -> list[dict]:
+    """讀某篇 FB 貼文的留言（含巢狀回覆）。
+
+    ★ 欄位降級：先要 `from`（作者名），被 Meta 拒就退回不含 `from` 的版本。
+      內容/時間/按讚/回覆都拿得到，只有作者名缺 —— 這遠比「什麼都讀不到」好。
+      （見上方 `_FB_COMMENT_FIELDS_NOFROM` 的實測紀錄）
+    """
     if not post_id or not token:
         return []
     url = f"{FB_BASE}/{_ver()}/{post_id}/comments"
-    fields = ("id,message,from{name,id},created_time,like_count,"
-              "comments{id,message,from{name,id},created_time,like_count}")
-    status, data = await _get_json(url, token, {"fields": fields, "limit": limit})
-    if status != 200:
-        log.warning("fb_comments 失敗 %s: %s", status, data)
-        if strict:
-            err = (data or {}).get("error") or {}
-            raise GraphError(f"fb_comments {status}: {err.get('message') or data}")
-        return []
-    return data.get("data") or []
+    status, data = await _get_json(url, token,
+                                   {"fields": _FB_COMMENT_FIELDS_FULL, "limit": limit})
+    if status == 200:
+        return data.get("data") or []
+
+    err = ((data or {}).get("error") or {})
+    log.warning("fb_comments 失敗 %s: %s", status, err.get("message") or data)
+
+    # 400/403 + 權限類 → 高度懷疑是 `from`；**實測一次**不含 from 的請求來確認
+    if status in (400, 403) and _looks_like_from_denied(data):
+        status2, data2 = await _get_json(
+            url, token, {"fields": _FB_COMMENT_FIELDS_NOFROM, "limit": limit})
+        if status2 == 200:
+            key = f"nofrom:{post_id.split('_')[0]}"
+            if key not in _NOFROM_WARNED:
+                _NOFROM_WARNED.add(key)
+                log.warning(
+                    "讀留言時 `from` 欄位被拒（%s）——已降級為不含 author 的讀法；"
+                    "留言內容正常，作者名之後由私訊名補（貼文 %s）",
+                    err.get("message", "")[:80], post_id)
+            return data2.get("data") or []
+        log.warning("fb_comments 降級後仍失敗 %s: %s", status2, data2)
+
+    if strict:
+        raise GraphError(f"fb_comments {status}: {err.get('message') or data}")
+    return []
 
 
 async def ig_posts(ig_user_id: str, page_token: str, limit: int = 10) -> list[dict]:
@@ -425,16 +486,38 @@ async def ig_posts(ig_user_id: str, page_token: str, limit: int = 10) -> list[di
 
 async def ig_comments(media_id: str, page_token: str, limit: int = 50,
                       strict: bool = False) -> list[dict]:
+    """讀某則 IG 媒體的留言（含回覆）。
+
+    ★ 同樣做**欄位降級**（理由見 `fb_comments` 上方那段實測紀錄）：
+      IG 的 `from{username,id}` 在部分 token 上也會被 Meta 拒，
+      而它跟 message 在同一個 fields 裡 → 一個欄位拖垮整個請求。
+      先試完整版，400/403 再試不含 `from` 的版本（內容照收，作者名之後補）。
+    """
     if not media_id or not page_token:
         return []
     url = f"{FB_BASE}/{_ver()}/{media_id}/comments"
-    fields = ("id,text,timestamp,like_count,from{username,id},"
-              "replies{id,text,timestamp,like_count,from{username,id}}")
-    status, data = await _get_json(url, page_token, {"fields": fields, "limit": limit})
-    if status != 200:
-        log.warning("ig_comments 失敗 %s: %s", status, data)
-        if strict:
-            err = (data or {}).get("error") or {}
-            raise GraphError(f"ig_comments {status}: {err.get('message') or data}")
-        return []
-    return data.get("data") or []
+    full = ("id,text,timestamp,like_count,from{username,id},"
+            "replies{id,text,timestamp,like_count,from{username,id}}")
+    nofrom = "id,text,timestamp,like_count,replies{id,text,timestamp,like_count}"
+    status, data = await _get_json(url, page_token, {"fields": full, "limit": limit})
+    if status == 200:
+        return data.get("data") or []
+
+    err = ((data or {}).get("error") or {})
+    log.warning("ig_comments 失敗 %s: %s", status, err.get("message") or data)
+
+    if status in (400, 403) and _looks_like_from_denied(data):
+        status2, data2 = await _get_json(
+            url, page_token, {"fields": nofrom, "limit": limit})
+        if status2 == 200:
+            key = f"nofrom:ig:{media_id[:24]}"
+            if key not in _NOFROM_WARNED:
+                _NOFROM_WARNED.add(key)
+                log.warning("讀 IG 留言時 `from` 欄位被拒 —— 已降級為不含 author 的讀法（%s）",
+                            media_id)
+            return data2.get("data") or []
+        log.warning("ig_comments 降級後仍失敗 %s: %s", status2, data2)
+
+    if strict:
+        raise GraphError(f"ig_comments {status}: {err.get('message') or data}")
+    return []
