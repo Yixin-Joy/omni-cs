@@ -1105,6 +1105,9 @@ var state = {
   posts: [], postsHasMore: false,
   activeKey: null, activeAcc: null, thread: [], threadSig: '', logs: [],
   convsSig: '', postsSig: '',
+  // ★ `#convList` 目前是由誰畫的（'dm' | 'posts' | ''）。私訊與貼文共用同一個容器，
+  //   換手時另一邊的指紋必須作廢，否則會「切了欄目但列表沒換」。
+  listOwner: '',
   activePost: null,
   // ★ 貼文詳情：`postDetail` = 最後一次抓到/畫上的資料（輪詢比對用）；
   //   `postDetailSig` = 內容指紋（沒變就不重繪，免得打斷正在打字的回覆框）。
@@ -1595,6 +1598,8 @@ function switchSection(section) {
   state.activeKey = null; state.activeAcc = null; state.activePost = null;
   state.thread = []; state.convs = []; state.posts = [];
   $('search').value = ''; state.search = '';
+  // ★ 換欄目：兩個列表的指紋都要作廢（共用 #convList，留著就會誤判「沒變」不重繪）
+  state.convsSig = null; state.postsSig = null; state.listOwner = '';
   renderTabs();
   resetChat();
   loadAutoSettings();
@@ -1607,6 +1612,7 @@ function switchPlatform(p) {
   state.accPickOpen = false;
   state.activeKey = null; state.activeAcc = null; state.activePost = null;
   state.thread = []; state.convs = []; state.posts = [];
+  state.convsSig = null; state.postsSig = null; state.listOwner = '';
   renderTabs();
   resetChat();
   loadAutoSettings();
@@ -1638,6 +1644,17 @@ function loadConversations() {
 /* 列表內容指紋：輪詢時若內容一模一樣就**不重繪**。
    ⚠️ 這不只是省效能 —— 20 秒一次的無條件重繪會在「使用者按下但還沒放開」的
    瞬間把節點換掉，導致那一下 click 根本不會觸發（點不動）。 */
+/* ★★ 私訊列表與貼文列表**共用** `#convList`，但各自記「已畫過的指紋」
+   （`convsSig` / `postsSig`）。只要容器被另一邊覆蓋，另一邊的指紋就過期了 ——
+   不登記擁有者就會出現「切回貼文留言，左邊還掛著私訊列表」
+   （2026-10-20 小jo 回報：私訊/FB → 貼文留言/FB 沒換，要先點別的 tag 再切回來才對）。
+   每次真正寫入前先認領：換了人 → 指紋一律作廢、一定重繪。 */
+function _claimList(owner) {
+  if (state.listOwner === owner) return false;   // 本來就是我的 → 指紋可信任
+  state.listOwner = owner;
+  return true;                                    // 容器換手了 → 必須重畫
+}
+
 function _convsSig(items) {
   return (items || []).map(function (c) {
     // ★ 帶 `bp_account_id`：同平台多帳號時，`key`（客戶 ID）可能重複，
@@ -1649,6 +1666,7 @@ function _convsSig(items) {
 
 function renderConversations() {
   var list = $('convList');
+  var fresh = _claimList('dm');            // ★ 容器剛才可能裝著貼文列表 → 指紋作廢
   var items = state.convs.filter(function (c) {
     if (!state.search) return true;
     var nm = (c.sender_name || c.key || '').toLowerCase();
@@ -1658,7 +1676,7 @@ function renderConversations() {
     + '#' + state.platform + '#' + state.bizId
     + '#' + (state.bpAccount || 0)          // 換帳號要重畫（即使訊息一模一樣）
     + '#' + (noAccountText(state.platform) ? 'na' : '');
-  if (sig === state.convsSig) return;      // 沒變 → 不重繪
+  if (!fresh && sig === state.convsSig) return;   // 沒變（且容器本來就是我畫的）→ 不重繪
   state.convsSig = sig;
   if (!items.length) {
     // ★ 沒綁定帳號 ≠ 還沒有訊息 ≠ 該帳號沒有訊息：三種都要說清楚，
@@ -2061,6 +2079,7 @@ function loadPosts() {
 
 function renderPosts() {
   var list = $('convList');
+  var fresh = _claimList('posts');         // ★ 容器剛才可能裝著私訊列表 → 指紋作廢
   var posts = state.posts.filter(function (p) {
     return !state.search || String(p.name || '').toLowerCase().indexOf(state.search) >= 0;
   });
@@ -2070,7 +2089,7 @@ function renderPosts() {
     + (state.activePost ? state.activePost.post_id : '')
     + '#' + state.platform + '#' + state.bizId
     + '#' + (noAccountText(state.platform) ? 'na' : '');
-  if (sig === state.postsSig) return;      // 沒變 → 不重繪（同上：避免打斷點擊）
+  if (!fresh && sig === state.postsSig) return;   // 沒變（且容器本來就是我畫的）→ 不重繪
   state.postsSig = sig;
   if (!posts.length) {
     var na = noAccountText(state.platform);
@@ -5702,6 +5721,8 @@ function boot() {
       if (!ok) return;
       if (!state.bizId) {
         $('convList').innerHTML = '<div class="empty">沒有可操作的商家</div>';
+        // 直接寫了容器 → 兩邊的「已畫過」記憶都失效，否則換商家後永遠不重繪
+        state.listOwner = ''; state.convsSig = null; state.postsSig = null;
         return;
       }
       loadAutoSettingsAnd();

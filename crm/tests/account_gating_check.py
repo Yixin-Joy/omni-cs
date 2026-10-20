@@ -116,6 +116,9 @@ def part_b() -> None:
         return UI[i:j]
 
     code = (cut("function boundAccountsOf", "function renderTabs") + "\n"
+            # `renderConversations` / `renderPosts` 會呼叫 `_claimList()`（容器擁有者），
+            # 抽真的進來，不要打樁 —— 打樁就測不到「切換欄目害列表不換」那類問題。
+            + cut("function _claimList", "function _convsSig") + "\n"
             + cut("function renderConversations", "function openConversation") + "\n"
             + cut("function renderPosts", "function loadMorePosts"))
 
@@ -124,7 +127,7 @@ var PLATFORM_LABEL = { wechat: '微信', whatsapp: 'WhatsApp', ig: 'Instagram', 
 var state = {
   bizId: 1, platform: 'fb', section: 'dm', search: '', activeKey: null, activePost: null,
   convs: [], posts: [], postsHasMore: false,
-  convsSig: null, postsSig: null, accGate: null,
+  convsSig: null, postsSig: null, accGate: null, listOwner: '',
   overview: null
 };
 var NODES = {};
