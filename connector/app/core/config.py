@@ -63,6 +63,15 @@ POST_MEDIA_FIRST_DELAY_SECONDS = float(_get("POST_MEDIA_FIRST_DELAY_SECONDS", "9
 POST_SYNC_MINUTES = float(_get("POST_SYNC_MINUTES", "5") or 5)
 POST_SYNC_LIMIT = int(_get("POST_SYNC_LIMIT", "8") or 8)
 POST_SYNC_FIRST_DELAY_SECONDS = float(_get("POST_SYNC_FIRST_DELAY_SECONDS", "20") or 20)
+# 貼文留言補拉：每 N 分鐘對「最近幾篇貼文」補拉留言（增量）。
+#   ★ 必需的原因：FB 留言靠 feed webhook 即時推，但**訂閱 feed 需要 pages_manage_metadata**；
+#     缺它時 POST /{page}/subscribed_apps 直接 403 #200 → 該粉專一個事件都收不到
+#     （連私訊也沒有）。這種帳號的留言只能靠週期補拉，否則永遠是空的。
+#   成本＝每帳號 N 次 /comments 呼叫（增量水位會跳過已處理的）。
+#   設 0 = 關閉（只有 webhook 或手動「重新整理」能補）。
+COMMENT_SYNC_MINUTES = float(_get("COMMENT_SYNC_MINUTES", "5") or 5)
+COMMENT_SYNC_POSTS = int(_get("COMMENT_SYNC_POSTS", "3") or 3)
+COMMENT_SYNC_FIRST_DELAY_SECONDS = float(_get("COMMENT_SYNC_FIRST_DELAY_SECONDS", "35") or 35)
 # 對外可訪問基址（ngrok / 正式域名），拼媒體 URL 用
 PUBLIC_BASE_URL = _get("PUBLIC_BASE_URL", "")
 

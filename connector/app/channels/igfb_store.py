@@ -561,6 +561,36 @@ def dm_watermarks(platform: str, account_id: str) -> dict[str, datetime]:
         conn.close()
 
 
+def recent_post_ids(platform: str, bp_account_id: int, limit: int = 3) -> list[dict]:
+    """這個帳號**最近幾篇貼文**（`[{post_id, comments_count}]`）—— 週期補拉留言用。
+
+    ★ 為什麼從 DB 取而不是再打一次 Graph（2026-10-20 小jo「商家123收不到最新貼文留言」）：
+      貼文本身已經由 `sync_posts_once()` 維護，這裡只需要「哪幾篇值得去拉留言」。
+      從 DB 取可省掉每輪一次 `/feed`，而且新貼文剛落地就能馬上補留言。
+    ⚠️ 只取有 `post_id` 的、按發佈時間新到舊；`comments_count` 是上次 upsert 時
+      Graph 給的數（可能過期，只用來判斷「值不值得先拉」，不當真相）。
+    """
+    if not bp_account_id:
+        return []
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT post_id, COALESCE(comments_count, 0)"
+                "  FROM igfb_post"
+                " WHERE platform = %s AND bp_account_id = %s AND COALESCE(post_id, '') <> ''"
+                " ORDER BY created_at DESC NULLS LAST, id DESC"
+                " LIMIT %s",
+                (platform, int(bp_account_id), max(1, int(limit))))
+            return [{"post_id": str(r[0]), "comments_count": int(r[1] or 0)}
+                    for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001
+        log.warning("取最近貼文失敗 %s/%s: %s", platform, bp_account_id, e)
+        return []
+    finally:
+        conn.close()
+
+
 def comment_watermarks(platform: str, post_ids: list[str]) -> dict[str, datetime]:
     """每篇貼文「已有留言的最後時間」—— 留言增量補拉的水位。"""
     ids = [str(p) for p in (post_ids or []) if p]

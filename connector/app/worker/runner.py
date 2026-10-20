@@ -83,6 +83,38 @@ async def _post_sync_loop() -> None:
         await asyncio.sleep(max(30.0, minutes * 60.0))
 
 
+async def _comment_sync_loop() -> None:
+    """**貼文留言補拉**（讓 webhook 訂不上的帳號也收得到留言）。
+
+    ★ 為什麼需要（2026-10-20 小jo「商戶123，收不到最新的貼文留言」）：
+      FB 留言正常靠 `feed` webhook 即時推，但**訂閱 feed 需要 `pages_manage_metadata`**。
+      缺它時 `POST /{page}/subscribed_apps` 直接 **403 #200** ——
+      該粉專**一個事件都收不到**（連私訊也沒有）。商家123 正是這種：
+      貼文讀得到（`/feed` 200）、留言數量也讀得到（`summary.total_count` 200），
+      但 `/{post}/comments` **400 #100 缺 pages_read_engagement**，
+      webhook 又全掛 → 留言永遠進不來。原本只能靠工作台那顆**手動**「重新整理」。
+      這支把補拉變成自動的（預設每 5 分鐘、每帳號最近 3 篇貼文）。
+    ⚠️ 權限不足時會上報 `crm_alert(meta_comments_unreadable)`，同帳號 1h 只報一次；
+       每輪的成本是「每帳號 N 次 `/comments`」，`COMMENT_SYNC_MINUTES=0` 可關閉。
+    """
+    minutes = float(config.COMMENT_SYNC_MINUTES or 0)
+    if minutes <= 0:
+        log.info("留言補拉已停用（COMMENT_SYNC_MINUTES=0）")
+        return
+    await asyncio.sleep(max(0.0, float(config.COMMENT_SYNC_FIRST_DELAY_SECONDS or 0)))
+    while True:
+        try:
+            stats = await history_sync.sync_comments_once(
+                int(config.COMMENT_SYNC_POSTS or 3))
+            if stats.get("comments_new"):
+                log.info("留言補拉新增 %s 則", stats["comments_new"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.warning("留言補拉失敗: %s", e)
+        await asyncio.sleep(max(30.0, minutes * 60.0))
+
+
 async def _post_media_loop() -> None:
     """貼文縮圖續命（Meta CDN 簽名約 24h 到期，過期就 403）。
 
@@ -119,6 +151,7 @@ def start() -> None:
         asyncio.create_task(_account_loop()),
         asyncio.create_task(_cache_loop()),
         asyncio.create_task(_post_sync_loop()),
+        asyncio.create_task(_comment_sync_loop()),
         asyncio.create_task(_post_media_loop()),
     ]
     log.info("Connector worker 啟動：輪詢 %.1fs / 映射同步 %.0fs（發送模式 %s）",

@@ -491,6 +491,10 @@ _PERM_PROBE_AT: dict[str, float] = {}
 _PERM_PROBE_LAST: dict[str, str] = {}
 _PERM_PROBE_TTL = 3600.0
 
+# 週期補拉留言：每帳號拉最近幾篇貼文、每篇最多幾則留言
+DEFAULT_COMMENT_SYNC_POSTS = 3
+_COMMENT_SYNC_LIMIT = 50
+
 
 async def _alert_posts_unreadable(acc: dict, why: str) -> None:
     """把「讀不到貼文」上報到 CRM 的 `crm_alert`（ops 台可見）。
@@ -669,3 +673,195 @@ async def refresh_post_media_once(limit: int = _POST_REFRESH_LIMIT) -> dict:
     if stats["posts"]:
         log.info("貼文縮圖續命：%s", {k: v for k, v in stats.items() if k != "errors"})
     return stats
+
+
+async def sync_comments_once(per_account: int = DEFAULT_COMMENT_SYNC_POSTS) -> dict:
+    """週期**補拉最近幾篇貼文的留言**（增量）—— 讓「沒有 webhook 的帳號」也收得到留言。
+
+    ★ 為什麼需要（2026-10-20 小jo「商戶123，收不到最新的貼文留言」）：
+      · FB 留言正常是靠 `feed` webhook 即時推；
+      · 但 **`feed` 訂閱需要 `pages_manage_metadata`**，缺它時
+        `POST /{page}/subscribed_apps` 直接 **403 #200** → 該粉專**一個事件都收不到**
+        （連私訊也沒有）。商家123 就是這種：貼文能讀（`pages_read_*` 夠）、
+        但 webhook 全掛 → 留言永遠不會進來。
+      · 原本唯一的補救是工作台那顆「重新整理」（`/sync-history`，**手動**），
+        沒人按就一直是空的。
+      → 這支把「補拉留言」變成**自動**的，週期跑，成本可控（每帳號 N 篇貼文）。
+
+    ⚠️ 成本：每帳號 `recent_post_ids()` 一次 DB 查 + N 次 `/comments`。
+       只拉**最近 N 篇**（預設 3），並用 `comment_watermarks()` 做增量
+       —— 沒有新留言時只花呼叫、不做任何寫入。`COMMENT_SYNC_MINUTES=0` 可關閉。
+    ⚠️ 權限不足（`/comments` 400 `requires pages_read_engagement`）時：
+       記錄一次統計 + 上報 `crm_alert(meta_comments_unreadable)`，
+       不要每 5 分鐘重複吵 —— 靠 `probe_comments_readable()` 的 TTL。
+    """
+    stats = {"accounts": 0, "posts": 0, "comments_new": 0, "skipped": 0,
+             "unreadable": [], "errors": []}
+    for acc in _igfb_accounts():
+        plat = acc["platform"]
+        native = str(acc.get("platform_business_account_id") or "")
+        tag = f"{plat}/{native}"
+        bp_id = int(acc.get("bp_account_id") or 0)
+        if not bp_id:
+            continue
+        targets = await asyncio.to_thread(
+            igfb_store.recent_post_ids, plat, bp_id, per_account)
+        if not targets:
+            continue                       # 這個帳號還沒有貼文 → 沒什麼可拉的
+
+        cred = _cred_of(acc)
+        if plat == "fb":
+            _page_id, token = igfb._fb_creds(cred)
+            self_id = str(cred.get("page_id") or native)
+        else:
+            _ig_id, _t = igfb._ig_creds(cred)
+            token = cred.get("page_access_token") or ""
+            self_id = str(cred.get("ig_user_id") or native)
+        if not token:
+            stats["errors"].append(f"{tag}: 憑證缺少 page_access_token")
+            continue
+
+        pids = [t["post_id"] for t in targets]
+        cwm = await asyncio.to_thread(igfb_store.comment_watermarks, plat, pids)
+        denied = 0
+        for t in targets:
+            pid = t["post_id"]
+            try:
+                if plat == "fb":
+                    # ★ strict=True：一般路徑要「拿不到就當空」，但補拉必須能分辨
+                    #   「真的沒留言」與「沒權限被 400」——否則永遠靜默（見 GraphError）。
+                    raw = await igfb.fb_comments(pid, token, _COMMENT_SYNC_LIMIT, strict=True)
+                    items = _flatten_fb_comments(pid, raw)
+                else:
+                    raw = await igfb.ig_comments(pid, token, _COMMENT_SYNC_LIMIT, strict=True)
+                    items = _flatten_ig_comments(pid, raw)
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+                # 權限不足是「這個帳號永遠拉不到」，不是偶發錯誤 → 單獨計數
+                if "pages_read_engagement" in msg or "pages_read_user_content" in msg \
+                        or "(#100)" in msg or "(#10)" in msg:
+                    denied += 1
+                    if denied == 1:
+                        stats["unreadable"].append(f"{tag}: {msg[:120]}")
+                else:
+                    stats["errors"].append(f"{tag} 貼文 {pid}: {type(e).__name__}: {msg[:100]}")
+                continue
+
+            stats["posts"] += 1
+            w = cwm.get(pid)
+            new_roots: set[str] = set()
+            for it in items:
+                if not it.get("comment_id"):
+                    continue
+                cts = it.get("created_at")
+                if w is not None and cts is not None and cts <= w:
+                    stats["skipped"] += 1
+                    continue
+                res = await asyncio.to_thread(
+                    igfb_store.land_comment, plat, it, acc, touch=False)
+                if res and res.get("inserted"):
+                    stats["comments_new"] += 1
+                    if res.get("root_id"):
+                        new_roots.add(res["root_id"])
+            if new_roots:
+                # ⚠️ 必傳 roots（不傳＝重算整篇 → 把客服手動「已忽略」翻回未處理）
+                await asyncio.to_thread(
+                    igfb_store.recompute_comment_threads, plat, pid, self_id,
+                    sorted(new_roots))
+
+        stats["accounts"] += 1
+        if denied:
+            await _alert_comments_unreadable(acc, stats["unreadable"][-1] if stats["unreadable"] else "")
+
+    if stats["comments_new"]:
+        log.info("留言補拉：%s", {k: v for k, v in stats.items()
+                                  if k not in ("errors", "unreadable")})
+    return stats
+
+
+async def probe_comments_readable(acc: dict) -> str:
+    """探測「讀得到這帳號的留言列表嗎」；讀不到回原因，讀得到（或沒貼文）回 ""。
+
+    ★ 為什麼不能只看 `/comments` 有沒有報錯（2026-10-20 小jo「商戶123，收不到最新的貼文留言」）：
+      商家123 這把 page token 的實際邊界非常誤導 ——
+        · `GET /{page}/feed` / `published_posts`      → **200**（貼文讀得到）
+        · `GET /{post}`                               → **200**
+        · `GET /{post}?fields=comments.summary(...)`  → **200，total_count=1**（數量讀得到）
+        · `GET /{post}/comments`                      → **400 #100**
+          「This endpoint requires the 'pages_read_engagement' permission」
+      → 系統看到的是「貼文有、留言數 1、留言列表永遠空」，跟「真的沒人留言」一模一樣。
+      所以「有留言但拉不回來」必須靠這支講清楚。
+
+    ⚠️ 同帳號 `_PERM_PROBE_TTL`（1h）內只探一次，避免每輪都打 Meta。
+    """
+    plat = str(acc.get("platform") or "")
+    native = str(acc.get("platform_business_account_id") or "")
+    key = "comments:" + f"{plat}:{native}"
+    now = time.monotonic()
+    last = _PERM_PROBE_AT.get(key)
+    if last is not None and now - last < _PERM_PROBE_TTL:
+        return _PERM_PROBE_LAST.get(key, "")
+    _PERM_PROBE_AT[key] = now
+
+    msg = ""
+    bp_id = int(acc.get("bp_account_id") or 0)
+    targets = await asyncio.to_thread(igfb_store.recent_post_ids, plat, bp_id, 1)
+    if not targets:
+        _PERM_PROBE_LAST[key] = ""
+        return ""                       # 沒貼文 → 沒什麼好探的
+
+    pid = targets[0]["post_id"]
+    cred = _cred_of(acc)
+    try:
+        if plat == "fb":
+            _p, token = igfb._fb_creds(cred)
+            raw = await igfb.fb_comments(pid, token, 1, strict=True)
+        else:
+            _i, _t = igfb._ig_creds(cred)
+            token = cred.get("page_access_token") or ""
+            raw = await igfb.ig_comments(pid, token, 1, strict=True)
+        if raw is None:
+            msg = "留言接口沒有回應（Connector 拿不到資料）"
+    except Exception as e:  # noqa: BLE001
+        s = str(e)
+        if "pages_read_engagement" in s or "(#100)" in s:
+            msg = ("缺少 pages_read_engagement —— Meta 對 /{post}/comments 回 400，"
+                   "但貼文與留言「數量」仍讀得到（很容易誤判成沒問題）；"
+                   "請在 Meta 後台重新授權該粉專並勾選 pages_read_engagement")
+        elif "pages_read_user_content" in s or "(#10)" in s:
+            msg = "缺少 pages_read_user_content（讀不到別人的留言內容）"
+        elif "pages_manage_metadata" in s or "(#200)" in s:
+            msg = ("缺少 pages_manage_metadata —— feed webhook 訂不上，"
+                   "這個粉專收不到任何即時事件（只剩週期補拉）")
+        else:
+            msg = f"留言讀取失敗：{s[:150]}"
+    _PERM_PROBE_LAST[key] = msg
+    return msg
+
+
+async def _alert_comments_unreadable(acc: dict, detail: str) -> None:
+    """把「這個帳號讀不到留言」上報 `crm_alert`（best-effort，同帳號 1h 只報一次）。"""
+    plat = str(acc.get("platform") or "")
+    native = str(acc.get("platform_business_account_id") or "")
+    key = "alert:comments:" + f"{plat}:{native}"
+    now = time.monotonic()
+    last = _PERM_PROBE_AT.get(key)
+    if last is not None and now - last < _PERM_PROBE_TTL:
+        return
+    _PERM_PROBE_AT[key] = now
+
+    why = await probe_comments_readable(acc) or detail or "留言接口無回應"
+    try:
+        from app.worker import client as crm_client
+        await crm_client.report_alert(
+            "meta_comments_unreadable", "warning",
+            f"{plat.upper()} 帳號 {native} 讀不到貼文留言",
+            detail={"platform": plat, "native_id": native,
+                    "business_id": acc.get("business_id"),
+                    "bp_account_id": acc.get("bp_account_id"),
+                    "reason": why},
+            dedupe_key=f"meta_comments_unreadable:{plat}:{native}",
+        )
+        log.warning("留言讀取異常 %s/%s: %s", plat, native, why)
+    except Exception as e:  # noqa: BLE001
+        log.warning("留言異常告警上報失敗 %s/%s: %s", plat, native, e)

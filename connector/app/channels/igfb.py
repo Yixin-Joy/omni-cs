@@ -381,7 +381,18 @@ async def get_post(platform: str, post_id: str, cred: dict) -> dict:
     return data
 
 
-async def fb_comments(post_id: str, token: str, limit: int = 50) -> list[dict]:
+class GraphError(RuntimeError):
+    """Graph 呼叫失敗（帶原始錯誤訊息）—— 讓上層能分辨「真的沒有留言」與「沒權限」。
+
+    ★ 為什麼需要（2026-10-20 小jo「商戶123，收不到最新的貼文留言」）：
+      `fb_comments()` 舊版在 status != 200 時只 `log.warning` 然後回 `[]` ——
+      於是「缺 pages_read_engagement，/comments 一直 400」在上層看起來
+      完全是「這篇貼文沒人留言」。留言列表永遠空、也不會告警。
+    """
+
+
+async def fb_comments(post_id: str, token: str, limit: int = 50,
+                      strict: bool = False) -> list[dict]:
     if not post_id or not token:
         return []
     url = f"{FB_BASE}/{_ver()}/{post_id}/comments"
@@ -390,6 +401,9 @@ async def fb_comments(post_id: str, token: str, limit: int = 50) -> list[dict]:
     status, data = await _get_json(url, token, {"fields": fields, "limit": limit})
     if status != 200:
         log.warning("fb_comments 失敗 %s: %s", status, data)
+        if strict:
+            err = (data or {}).get("error") or {}
+            raise GraphError(f"fb_comments {status}: {err.get('message') or data}")
         return []
     return data.get("data") or []
 
@@ -409,7 +423,8 @@ async def ig_posts(ig_user_id: str, page_token: str, limit: int = 10) -> list[di
     return data.get("data") or []
 
 
-async def ig_comments(media_id: str, page_token: str, limit: int = 50) -> list[dict]:
+async def ig_comments(media_id: str, page_token: str, limit: int = 50,
+                      strict: bool = False) -> list[dict]:
     if not media_id or not page_token:
         return []
     url = f"{FB_BASE}/{_ver()}/{media_id}/comments"
@@ -418,5 +433,8 @@ async def ig_comments(media_id: str, page_token: str, limit: int = 50) -> list[d
     status, data = await _get_json(url, page_token, {"fields": fields, "limit": limit})
     if status != 200:
         log.warning("ig_comments 失敗 %s: %s", status, data)
+        if strict:
+            err = (data or {}).get("error") or {}
+            raise GraphError(f"ig_comments {status}: {err.get('message') or data}")
         return []
     return data.get("data") or []
