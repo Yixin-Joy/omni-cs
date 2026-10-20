@@ -373,3 +373,36 @@ def mark_message(platform: str, *, message_ids=None, message_id: str = "",
     except Exception as e:  # noqa: BLE001
         log.warning("標記訊息異常: %s", e)
         return 0
+
+
+def verify_credential(platform: str, credential: dict,
+                      expected_app_id: str = "") -> dict | None:
+    """保存帳號前把憑證送去 Connector **體檢**（最重要：token 是哪個 App 簽的）。
+
+    ★★ 為什麼（2026-10-20 小jo「meta上顯示的是有pages_read_engagement權限啊」）：
+      Meta 後台看到的是**某個 App** 的權限，但 token 可能由**另一個 App** 簽發。
+      實測商家123 的 token 來自 `console_eprotele`(1611577203333651)，
+      而本系統用 `agent`(1612033297309372) → 在 agent 勾什麼權限都沒用，
+      `/comments` 永遠 400，webhook 也一個都收不到。
+      這種錯「看起來完全正常」（/me 回粉專名、/feed 回 200），只有查 `/app` 才認得出來。
+
+    ★ **多租戶**：`expected_app_id` = 這個商戶應該用的 App
+      （帳號 credential → 商家 `meta_app_*`，由 `admin.router._resolve_meta_app` 解析）。
+      傳空字串 = 交給 Connector 回退它的系統 App（`connector/.env`）。
+      這樣「一商戶一 App」與「大家共用一個 App」都不用改兩份設定。
+
+    回 `None` = Connector 連不上／不支援（呼叫端要放過，不能因此擋住保存）。
+    """
+    try:
+        body = {"platform": platform, "credential": credential or {}}
+        if expected_app_id:
+            body["expected_app_id"] = expected_app_id
+        with _client(timeout=20.0) as c:
+            r = c.post("/internal/api/verify-credential", json=body)
+            if r.status_code != 200:
+                log.warning("憑證體檢失敗 status=%s", r.status_code)
+                return None
+            return r.json() or {}
+    except Exception as e:  # noqa: BLE001
+        log.warning("憑證體檢異常: %s", e)
+        return None

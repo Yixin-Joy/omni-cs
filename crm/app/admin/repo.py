@@ -48,6 +48,9 @@ def list_businesses() -> list[dict]:
     with ro() as cur:
         cur.execute(
             "SELECT b.id, b.business_name, b.business_memo, b.enabled, b.created_at,"
+            "  b.meta_app_id,"
+            # ★ secret 不回明文，只回「有沒有填」—— 前端只需要知道狀態
+            "  (COALESCE(b.meta_app_secret, '') <> '') AS has_meta_app_secret,"
             "  (SELECT count(*) FROM crm_business_platform_account a"
             "    WHERE a.business_id = b.id AND a.enabled) AS account_count,"
             "  (SELECT count(*) FROM kb_collection c"
@@ -61,20 +64,31 @@ def list_businesses() -> list[dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
-def create_business(cur, name: str, memo: str | None) -> int:
+def create_business(cur, name: str, memo: str | None,
+                    meta_app_id: str | None = None,
+                    meta_app_secret: str | None = None) -> int:
     cur.execute(
-        "INSERT INTO crm_business (business_name, business_memo) VALUES (%s, %s) RETURNING id",
-        (name, memo),
+        "INSERT INTO crm_business (business_name, business_memo, meta_app_id, meta_app_secret)"
+        " VALUES (%s, %s, %s, %s) RETURNING id",
+        (name, memo, meta_app_id, meta_app_secret),
     )
     return cur.fetchone()["id"]
 
 
-def update_business(cur, bid: int, name: str, memo: str | None, enabled: bool) -> None:
-    cur.execute(
-        "UPDATE crm_business SET business_name = %s, business_memo = %s, enabled = %s,"
-        " updated_at = now() WHERE id = %s",
-        (name, memo, enabled, bid),
-    )
+def update_business(cur, bid: int, name: str, memo: str | None, enabled: bool,
+                    meta_app_id: str | None = None,
+                    meta_app_secret: str | None = None) -> None:
+    """更新商家。`meta_app_*` 傳 `None` = **不動**（避免「只改名字」把 App 清掉）。"""
+    sets = ["business_name = %s", "business_memo = %s", "enabled = %s", "updated_at = now()"]
+    args: list = [name, memo, enabled]
+    if meta_app_id is not None:
+        sets.append("meta_app_id = %s")
+        args.append(meta_app_id or None)
+    if meta_app_secret is not None:
+        sets.append("meta_app_secret = %s")
+        args.append(meta_app_secret or None)
+    args.append(bid)
+    cur.execute("UPDATE crm_business SET " + ", ".join(sets) + " WHERE id = %s", tuple(args))
 
 
 def business_exists(cur, bid: int) -> bool:

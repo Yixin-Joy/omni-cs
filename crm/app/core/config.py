@@ -45,6 +45,14 @@ MEDIA_DIR = _get("MEDIA_DIR", "media")
 #    沒設這個，IG/FB 的附圖就發不出去（見 autoreply.public_asset_url）。
 PUBLIC_BASE_URL = _get("PUBLIC_BASE_URL", "")
 
+# ===== Meta App（多租戶）=====
+# ★ 每個商戶可以有**自己**的 Meta App（`crm_business.meta_app_id/meta_app_secret`），
+#   帳號層的 `credential.meta_app_*` 又優先於商家層。
+#   這裡是**系統級的最後一級回退**（大家都用同一個 App 時才靠它）。
+#   ⚠️ 只放 ID / SECRET 給「體檢 token 歸屬」與提示用；驗簽的真相在 Connector。
+META_APP_ID = _get("META_APP_ID", "")
+META_APP_SECRET = _get("META_APP_SECRET", "")
+
 # ===== AI 供應商（DeepSeek）=====
 DEEPSEEK_API_KEY = _get("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = _get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")

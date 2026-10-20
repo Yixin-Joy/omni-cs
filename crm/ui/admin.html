@@ -294,6 +294,23 @@
     <div class="err" id="ovBizErr"></div>
     <div class="fld"><label>商家名稱</label><input type="text" id="bizName" placeholder="例：Epro_test"></div>
     <div class="fld"><label>備註</label><input type="text" id="bizMemo" placeholder="選填"></div>
+    <div class="fld">
+      <label>Meta App ID
+        <span class="muted" style="font-weight:400">（選填）</span></label>
+      <input type="text" id="bizMetaAppId" placeholder="留空＝用系統預設 App" autocomplete="off">
+      <div class="muted" style="font-size:12px;margin-top:4px">
+        這個商戶若用自己的 Meta App，這裡要填<b>它的</b> App ID。
+        Token 只能由「簽發它的那個 App」使用 —— 在別的 App 勾權限對它無效，webhook 也收不到。
+      </div>
+    </div>
+    <div class="fld">
+      <label>Meta App Secret <span class="muted" style="font-weight:400">（選填）</span></label>
+      <input type="password" id="bizMetaAppSecret" placeholder="留空＝不變更" autocomplete="new-password">
+      <div class="muted" style="font-size:12px;margin-top:4px">
+        用於驗證這個商戶的 webhook 簽章（Meta 用 App Secret 簽）。留空＝沿用系統 Secret。
+        <span id="bizMetaSecretHint"></span>
+      </div>
+    </div>
     <div class="fld"><label class="chk"><input type="checkbox" id="bizEnabled" checked><span>啟用</span></label></div>
     <div class="acts">
       <button class="ghost" data-close>取消</button>
@@ -595,6 +612,11 @@
         + '<td><b>' + esc(b.business_name) + '</b>'
         + (b.business_memo ? '<div class="muted" style="font-size:12px">' + esc(b.business_memo) + '</div>' : '')
         + '</td>'
+        + '<td>' + (b.meta_app_id
+            ? '<span class="pill ok" title="這個商戶用自己的 Meta App">' + esc(b.meta_app_id) + '</span>'
+              + (b.has_meta_app_secret ? '' :
+                 ' <span class="pill off" title="只填了 App ID，沒有 Secret → webhook 驗簽仍用系統 Secret">無 Secret</span>')
+            : '<span class="muted" style="font-size:12px">系統預設</span>') + '</td>'
         + '<td class="num">' + b.account_count + '</td>'
         + '<td class="num">' + b.kb_count + '</td>'
         + '<td class="num">' + b.faq_count + '</td>'
@@ -607,7 +629,7 @@
         + '</div></td></tr>';
     }).join('');
     $('view').innerHTML = state.businesses.length
-      ? '<table><thead><tr><th>ID</th><th>商家</th><th>平台帳號</th><th>知識庫</th><th>FAQ</th>'
+      ? '<table><thead><tr><th>ID</th><th>商家</th><th>Meta App</th><th>平台帳號</th><th>知識庫</th><th>FAQ</th>'
         + '<th>業務表格</th><th>狀態</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>'
       : '<div class="empty">還沒有商家，先新增一個。</div>';
   }
@@ -619,6 +641,11 @@
     $('bizName').value = b ? b.business_name : '';
     $('bizMemo').value = b ? (b.business_memo || '') : '';
     $('bizEnabled').checked = b ? !!b.enabled : true;
+    // ★ Meta App（多租戶）：secret 後端只回「有沒有填」，所以留空＝不變更
+    $('bizMetaAppId').value = b ? (b.meta_app_id || '') : '';
+    $('bizMetaAppSecret').value = '';
+    $('bizMetaAppSecret').placeholder = (b && b.has_meta_app_secret)
+      ? '已設定（留空＝不變更）' : '留空＝沿用系統 Secret';
     ovErr('ovBizErr', '');
     openOv('ovBiz');
     setTimeout(function () { $('bizName').focus(); }, 30);
@@ -881,6 +908,11 @@
     var name = $('bizName').value.trim();
     if (!name) { ovErr('ovBizErr', '請填商家名稱'); return; }
     var body = { business_name: name, business_memo: $('bizMemo').value.trim() };
+    // ★ Meta App：ID 每次都送（清空＝回退系統級）；
+    //   Secret **只在有輸入時才送**（留空＝不變更，避免一改名字就把 secret 清掉）
+    body.meta_app_id = $('bizMetaAppId').value.trim();
+    var sec = $('bizMetaAppSecret').value.trim();
+    if (sec) body.meta_app_secret = sec;
     var p;
     if (state.editBizId) {
       body.id = state.editBizId; body.enabled = $('bizEnabled').checked;

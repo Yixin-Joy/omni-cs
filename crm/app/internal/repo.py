@@ -77,10 +77,23 @@ def set_ops_config(key: str, value) -> None:
 # ================================================================ 帳號映射
 
 def account_map(since=None) -> list[dict]:
-    """對齊鍵 = (platform, platform_business_account_id)。真相在 CRM（MIGRATION_PLAN §1）。"""
+    """對齊鍵 = (platform, platform_business_account_id)。真相在 CRM（MIGRATION_PLAN §1）。
+
+    ★★ 這裡會把 **Meta App 憑證合併進每條帳號的 `credential`**（2026-10-20）：
+      每商戶可能有自己的 Meta App（`crm_business.meta_app_id/meta_app_secret`），
+      Connector 需要它來做三件事：
+        ① webhook 驗簽（簽章是用**簽發該 token 的 App 的 secret** 算的，
+           用系統 secret 驗一商戶一 App 的簽章一定失敗）；
+        ② 判斷 token 是不是這個商戶那個 App 簽的；
+        ③ 呼叫 Graph 時不需要（Graph 只看 token），但排錯要用。
+      優先序：**帳號 credential 自己填的** → 商家的 → 系統級（Connector 的 .env）。
+      帳號層留空就不寫進去（由 Connector 端回退到 .env），避免把空字串塞進 JSONB。
+      ⚠️ 「主動推送」與「定時拉取」兩條路都走這支 → 只改這裡兩邊就一致。
+    """
     sql = (
         "SELECT a.platform, a.platform_business_account_id, a.business_id,"
         "       a.id AS bp_account_id, a.display_name, a.credential,"
+        "       b.meta_app_id AS biz_meta_app_id, b.meta_app_secret AS biz_meta_app_secret,"
         "       (COALESCE(a.enabled, true) AND COALESCE(b.enabled, true)) AS enabled,"
         "       COALESCE(a.updated_at, a.created_at) AS updated_at"
         "  FROM crm_business_platform_account a"
@@ -96,6 +109,23 @@ def account_map(since=None) -> list[dict]:
         out = []
         for r in cur.fetchall():
             d = dict(r)
+            cred = d.get("credential") or {}
+            if isinstance(cred, str):          # jsonb 有時回字串
+                try:
+                    cred = json.loads(cred)
+                except Exception:  # noqa: BLE001
+                    cred = {}
+            cred = dict(cred or {})
+            # 帳號層優先，缺了才用商家的
+            for key, biz_key in (("meta_app_id", "biz_meta_app_id"),
+                                 ("meta_app_secret", "biz_meta_app_secret")):
+                if not (cred.get(key) or "").strip():
+                    v = (d.get(biz_key) or "").strip()
+                    if v:
+                        cred[key] = v
+            d["credential"] = cred or None
+            d.pop("biz_meta_app_id", None)
+            d.pop("biz_meta_app_secret", None)
             if d.get("updated_at") is not None:
                 d["updated_at"] = d["updated_at"].isoformat()
             out.append(d)

@@ -61,6 +61,85 @@ def _cred_field_label(platform: str, key: str) -> str:
     return key
 
 
+def _resolve_meta_app(business_id: int | None, cred: dict | None) -> tuple[str, str]:
+    """這個帳號應該用**哪個 Meta App**？回 `(app_id, app_secret)`，缺的給空字串。
+
+    ★★ 多租戶（2026-10-20 小jo「以後每個商戶都可能對應一個獨立的 meta app」）：
+      一商戶一 App 是合法且常見的。所以**不能**拿 token 去跟系統 `META_APP_ID` 硬比 ——
+      那只在「大家都用同一個 App」時才成立。
+      優先序：**帳號 credential 自己填的** → **商家的** → **系統級**（connector/.env）。
+      三者都沒有 → 回 `("", "")`，呼叫端要當成「不知道」，**不可以擋**。
+    """
+    cred = cred or {}
+    app_id = str(cred.get("meta_app_id") or "").strip()
+    secret = str(cred.get("meta_app_secret") or "").strip()
+    if business_id:
+        try:
+            with repo.ro() as cur:
+                cur.execute(
+                    "SELECT meta_app_id, meta_app_secret FROM crm_business WHERE id = %s",
+                    (int(business_id),))
+                r = cur.fetchone()
+            if r:
+                if not app_id:
+                    app_id = str(r["meta_app_id"] or "").strip()
+                if not secret:
+                    secret = str(r["meta_app_secret"] or "").strip()
+        except Exception as e:  # noqa: BLE001
+            log.warning("讀商家 Meta App 設定失敗 business_id=%s: %s", business_id, e)
+    if not app_id:
+        app_id = str(getattr(config, "META_APP_ID", "") or "").strip()
+    if not secret:
+        secret = str(getattr(config, "META_APP_SECRET", "") or "").strip()
+    return app_id, secret
+
+
+def _reject_wrong_app_token(platform: str, cred: dict | None,
+                            business_id: int | None = None) -> str:
+    """保存 fb/ig 帳號前體檢 token：**不是這個商戶那個 App 簽的就擋**。回錯誤字串或 ""。
+
+    ★★ 為什麼（2026-10-20 小jo「meta上顯示的是有pages_read_engagement權限啊」）：
+      Meta 後台顯示的是**某個 App** 的權限，但填進來的 token 可能由**另一個 App** 簽發。
+      實測商家123：token 來自 `console_eprotele`(1611577203333651)，
+      本系統用 `agent`(1612033297309372) →
+        · 在 agent 後台勾 pages_read_engagement **完全無效**；
+        · `/comments` 永遠 400（貼文與留言「數量」卻讀得到，極易誤判）；
+        · webhook 一個都收不到（App 層 callback 不是我們的網址）。
+      這種 token「看起來很正常」（`/me` 回粉專名、`/feed` 回 200），
+      不擋就是使用者反覆回去勾權限、永遠沒效果。
+
+    ★ **多租戶**：比對的對象是「這個商戶解析出來的 App」（帳號 credential → 商家 → 系統），
+      不是寫死系統 App。沒設定任何 App（`expected` 為空）→ **放過**，只當資訊。
+    ⚠️ best-effort：Connector 連不上／回 None 就放過 —— 不能因為體檢服務掛了讓人存不了帳號。
+    ⚠️ 只擋「token 屬於別的 App」；權限不足只記錄（可能只是還沒審核過），仍允許保存。
+    """
+    if platform not in ("fb", "ig") or not cred:
+        return ""
+    expected, _secret = _resolve_meta_app(business_id, cred)
+    # ★ 不傳 expected 也可能發生（CRM 沒配、商家也留空）→ 讓 Connector 回退它的系統 App。
+    #   判斷結果以 Connector 回的 `expected_app_id` / `is_our_app` 為準，
+    #   這樣「一商戶一 App」與「大家共用一個 App」兩種部署都正確。
+    res = connector_client.verify_credential(platform, cred, expected_app_id=expected)
+    if not res:
+        return ""
+    if res.get("is_our_app") is False:
+        tid = res.get("token_app_id") or "?"
+        tname = res.get("token_app_name") or "未知"
+        want = res.get("expected_app_id") or expected or "（未設定）"
+        src = res.get("expected_source") or ""
+        if src == "system":
+            hint = f"（目前用的是系統預設 App {want}）"
+        else:
+            hint = f"（這個商戶設定的 App 是 {want}）"
+        return (f"這把 token 是【{tname}】(App {tid}) 簽發的，"
+                f"但{hint}。"
+                f"在別的 App 後台勾權限對它完全無效，webhook 也收不到。"
+                f"請用 App {want} 重新授權這個粉專再貼新的粉專令牌；"
+                f"若這個商戶本來就該用 App {tid}，"
+                f"請先在『編輯商家 → Meta App ID』填 {tid}（並填它的 Secret）。")
+    return ""
+
+
 # ================================================================ 商家
 
 @router.get("/businesses")
@@ -71,6 +150,9 @@ def list_businesses(sess: dict = Depends(deps.require_admin)):
 class BusinessIn(BaseModel):
     business_name: str = ""
     business_memo: str | None = None
+    # ★ 每商戶獨立的 Meta App（留空 = 用系統級 connector/.env）
+    meta_app_id: str | None = None
+    meta_app_secret: str | None = None
 
 
 @router.post("/businesses")
@@ -79,9 +161,13 @@ def create_business(payload: BusinessIn, sess: dict = Depends(deps.require_admin
     if not name:
         return _err(400, "商家名稱不能為空")
     with repo.tx() as (_, cur):
-        bid = repo.create_business(cur, name, (payload.business_memo or "").strip() or None)
+        bid = repo.create_business(
+            cur, name, (payload.business_memo or "").strip() or None,
+            (payload.meta_app_id or "").strip() or None,
+            (payload.meta_app_secret or "").strip() or None)
         audit.log(cur, sess, "business_create", business_id=bid,
-                  payload={"business_name": name})
+                  payload={"business_name": name,
+                           "has_meta_app": bool((payload.meta_app_id or "").strip())})
     # ★ 種入「舊系統的調校值」→ 新商家一出生就與 Epro_test 的檢索參數一致。
     #   為什麼：`kb_param` 是按商家存的，不種就會退回 spec 預設
     #   （`query_rewrite=False` / `max_per_doc=3` / `min_score=0.28`），RAG 明顯變差。
@@ -99,6 +185,9 @@ class BusinessUpdateIn(BaseModel):
     business_name: str = ""
     business_memo: str | None = None
     enabled: bool = True
+    # ★ 傳 `None`（不帶這個鍵）= **不動**；傳空字串 = 清空（回退系統級）
+    meta_app_id: str | None = None
+    meta_app_secret: str | None = None
 
 
 @router.post("/businesses/update")
@@ -110,9 +199,15 @@ def update_business(payload: BusinessUpdateIn, sess: dict = Depends(deps.require
         if not repo.business_exists(cur, payload.id):
             return _err(404, "商家不存在")
         repo.update_business(cur, payload.id, name, (payload.business_memo or "").strip() or None,
-                             payload.enabled)
+                             payload.enabled,
+                             payload.meta_app_id, payload.meta_app_secret)
         audit.log(cur, sess, "business_update", business_id=payload.id,
-                  payload={"business_name": name, "enabled": payload.enabled})
+                  payload={"business_name": name, "enabled": payload.enabled,
+                           "meta_app_changed": payload.meta_app_id is not None
+                           or payload.meta_app_secret is not None})
+    # ★ App Secret 可能換了 → 讓 Connector 立刻拿到新映射（不然要等 60s 拉取，
+    #   這段時間 webhook 驗簽還是用舊 secret → 403）。
+    _push_account_map()
     return {"ok": True}
 
 
@@ -144,6 +239,10 @@ def create_account(payload: AccountIn, sess: dict = Depends(deps.require_admin))
     if missing:
         labels = "、".join(_cred_field_label(platform, k) for k in missing)
         return _err(400, f"缺少必要憑證：{labels}")
+    # ★ 擋「這把 token 屬於別的 Meta App」——那種 token 權限勾再多也沒用（見函式註解）
+    wrong_app = _reject_wrong_app_token(platform, cred, payload.business_id)
+    if wrong_app:
+        return _err(400, wrong_app)
     # ★ 原生 ID 不再要使用者單獨填 —— 它在每個平台就是某一個憑證欄位
     #   （微信 AppID / WhatsApp phone_number_id / FB page id / IG ig user id）。
     #   表單若仍帶了值（舊前端）以表單為準，否則從憑證推導。
@@ -180,15 +279,23 @@ class AccountUpdateIn(BaseModel):
 
 @router.post("/accounts/update")
 def update_account(payload: AccountUpdateIn, sess: dict = Depends(deps.require_admin)):
-    with repo.tx() as (_, cur):
+    # ★ 先把 platform 查出來（不開事務），再體檢 token ——
+    #   體檢要打 Connector（慢，可能 20s），絕對不能放在事務裡持鎖。
+    with repo.ro() as cur:
         cur.execute(
             "SELECT business_id, platform FROM crm_business_platform_account WHERE id = %s",
             (payload.id,),
         )
         row = cur.fetchone()
-        if not row:
-            return _err(404, "平台帳號不存在")
-        cred = _clean_credential(row["platform"], payload.credential)
+    if not row:
+        return _err(404, "平台帳號不存在")
+    cred = _clean_credential(row["platform"], payload.credential)
+    # ★ 換 token 時同樣要擋跨 App 的 token（同 create_account）
+    if cred:
+        wrong_app = _reject_wrong_app_token(row["platform"], cred, row["business_id"])
+        if wrong_app:
+            return _err(400, wrong_app)
+    with repo.tx() as (_, cur):
         repo.update_account(cur, payload.id, (payload.display_name or "").strip() or None,
                             payload.ai_auto_reply_enabled, payload.enabled, cred)
         audit.log(cur, sess, "platform_account_unbind" if not payload.enabled else "platform_account_bind",

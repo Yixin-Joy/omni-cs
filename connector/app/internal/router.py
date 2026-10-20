@@ -41,6 +41,147 @@ def account_map_sync(payload: AccountMapIn):
     return {"ok": True, "upserted": n}
 
 
+# ---------------------------------------------------------------- 憑證體檢
+
+class VerifyCredentialIn(BaseModel):
+    platform: str = ""
+    credential: dict = {}
+    # ★ 由 CRM 傳入「**這個商戶**應該用哪個 Meta App」：
+    #   帳號 credential → 商家 meta_app_id → 系統 META_APP_ID（CRM 已經解析好）。
+    #   空字串 = 誰都沒設定 → 這裡不做 App 歸屬判斷（只回報事實，不判對錯）。
+    expected_app_id: str = ""
+
+
+@router.post("/verify-credential")
+async def verify_credential(payload: VerifyCredentialIn):
+    """保存帳號前**體檢憑證** —— 最重要的一項是「這把 token 是哪個 Meta App 簽的」。
+
+    ★★ 為什麼一定要驗（2026-10-20 小jo「meta上顯示的是有pages_read_engagement權限啊」）：
+      Meta 後台看到的是**某一個 App** 的權限，但 token 可能由**另一個 App** 簽發 ——
+      兩者互不相干。實測：
+        · 商家1 的 page token → `GET /app` 回 `1612033297309372`（agent）
+          scopes 有 pages_read_engagement → `/comments` 200
+        · 商家123 的 page token → `GET /app` 回 `1611577203333651`（console_eprotele）
+          → 同一個 `/comments` 永遠 400 #100，**不管 agent 這個 App 勾了什麼**
+      而且這種 token 連 webhook 都收不到（App 層的 callback 不是我們的網址）、
+      `debug_token` 也會直接 400（`App_id in the input_token did not match`），
+      所以只能靠 `/app` 這條路認出來。
+
+    ★★ **多租戶**（小jo：「以後每個商戶都可能對應一個獨立的 meta app」）：
+      **不寫死系統 App** —— 比對基準是 `expected_app_id`（CRM 按商戶解析後傳進來）。
+      沒傳／空字串 → `is_our_app` 回 `None`（不知道），由 CRM 決定放過。
+    ⚠️ 只做提示、不阻擋（CRM 決定要不要擋）。
+    ⚠️ 不用 `debug_token`：跨 App 的 token 它一律 400，拿不到 scopes。
+    """
+    plat = (payload.platform or "").strip().lower()
+    cred = payload.credential or {}
+    expected = (payload.expected_app_id or "").strip()
+    source = "tenant" if expected else ""
+    if not expected:
+        # ★ 商戶/帳號都沒設定 → 回退系統級（connector/.env 的 META_APP_ID）。
+        #   這樣「大家都用同一個 App」的舊部署仍是嚴格比對；
+        #   而一商戶一 App 的情況只要在商家設定裡填上，就以它為準。
+        #   ⚠️ 這樣做是為了**不必在 CRM 再配一份** App ID（少一份手動對齊的耦合）。
+        expected = str(config.META_APP_ID or "").strip()
+        source = "system" if expected else ""
+    out: dict = {"ok": True, "platform": plat,
+                 "expected_app_id": expected,
+                 "expected_source": source,
+                 "token_app_id": None, "token_app_name": None,
+                 "is_our_app": None, "is_page_token": None,
+                 "scopes": None, "missing_scopes": None, "problems": []}
+    if plat not in ("fb", "ig"):
+        return out                              # 微信 / WhatsApp 不適用
+
+    token = (cred.get("page_access_token") or cred.get("ig_access_token") or "").strip()
+    if not token:
+        out["problems"].append("沒有填 token")
+        return out
+
+    import httpx
+
+    from app.channels import igfb
+
+    base, ver = igfb.FB_BASE, igfb._ver()
+    async with httpx.AsyncClient(timeout=15) as cl:
+        # 1) 這把 token 是哪個 App 簽的？
+        try:
+            r = await cl.get(f"{base}/{ver}/app", params={"access_token": token})
+            if r.status_code == 200:
+                j = r.json() or {}
+                out["token_app_id"] = str(j.get("id") or "") or None
+                out["token_app_name"] = j.get("name")
+                if expected:
+                    out["is_our_app"] = (out["token_app_id"] == expected)
+                    if not out["is_our_app"]:
+                        out["problems"].append(
+                            f"這把 token 是【{out['token_app_name'] or '未知'}】"
+                            f"（App {out['token_app_id']}）簽發的，"
+                            f"但這個商戶設定的 Meta App 是 {expected}"
+                            f"（{out['token_app_id']} ≠ {expected}）——"
+                            f"在別的 App 後台勾權限對這把 token 完全無效，"
+                            f"webhook 也收不到（callback 不是我們的網址）。"
+                            f"請用 App {expected} 重新授權該粉專再取 token")
+                else:
+                    # 沒設定任何 App → 只回報事實，不判對錯（多租戶下可能是正常的）
+                    out["is_our_app"] = None
+                    out["problems"].append(
+                        f"（提示）這把 token 屬於 App {out['token_app_id']}"
+                        f"【{out['token_app_name'] or '未知'}】；"
+                        f"本商戶未設定 Meta App，因此沒有可比對的基準")
+            else:
+                out["problems"].append(f"查 token 歸屬失敗 HTTP {r.status_code}")
+        except Exception as e:  # noqa: BLE001
+            out["problems"].append(f"查 token 歸屬失敗：{type(e).__name__}: {e}")
+
+        # 2) 是粉專令牌還是用戶令牌？（用戶令牌讀不到粉專貼文/留言）
+        try:
+            r = await cl.get(f"{base}/{ver}/me",
+                             params={"access_token": token, "fields": "id,name"})
+            if r.status_code == 200:
+                j = r.json() or {}
+                me_id = str(j.get("id") or "")
+                page_id = str(cred.get("page_id") or
+                              (cred.get("ig_user_id") if plat == "ig" else "") or "")
+                out["is_page_token"] = bool(page_id) and me_id == page_id
+                if not out["is_page_token"]:
+                    out["problems"].append(
+                        f"這把 token 的 /me 回的是「{j.get('name') or me_id}」"
+                        f"（id={me_id}），不是粉專本身"
+                        f"（page_id={page_id or '未填'}）——"
+                        f"看起來是**用戶令牌**，讀不到粉專的貼文／留言／私訊")
+        except Exception as e:  # noqa: BLE001
+            out["problems"].append(f"查 token 型態失敗：{type(e).__name__}: {e}")
+
+        # 3) 有貼文的話，實際打一次 /comments（權限只有在真打時才暴露）
+        if plat == "fb" and cred.get("page_id"):
+            try:
+                rp = await cl.get(f"{base}/{ver}/{cred['page_id']}/feed",
+                                  params={"access_token": token,
+                                          "fields": "id", "limit": 1})
+                if rp.status_code == 200:
+                    items = (rp.json() or {}).get("data") or []
+                    if items:
+                        pid = str(items[0].get("id") or "")
+                        rc = await cl.get(f"{base}/{ver}/{pid}/comments",
+                                          params={"access_token": token, "limit": 1})
+                        if rc.status_code != 200:
+                            msg = ((rc.json() or {}).get("error") or {}).get("message", "")
+                            if "pages_read_engagement" in msg or "pages_read_user_content" in msg:
+                                out["problems"].append(
+                                    "讀留言列表被拒（需 pages_read_engagement／"
+                                    "pages_read_user_content）：" + msg[:120])
+                            else:
+                                out["problems"].append(f"讀留言失敗 HTTP {rc.status_code}: {msg[:120]}")
+                elif rp.status_code != 200:
+                    msg = ((rp.json() or {}).get("error") or {}).get("message", "")
+                    out["problems"].append(f"讀貼文列表失敗 HTTP {rp.status_code}: {msg[:120]}")
+            except Exception as e:  # noqa: BLE001
+                out["problems"].append(f"探測留言權限失敗：{type(e).__name__}: {e}")
+
+    return out
+
+
 @router.get("/account-map")
 def account_map_list():
     """本地快取現況（除錯用）。"""

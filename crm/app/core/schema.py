@@ -10,12 +10,18 @@ DDL = """
 -- 5.1 商家與平台賬號
 -- ============================================================
 CREATE TABLE IF NOT EXISTS crm_business (
-    id            bigserial PRIMARY KEY,
-    business_name text NOT NULL,
-    business_memo text,
-    enabled       boolean DEFAULT true,
-    created_at    timestamptz DEFAULT now(),
-    updated_at    timestamptz DEFAULT now()
+    id               bigserial PRIMARY KEY,
+    business_name    text NOT NULL,
+    business_memo    text,
+    enabled          boolean DEFAULT true,
+    -- ★ 每商戶可以有自己的 Meta App（多租戶）：token 只能由「簽發它的那個 App」拿來用，
+    --   權限勾在別的 App 上對這把 token 完全無效、webhook 也收不到。
+    --   留空 = 用系統級（connector/.env 的 META_APP_ID / META_APP_SECRET）。
+    --   帳號層的 credential.meta_app_id / meta_app_secret 優先於這裡（見 resolve_meta_app）。
+    meta_app_id      text,
+    meta_app_secret  text,
+    created_at       timestamptz DEFAULT now(),
+    updated_at       timestamptz DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS crm_business_platform_account (
@@ -499,6 +505,10 @@ MIGRATIONS = (
     " ALTER TABLE kb_document ADD CONSTRAINT kb_document_business_id_fkey"
     "   FOREIGN KEY (business_id) REFERENCES crm_business(id) ON DELETE CASCADE",
     "CREATE INDEX IF NOT EXISTS idx_kb_document_business ON kb_document(business_id, status)",
+    # 每商戶獨立 Meta App（2026-10-20 小jo「以後每個商戶都可能對應一個獨立的 meta app」）：
+    #   留空 = 用系統級（connector/.env）。詳見 crm_business 建表註解。
+    "ALTER TABLE crm_business ADD COLUMN IF NOT EXISTS meta_app_id text",
+    "ALTER TABLE crm_business ADD COLUMN IF NOT EXISTS meta_app_secret text",
 )
 
 # 運維可配置參數（設計案 §15.3 建議值），首次建庫寫入；已存在不覆蓋。

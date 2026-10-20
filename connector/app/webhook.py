@@ -256,15 +256,79 @@ async def meta_verify(request: Request):
     return Response(content="verification failed", status_code=403)
 
 
-def _verify_igfb_signature(raw: bytes, headers) -> None:
-    if not config.META_VERIFY_SIGNATURE or not config.META_APP_SECRET:
+def _candidate_app_secrets(body: dict) -> list[tuple[str, str]]:
+    """這個 payload 可能由**哪些 App** 送來？回 `[(說明, secret)]`，系統級放最後。
+
+    ★★ 為什麼要這樣（2026-10-20 小jo「以後每個商戶都可能對應一個獨立的 meta app」）：
+      簽章 = `HMAC-SHA256(App Secret, raw body)`。一商戶一 App 之後，
+      **用系統 secret 去驗別家 App 的簽章一定失敗**（403），
+      所有那個商戶的 webhook 會全部被擋掉 —— 這種壞法很隱蔽：
+      Meta 那邊看起來「有推」，我們這邊只看到 signature invalid。
+
+      做法：payload 裡 `entry[].id` **就是** page_id / ig_user_id（原生對齊鍵），
+      拿它去帳號映射找該帳號的 `credential.meta_app_secret`（CRM 已按商戶解析好）。
+      找到就用它驗；找不到才回退系統級。
+    ⚠️ 解析 **未驗簽** 的 JSON 只為了「挑要拿哪把鑰匙」，不用它的任何業務內容
+       —— 真正處理的 events 是驗簽通過之後才取的。
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(desc: str, secret: str) -> None:
+        s = (secret or "").strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append((desc, s))
+
+    for ent in (body.get("entry") or []):
+        native = str((ent or {}).get("id") or "").strip()
+        if not native:
+            continue
+        for plat in ("fb", "ig", "page", "instagram"):
+            acc = account_map.lookup("ig" if plat in ("ig", "instagram") else "fb", native)
+            if not acc:
+                continue
+            cred = acc.get("credential") or {}
+            if isinstance(cred, str):        # jsonb 有時回字串
+                try:
+                    import json as _json
+                    cred = _json.loads(cred)
+                except Exception:  # noqa: BLE001
+                    cred = {}
+            add(f"{plat}:{native}", (cred or {}).get("meta_app_secret") or "")
+
+    add("system", config.META_APP_SECRET or "")
+    return out
+
+
+def _verify_igfb_signature(raw: bytes, headers, body: dict | None = None) -> None:
+    """驗 IG/FB webhook 簽章。`body` 用來挑「這家商戶的 App Secret」（多租戶）。
+
+    相容性：
+      · 關閉驗簽（`META_VERIFY_SIGNATURE=false`）→ 直接放過（本機開發）；
+      · 只有系統 secret（舊部署）→ 行為與以前完全一樣；
+      · 有商戶 secret → 先用商戶的驗，不對再試系統的（一商戶一 App 與混合部署都能跑）。
+    """
+    if not config.META_VERIFY_SIGNATURE:
         return
+    cands = _candidate_app_secrets(body or {}) if body else []
+    if not cands:
+        cands = [("system", config.META_APP_SECRET or "")]
+    if not any(s for _d, s in cands):
+        return                              # 一把 secret 都沒設 → 無從驗，放過（舊行為）
     sig = headers.get("x-hub-signature-256", "")
     if not sig.startswith("sha256="):
         raise ValueError("缺少 X-Hub-Signature-256 簽章")
-    expected = hmac.new(config.META_APP_SECRET.encode(), raw, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig[len("sha256="):], expected):
-        raise ValueError("webhook 簽章不匹配")
+    got = sig[len("sha256="):]
+    tried: list[str] = []
+    for desc, secret in cands:
+        want = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(got, want):
+            if desc != "system":
+                log.info("webhook 簽章以商戶 App Secret 驗證通過（%s）", desc)
+            return
+        tried.append(desc)
+    raise ValueError("webhook 簽章不匹配（已試：" + "、".join(tried) + "）")
 
 
 @router.post("/whatsapp/webhook")
@@ -278,7 +342,7 @@ async def meta_receive(request: Request, native_id: str | None = None):
     # IG / FB（私訊 + 貼文留言）
     if obj in ("page", "instagram"):
         try:
-            _verify_igfb_signature(raw, request.headers)
+            _verify_igfb_signature(raw, request.headers, body)
         except Exception as e:
             log.warning("IG/FB webhook 簽章驗證失敗: %s", e)
             return Response(content="signature invalid", status_code=403)
