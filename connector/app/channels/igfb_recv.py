@@ -196,6 +196,35 @@ def _parse_ig_comment(value: dict, entry_id: str) -> dict | None:
     }
 
 
+# FB 粉專 `feed` webhook 裡「自家發文」的 item 值。
+#   ⚠️ `comment` 走留言分支；`reaction` 是別人按讚（帶 post_id 但不是新貼文）—— 故意不收。
+FB_POST_ITEMS = ("status", "photo", "video", "share", "link", "api", "note", "music", "map", "event")
+
+
+def _parse_fb_post(value: dict, entry_id: str) -> dict | None:
+    """FB 粉專自己發新貼文（`feed` + item=status/photo/…）。
+
+    ★ 舊版 `extract_events()` 只認 `item == "comment"`，其餘一律 `continue` ——
+      所以「新貼文發佈」永遠不會被推送，只能等 6 小時一次的縮圖續命迴圈
+      （2026-10-20 小jo：「新貼文發佈檢測不到」）。
+
+    ⚠️ 這裡只帶 webhook 給得到的欄位（post_id/message/created_time），
+      圖與 permalink 通常沒有 → 由 `webhook._bg_sync_post()` 再打一次 Graph 補齊。
+    """
+    if str(value.get("verb") or "") not in ("add", "edited"):
+        return None
+    post_id = str(value.get("post_id") or "")
+    if not post_id:
+        return None
+    return {
+        "type": "fb_post",
+        "platform": "fb",
+        "post_id": post_id,
+        "message": str(value.get("message") or ""),
+        "created_at": _dt_or_now(value.get("created_time")),
+    }
+
+
 def extract_events(body: dict) -> list[dict]:
     """把 Meta webhook POST 拆成正規化事件清單。
 
@@ -203,7 +232,8 @@ def extract_events(body: dict) -> list[dict]:
     回傳每個事件帶 type：
       fb_dm / ig_dm       私訊
       fb_comment / ig_comment  留言
-    其餘（post 新增、已讀回執、貼文本身等）忽略。
+      fb_post             粉專自己發新貼文（item=status/photo/…）
+    其餘（reaction、已讀回執等）忽略。
 
     每個事件都帶 `account_native_id`（平台原生 ID，取自 entry.id）——
     這是 CRM 多租戶反查商家的對齊鍵。
@@ -227,6 +257,8 @@ def extract_events(body: dict) -> list[dict]:
             value = change.get("value", {}) or {}
             if obj == "page" and field == "feed" and value.get("item") == "comment":
                 ev = _parse_fb_comment(value, entry_id)
+            elif obj == "page" and field == "feed" and value.get("item") in FB_POST_ITEMS:
+                ev = _parse_fb_post(value, entry_id)
             elif obj == "instagram" and field == "comments":
                 ev = _parse_ig_comment(value, entry_id)
             else:

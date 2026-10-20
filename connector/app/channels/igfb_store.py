@@ -370,6 +370,24 @@ def _current_media_url(platform: str, post_id: str) -> str:
         conn.close()
 
 
+def known_post_ids(platform: str, post_ids: list[str]) -> set[str]:
+    """這批 post_id 裡**已經在 `igfb_post`** 的那些（用來數「真的新增了幾篇」）。"""
+    ids = [str(x) for x in (post_ids or []) if x]
+    if not ids:
+        return set()
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT post_id FROM igfb_post WHERE platform=%s AND post_id = ANY(%s)",
+                (platform, ids))
+            return {str(r[0]) for r in cur.fetchall()}
+    except Exception:  # noqa: BLE001
+        return set()
+    finally:
+        conn.close()
+
+
 def upsert_post(platform: str, account: dict | None, post: dict) -> None:
     """貼文 upsert（歷史補拉用）。
 

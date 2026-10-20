@@ -56,6 +56,33 @@ async def _cache_loop() -> None:
         await asyncio.sleep(CACHE_SWEEP_SECONDS)
 
 
+async def _post_sync_loop() -> None:
+    """**新貼文偵測**（把最近幾篇貼文同步進 `igfb_post`）。
+
+    ★ 為什麼需要（2026-10-20 小jo「新貼文發佈檢測不到」）：
+      · FB 有 `feed` webhook 可以即時收到自家發文（已補）；
+      · **IG 沒有「發了新媒體」的 webhook** —— Meta 只推 comments / mentions /
+        messages，新貼文只能靠拉；
+      · 這支同時當 FB 的保險（webhook 漏推、或服務當時沒開）。
+      ⚠️ 只拉貼文（limit 8），**不拉留言** —— 留言有 webhook，也有手動歷史補拉。
+    """
+    minutes = float(config.POST_SYNC_MINUTES or 0)
+    if minutes <= 0:
+        log.info("新貼文偵測已停用（POST_SYNC_MINUTES=0）")
+        return
+    await asyncio.sleep(max(0.0, float(config.POST_SYNC_FIRST_DELAY_SECONDS or 0)))
+    while True:
+        try:
+            stats = await history_sync.sync_posts_once(int(config.POST_SYNC_LIMIT or 8))
+            if stats.get("errors"):
+                log.info("新貼文偵測有 %s 項警告", len(stats["errors"]))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.warning("新貼文偵測失敗: %s", e)
+        await asyncio.sleep(max(30.0, minutes * 60.0))
+
+
 async def _post_media_loop() -> None:
     """貼文縮圖續命（Meta CDN 簽名約 24h 到期，過期就 403）。
 
@@ -91,6 +118,7 @@ def start() -> None:
         asyncio.create_task(_outbound_loop()),
         asyncio.create_task(_account_loop()),
         asyncio.create_task(_cache_loop()),
+        asyncio.create_task(_post_sync_loop()),
         asyncio.create_task(_post_media_loop()),
     ]
     log.info("Connector worker 啟動：輪詢 %.1fs / 映射同步 %.0fs（發送模式 %s）",

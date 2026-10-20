@@ -56,6 +56,13 @@ KB_CACHE_TTL_DAYS = int(_get("KB_CACHE_TTL_DAYS", "7") or 7)
 # 啟動後先等 `POST_MEDIA_FIRST_DELAY_SECONDS` 秒再跑第一輪（避開開機忙碌期）。
 POST_MEDIA_REFRESH_HOURS = float(_get("POST_MEDIA_REFRESH_HOURS", "6") or 6)
 POST_MEDIA_FIRST_DELAY_SECONDS = float(_get("POST_MEDIA_FIRST_DELAY_SECONDS", "90") or 90)
+# 新貼文偵測：每 N 分鐘拉一次「最近幾篇貼文」寫進 igfb_post。
+#   ★ 必需的原因：IG **沒有**「發了新媒體」的 webhook（Meta 只推留言／提及／私訊），
+#     新貼文只能靠拉；FB 雖然有 feed webhook，這支同時當漏推的保險。
+#   成本＝每帳號一次 /feed 呼叫，不拉留言。設 0 = 關閉（IG 新貼文就只能手動補拉）。
+POST_SYNC_MINUTES = float(_get("POST_SYNC_MINUTES", "5") or 5)
+POST_SYNC_LIMIT = int(_get("POST_SYNC_LIMIT", "8") or 8)
+POST_SYNC_FIRST_DELAY_SECONDS = float(_get("POST_SYNC_FIRST_DELAY_SECONDS", "20") or 20)
 # 對外可訪問基址（ngrok / 正式域名），拼媒體 URL 用
 PUBLIC_BASE_URL = _get("PUBLIC_BASE_URL", "")
 

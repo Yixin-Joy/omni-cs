@@ -30,6 +30,7 @@ from app.channels import wechat_recv
 from app.channels import whatsapp_recv
 from app.channels import igfb_recv
 from app.channels import igfb_store
+from app.channels import igfb          # 新貼文落地要讀單篇貼文（get_post）
 from app import account_map
 from app import forwarder
 from app.worker import client as crm_client
@@ -358,6 +359,43 @@ async def _bg_sync_dm_names(platform: str, account: dict | None) -> None:
         log.warning("補名失敗 %s: %s", platform, e)
 
 
+async def _bg_sync_post(platform: str, account: dict | None, ev: dict) -> None:
+    """新貼文落地：先用 Graph 讀完整欄位（圖／permalink），失敗才退回 webhook 的資料。
+
+    ★ 為什麼不能只寫 webhook payload（2026-10-20 小jo「新貼文發佈檢測不到」）：
+      ① `feed` webhook 對自家發文只有 `post_id / message / created_time`；
+      ② 舊版 `extract_events()` 把非 comment 的 feed 事件全 `continue` 掉了，
+         所以新貼文只能等 6 小時一次的縮圖續命迴圈 → 體感就是「永遠檢測不到」。
+    """
+    post_id = str(ev.get("post_id") or "")
+    if not post_id:
+        return
+    cred = (account or {}).get("credential") or {}
+    if isinstance(cred, str):
+        try:
+            import json as _json
+            cred = _json.loads(cred)
+        except Exception:  # noqa: BLE001
+            cred = {}
+    post: dict = {}
+    try:
+        post = await igfb.get_post(platform, post_id, cred)
+    except Exception as e:  # noqa: BLE001
+        log.warning("新貼文讀取失敗 %s/%s: %s", platform, post_id, e)
+    if not post:
+        # 退回 webhook 欄位：至少讓它出現在列表（圖之後由續命迴圈補）
+        post = {"id": post_id, "message": ev.get("message") or "",
+                "created_time": ev.get("created_at")}
+        log.info("新貼文 %s/%s 用 webhook 欄位入庫（Graph 讀取失敗）", platform, post_id)
+    else:
+        post.setdefault("id", post_id)
+    try:
+        await asyncio.to_thread(igfb_store.upsert_post, platform, account, post)
+        log.info("新貼文已落地 %s/%s", platform, post_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("新貼文寫入失敗 %s/%s: %s", platform, post_id, e)
+
+
 async def _handle_igfb_event(ev: dict) -> None:
     """落地一則 IG/FB webhook 事件，並非同步通知 CRM。
 
@@ -409,3 +447,8 @@ async def _handle_igfb_event(ev: dict) -> None:
                                "conversation_key": ev["comment_id"],
                                "sender_name": ev.get("from_name") or ""},
             )
+    elif t == "fb_post":
+        # 粉專自己發了新貼文 → 立刻寫進 `igfb_post`（工作台「貼文留言」才看得到）。
+        # ★ 背景執行：要再打一次 Graph 取圖／permalink，不能卡住 webhook 回應。
+        #   不需要通知 CRM（沒有要 AI 回覆的東西）。
+        asyncio.create_task(_bg_sync_post(platform, account, ev))

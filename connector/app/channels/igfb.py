@@ -343,6 +343,44 @@ async def fb_posts(page_id: str, token: str, limit: int = 10) -> list[dict]:
     return posts
 
 
+async def get_post(platform: str, post_id: str, cred: dict) -> dict:
+    """讀**單篇**貼文（給 webhook「自家發新貼文」補齊圖／連結用）。
+
+    ★ 為什麼要單獨一支：FB 的 `feed` webhook 對自家發文只帶
+      `post_id / message / created_time`，**沒有圖片也沒有 permalink**。
+      只拿那份 payload 入庫，工作台上新貼文會是「有字沒圖」；
+      所以收到事件後再打一次 Graph 取完整欄位（一篇一次呼叫，成本可忽略）。
+    取不到就回 `{}`，呼叫端退回用 webhook 的欄位入庫（至少讓它出現在列表）。
+    """
+    if not post_id:
+        return {}
+    if platform == "fb":
+        _page_id, token = _fb_creds(cred)
+        fields = ("id,message,created_time,permalink_url,full_picture,"
+                  "attachments{media{image{src}}}")
+        status, data = await _get_json(f"{FB_BASE}/{_ver()}/{post_id}", token,
+                                      {"fields": fields})
+        if status != 200:
+            log.warning("get_post(fb) 失敗 %s: %s", status, data)
+            return {}
+        if not (data.get("full_picture") or data.get("media_url")):
+            for a in (data.get("attachments") or {}).get("data") or []:
+                src = ((a.get("media") or {}).get("image") or {}).get("src")
+                if src:
+                    data["media_url"] = src
+                    break
+        return data
+    token = cred.get("page_access_token") or ""
+    fields = ("id,caption,media_type,media_url,permalink,timestamp,"
+              "like_count,comments_count")
+    status, data = await _get_json(f"{FB_BASE}/{_ver()}/{post_id}", token,
+                                   {"fields": fields})
+    if status != 200:
+        log.warning("get_post(ig) 失敗 %s: %s", status, data)
+        return {}
+    return data
+
+
 async def fb_comments(post_id: str, token: str, limit: int = 50) -> list[dict]:
     if not post_id or not token:
         return []

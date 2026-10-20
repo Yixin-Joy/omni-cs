@@ -457,6 +457,179 @@ def _igfb_accounts() -> list[dict]:
         conn.close()
 
 
+def _cred_of(acc: dict) -> dict:
+    """account map 的 credential（jsonb 有時回字串）。"""
+    cred = acc.get("credential") or {}
+    if isinstance(cred, str):
+        import json as _json
+        try:
+            cred = _json.loads(cred)
+        except Exception:  # noqa: BLE001
+            cred = {}
+    return cred or {}
+
+
+async def fetch_account_posts(acc: dict, limit: int) -> list[dict]:
+    """拉某個帳號最近 `limit` 篇貼文（已依平台走對的端點）。失敗丟例外。"""
+    plat = acc["platform"]
+    native = str(acc.get("platform_business_account_id") or "")
+    cred = _cred_of(acc)
+    if plat == "fb":
+        page_id, token = igfb._fb_creds(cred)
+        if not page_id or not token:
+            raise RuntimeError("憑證缺少 page_id/page_access_token")
+        return await igfb.fb_posts(page_id or native, token, limit)
+    ig_id, _ig_tok = igfb._ig_creds(cred)
+    token = cred.get("page_access_token") or ""
+    if not token:
+        raise RuntimeError("憑證缺少 page_access_token")
+    return await igfb.ig_posts(ig_id or native, token, limit)
+
+
+# 貼文可讀性探測的快取（同一帳號一小時內只探一次；見 probe_posts_readable）
+_PERM_PROBE_AT: dict[str, float] = {}
+_PERM_PROBE_LAST: dict[str, str] = {}
+_PERM_PROBE_TTL = 3600.0
+
+
+async def _alert_posts_unreadable(acc: dict, why: str) -> None:
+    """把「讀不到貼文」上報到 CRM 的 `crm_alert`（ops 台可見）。
+
+    `dedupe_key` 用「平台:原生ID」→ 同一個帳號反覆失敗只累加次數，不會洗版。
+    """
+    try:
+        from app.worker import client as crm_client
+        plat = str(acc.get("platform") or "")
+        native = str(acc.get("platform_business_account_id") or "")
+        await crm_client.report_alert(
+            "meta_posts_unreadable", "warning",
+            f"{plat.upper()} 帳號 {native} 讀不到貼文列表",
+            detail={"platform": plat, "native_id": native,
+                    "business_id": acc.get("business_id"),
+                    "bp_account_id": acc.get("bp_account_id"),
+                    "reason": why},
+            dedupe_key=f"meta_posts_unreadable:{plat}:{native}",
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("貼文異常告警上報失敗: %s", e)
+
+
+async def probe_posts_readable(acc: dict) -> str:
+    """貼文拉回 0 篇時，判斷是「真的沒貼文」還是「**沒權限，被靜默過濾成空**」。
+
+    回空字串＝沒問題（大概真的沒貼文）；回字串＝可直接給人看的失敗原因。
+
+    ★ 為什麼要這支（2026-10-20 小jo「商家123也有一條新帖文，爲什麽不顯示」）：
+      該粉專的 page token **沒有 `pages_read_engagement`**：
+        · `GET /{page}/feed`        → **200 + `{"data": []}`**（不是報錯！）
+        · `GET /{page}/published_posts` → **400 #283 Requires pages_read_engagement**
+        · `GET /{page}?fields=posts{...}` → 欄位被**靜默丟掉**
+      於是「拉不到貼文」在系統裡長得跟「真的沒貼文」一模一樣，只能靠人去猜。
+      這裡用一條**只讀**的探針把差異講出來，並上報告警（ops 台可見）。
+
+    ⚠️ 同一帳號一小時內只探一次（`_PERM_PROBE_TTL`）：沒權限的帳號會一直是 0 篇，
+       每 5 分鐘探一次只是白打 Meta。
+    """
+    import time as _time
+
+    plat = str(acc.get("platform") or "")
+    native = str(acc.get("platform_business_account_id") or "")
+    key = f"{plat}:{native}"
+    now = _time.monotonic()
+    last = _PERM_PROBE_AT.get(key)
+    if last is not None and now - last < _PERM_PROBE_TTL:
+        return _PERM_PROBE_LAST.get(key, "")
+    _PERM_PROBE_AT[key] = now
+
+    cred = _cred_of(acc)
+    msg = ""
+    try:
+        if plat == "fb":
+            page_id, token = igfb._fb_creds(cred)
+            # published_posts 對權限最敏感：缺 pages_read_engagement 會明確 400 #283
+            status, data = await igfb._get_json(
+                f"{igfb.FB_BASE}/{igfb._ver()}/{page_id or native}/published_posts", token,
+                {"fields": "id,created_time", "limit": 1})
+            if status != 200:
+                err = ((data or {}).get("error") or {})
+                msg = (f"讀不到貼文列表：{err.get('message') or f'HTTP {status}'}"
+                       f"（code={err.get('code')}）。請在 Meta 後台重新授權該粉專，"
+                       f"勾選 pages_read_engagement（讀貼文／留言必需）後更新 token")
+            else:
+                got = len((data or {}).get("data") or [])
+                if got:
+                    msg = ("API 回 0 篇但 /published_posts 其實有資料 —— "
+                           "可能是分頁或篩選異常，請回報")
+        else:
+            ig_id, _t = igfb._ig_creds(cred)
+            token = cred.get("page_access_token") or ""
+            status, data = await igfb._get_json(
+                f"{igfb.FB_BASE}/{igfb._ver()}/{ig_id or native}", token,
+                {"fields": "id,media_count,username"})
+            if status != 200:
+                err = ((data or {}).get("error") or {})
+                msg = f"讀不到 IG 帳號：{err.get('message') or f'HTTP {status}'}"
+            else:
+                n = int((data or {}).get("media_count") or 0)
+                if n > 0:
+                    msg = (f"API 回 0 篇但這個 IG 帳號 media_count={n} —— "
+                           f"token 權限不足或 media 端點被拒，請重新授權")
+    except Exception as e:  # noqa: BLE001
+        msg = f"貼文可讀性探測失敗：{type(e).__name__}: {e}"
+
+    _PERM_PROBE_LAST[key] = msg
+    return msg
+
+
+async def sync_posts_once(limit: int = 8) -> dict:
+    """**只同步貼文**（不含留言）—— 週期跑，讓新貼文自己冒出來。
+
+    ★ 為什麼需要（2026-10-20 小jo「新貼文發佈檢測不到」）：
+      · FB 可以用 `feed` webhook 即時收到自家發文（已補在 `igfb_recv` / `webhook`）；
+      · **IG 沒有「發了新媒體」的 webhook 事件**（Meta 只推留言／提及／私訊），
+        所以 IG 新貼文只能靠週期拉；
+      · 這支同時是 FB 的保險：webhook 漏推、或服務當時沒開，都會被補回來。
+
+    ⚠️ 成本：每帳號一次 `/feed`（或 `/media`）呼叫，`limit` 很小、不拉留言。
+       `upsert_post()` 對已有本地快取的圖不會重下。`POST_SYNC_MINUTES=0` 可關閉。
+    """
+    stats = {"accounts": 0, "posts": 0, "new": 0, "errors": []}
+    for acc in _igfb_accounts():
+        plat = acc["platform"]
+        native = str(acc.get("platform_business_account_id") or "")
+        try:
+            posts = await fetch_account_posts(acc, limit)
+        except Exception as e:  # noqa: BLE001
+            stats["errors"].append(f"{plat}/{native}: {type(e).__name__}: {e}")
+            log.warning("貼文同步失敗 %s/%s: %s", plat, native, e)
+            continue
+        ids = [str(p.get("id") or "") for p in posts if p.get("id")]
+        known = await asyncio.to_thread(igfb_store.known_post_ids, plat, ids)
+        for p in posts:
+            pid = str(p.get("id") or "")
+            if not pid:
+                continue
+            await asyncio.to_thread(igfb_store.upsert_post, plat, acc, p)
+            if pid not in known:
+                stats["new"] += 1
+                log.info("新貼文（同步發現）%s/%s", plat, pid)
+        stats["accounts"] += 1
+        stats["posts"] += len(ids)
+
+        # ★ 0 篇時問一句「是沒貼文，還是沒權限」——不然工作台上永遠是空清單，
+        #   使用者只會覺得「新貼文檢測不到」。
+        if not ids:
+            why = await probe_posts_readable(acc)
+            if why:
+                tag = f"{plat}/{native}"
+                stats["errors"].append(f"{tag}: {why}")
+                log.warning("貼文讀取異常 %s: %s", tag, why)
+                await _alert_posts_unreadable(acc, why)
+    if stats["new"]:
+        log.info("貼文同步：%s", {k: v for k, v in stats.items() if k != "errors"})
+    return stats
+
+
 async def refresh_post_media_once(limit: int = _POST_REFRESH_LIMIT) -> dict:
     """拉最近貼文 → `upsert_post`（順便把缺的縮圖存到本地）。回統計。"""
     stats = {"accounts": 0, "posts": 0, "errors": []}
