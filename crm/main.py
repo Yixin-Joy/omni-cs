@@ -9,7 +9,9 @@
     uvicorn main:app --host 127.0.0.1 --port 8020
 """
 import logging
+import os as _os
 from contextlib import asynccontextmanager
+from datetime import datetime as _dt, timezone as _tz
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
@@ -33,6 +35,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("crm")
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
+
+# 進程啟動時間（模組載入＝服務啟動）。`/health` 會回它，自檢拿來判斷
+# 「DB 裡那筆異常任務是不是這個進程留下的」——也就是「有沒有重啟」。
+_STARTED_AT = _dt.now(_tz.utc).isoformat(timespec="seconds")
 
 
 @asynccontextmanager
@@ -84,7 +90,15 @@ def page_file(name: str):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "service": config.SERVICE_NAME}
+    """健康檢查 —— 順便回**進程啟動時間**。
+
+    ★ 為什麼要回 `started_at`（2026-10-20）：改完程式碼但忘了重啟，
+      症狀是「修了卻一點都沒變」（留言自動回復就是把舊碼當私訊發 → Meta #10）。
+      有了這個欄位，自檢可以拿它跟 DB 裡的任務時間比：
+      **比 `started_at` 晚、卻仍缺 scope/舊行為的任務 = 這個進程沒重啟**。
+    """
+    return {"ok": True, "service": config.SERVICE_NAME,
+            "pid": _os.getpid(), "started_at": _STARTED_AT}
 
 
 # ---------------------------------------------------------------- 頁面

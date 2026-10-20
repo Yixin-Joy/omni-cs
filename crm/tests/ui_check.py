@@ -438,12 +438,16 @@ def check_port_completeness(html: str, js: str) -> None:
     ):
         check(marker in js, f"送出／輪詢具備：{why}")
     # 輪詢不可以只刷紅點 —— 必須連列表與訊息一起刷
-    if "setInterval(function () {" in js:
-        tail = js[js.index("setInterval(function () {"):]
-        tail = tail[:800]
+    # ⚠️ 用 `COUNT_POLL_MS` 定位那顆常規輪詢：`setInterval` 在檔案裡不只一處
+    #    （留言送出後的任務狀態短輪詢 `_startCmtPoll` 也是），取第一個會抓錯。
+    if "}, COUNT_POLL_MS);" in js:
+        end = js.index("}, COUNT_POLL_MS);")
+        i = js.rindex("setInterval(function () {", 0, end)
+        tail = js[i:end + 20]
         check("loadAllCounts()" in tail and "refreshThread(false)" in tail
               and ("loadConversations()" in tail or "loadPosts()" in tail),
               "輪詢同時刷新：紅點 + 列表 + 開啟中的訊息")
+        check("refreshPost(false)" in tail, "輪詢同時刷新：貼文詳情（留言/已回標籤）")
 
     # [f] 移植過來的那幾塊：全部走 stApi/stApiJson/stUpload/stDownload（自動帶
     #     business_id 與 CSRF）。⚠️ 只看移植區 —— CRM 原本就有的對話頁附件上傳

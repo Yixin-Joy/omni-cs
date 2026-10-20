@@ -304,6 +304,7 @@
   .tag-sending { font-size: 11px; font-weight: 700; color: var(--text-soft); background: #eef1f5; padding: 2px 8px; border-radius: 10px; }
   /* 送出失敗（重試耗盡）的樂觀氣泡：留著讓你看得出是哪一則沒送出去 */
   .comment-failed { border-style: dashed; border-color: #e3b0b0; background: #fff7f7; }
+  .c-fail { margin-top: 6px; font-size: 12px; color: #b23b3b; }
   .tag-failed { font-size: 11px; font-weight: 700; color: #b23b3b; background: #fdeaea; padding: 2px 8px; border-radius: 10px; }
   .reply-box { margin-top: 10px; display: flex; gap: 8px; align-items: flex-end; }
   .reply-box textarea { min-height: 36px; }
@@ -1055,12 +1056,24 @@ var state = {
   activeKey: null, activeAcc: null, thread: [], threadSig: '', logs: [],
   convsSig: '', postsSig: '',
   activePost: null,
+  // ★ 貼文詳情：`postDetail` = 最後一次抓到/畫上的資料（輪詢比對用）；
+  //   `postDetailSig` = 內容指紋（沒變就不重繪，免得打斷正在打字的回覆框）。
+  postDetail: null, postDetailSig: '',
+  // ★ 留言回覆的「樂觀氣泡」：comment_id → [{task_id, text, status, fail_reason, at}]
+  //   status: sending | queued | sent | failed | uncertain
+  //   `sent` = 任務已送達，等伺服器把回覆寫進留言串（畫面先自己顯示，收到就移除）。
+  cmtPending: {},
+  // ★ 回覆框草稿 / 是否開著 / 是否鎖住（輪詢重繪時要還原，不然輸入中的字會被洗掉）
+  replyDrafts: {}, replyOpen: {}, replyLocked: {},
   search: '',
   aiEnabled: null,
   pendingFile: null,
   sending: false,
   settingsTab: 'autoreply',
   overview: null,
+  // 「目前這個平台有沒有綁定帳號」上次套用的狀態（platform:ok|na:bizId）——
+  // 只有翻轉才重繪列表，避免 overview 每次重載都換掉節點打斷點擊。
+  accGate: null,
   testText: '', testLayers: ['faq', 'table', 'rag'], testResult: null,
   logTier: '', logRows: [],
   postCfg: null, postEnabled: true, postLayers: {}, postChecked: {},
@@ -1346,6 +1359,42 @@ function platformsForSection() {
   return state.section === 'posts' ? POST_PLATFORMS : DM_PLATFORMS;
 }
 
+/* 本商家在該平台「有沒有綁定的帳號」？
+   來源＝`/console/agent/overview` 的 `accounts`（後端 `repo.list_accounts(bid)`，按商家隔離）。
+   ⚠️ 後端的條件是 `enabled IS NOT FALSE` —— 也就是「**可用的**綁定帳號」。
+      工作台本來就只操作可用帳號，停用的帳號出現在這裡也沒有意義。
+   ★ 回傳 `null` 代表**還不知道**（overview 沒載到／不是這個商家的）——
+     「不知道」絕不可以畫成「沒有」，否則頁面一打開會先閃一下「暫無綁定賬號」。
+   ★ 另外要驗 `business_id`：切換商家時舊商家的 overview 可能還在 state 裡，
+     不驗就會拿 A 商家的帳號去判斷 B 商家的頁面。 */
+function boundAccountsOf(platform) {
+  var o = state.overview;
+  if (!o || !Array.isArray(o.accounts)) return null;
+  if (o.business_id != null && Number(o.business_id) !== Number(state.bizId)) return null;
+  return o.accounts.filter(function (a) {
+    return String(a.platform || '') === String(platform);
+  });
+}
+
+/* 沒綁定帳號時要顯示的文案；有綁定（或還不確定）回空字串。 */
+function noAccountText(platform) {
+  var arr = boundAccountsOf(platform);
+  if (!arr || arr.length) return '';
+  return '本商戶暫無綁定的【' + (PLATFORM_LABEL[platform] || platform) + '】賬號';
+}
+
+/* overview 是非同步的：它到貨之後「有沒有帳號」才算確定。
+   只有狀態真的翻轉才重繪 —— 無謂重繪會把節點換掉，害正在按的那一下 click 不觸發。 */
+function syncAccountGating() {
+  var arr = boundAccountsOf(state.platform);
+  if (arr === null) return;                       // 還不確定 → 不動
+  var flag = state.platform + ':' + (arr.length ? 'ok' : 'na') + ':' + state.bizId;
+  if (flag === state.accGate) return;
+  state.accGate = flag;
+  state.convsSig = null; state.postsSig = null;  // 讓列表一定重畫
+  if (state.section === 'posts') renderPosts(); else renderConversations();
+}
+
 function renderTabs() {
   var el = $('tabs');
   // ★ 每個平台 tab 自帶紅點（id=badge-<platform>）—— 未處理數由 loadCounts() 拉，
@@ -1422,11 +1471,16 @@ function renderConversations() {
     return nm.indexOf(state.search) >= 0 || String(c.key || '').toLowerCase().indexOf(state.search) >= 0;
   });
   var sig = _convsSig(items) + '#' + (state.search || '') + '#' + state.activeKey
-    + '#' + state.platform + '#' + state.bizId;
+    + '#' + state.platform + '#' + state.bizId
+    + '#' + (noAccountText(state.platform) ? 'na' : '');
   if (sig === state.convsSig) return;      // 沒變 → 不重繪
   state.convsSig = sig;
   if (!items.length) {
-    list.innerHTML = '<div class="empty">' + (state.search ? '沒有符合的用戶' : '尚無訊息') + '</div>';
+    // ★ 沒綁定帳號 ≠ 還沒有訊息：前者要說清楚是「這個商家沒綁這個平台」，
+    //   否則使用者會以為是資料沒同步／系統壞了。
+    var na = noAccountText(state.platform);
+    list.innerHTML = '<div class="empty">'
+      + esc(na || (state.search ? '沒有符合的用戶' : '尚無訊息')) + '</div>';
     return;
   }
   list.innerHTML = items.map(function (c) {
@@ -1725,24 +1779,43 @@ function engineReplyForComment(commentId) {
   //   原文直接從畫面上那則留言取 —— 與使用者看到的一致，不必再多打一次 API。
   var textEl = document.querySelector('.comment[data-cid="' + commentId + '"] .comment-text');
   var srcText = textEl ? (textEl.textContent || '').trim() : '';
+  // ★ 鎖住期間若輪詢重繪，`_restoreReplyBoxes()` 會依 `replyLocked` 把框與草稿還原
+  //   （否則產生中的草稿會寫進已被換掉的 textarea，畫面上什麼都沒有）。
+  state.replyLocked[commentId] = true;
+  state.replyDrafts[commentId] = '';
   showReplyBox(commentId, '', true);
-  var box = $('rb_' + commentId);
-  var ta = box ? box.querySelector('textarea') : null;
-  if (ta) { ta.disabled = true; ta.placeholder = '自動回復引擎產生中…（不會自動送出）'; }
+
+  function _curTa() {
+    var b = $('rb_' + commentId);
+    return b ? b.querySelector('textarea') : null;
+  }
+  function _unlock() {
+    state.replyLocked[commentId] = false;
+    var t = _curTa();
+    if (t) { t.disabled = false; t.placeholder = '回覆這則留言…'; }
+    var b = $('rb_' + commentId);
+    var sb = b ? b.querySelector('.send-btn') : null;
+    if (sb) sb.disabled = false;
+  }
+
   engineDraft({
     scope: 'comment', text: srcText, comment_id: commentId,
     post_config_id: 0
   }).then(function (d) {
-    if (ta) { ta.disabled = false; ta.placeholder = '回覆這則留言…'; }
+    _unlock();
     if (d && d.would_send && d.answer) {
-      if (ta) { ta.value = d.answer; ta.focus(); }
+      state.replyDrafts[commentId] = d.answer;
+      var t = _curTa();
+      if (t) { t.value = d.answer; t.focus(); }
       showToast('已產生回覆草稿（' + (TIER_LABEL[d.tier] || d.tier || '') + '）——確認後再送出');
     } else {
-      if (ta) ta.value = '';
+      state.replyDrafts[commentId] = '';
+      var t2 = _curTa();
+      if (t2) t2.value = '';
       showToast('引擎答不出這一則：' + ((d && (d.detail || d.reason)) || '未命中'), 6000);
     }
   }).catch(function (e) {
-    if (ta) { ta.disabled = false; ta.placeholder = '回覆這則留言…'; }
+    _unlock();
     showToast('引擎產生失敗：' + ((e && e.message) || e), 6000);
   });
 }
@@ -1787,11 +1860,14 @@ function renderPosts() {
     return [p.post_id, p.new_comments, p.comment_count, p.created_at].join(':');
   }).join('|') + '#' + (state.search || '') + '#'
     + (state.activePost ? state.activePost.post_id : '')
-    + '#' + state.platform + '#' + state.bizId;
+    + '#' + state.platform + '#' + state.bizId
+    + '#' + (noAccountText(state.platform) ? 'na' : '');
   if (sig === state.postsSig) return;      // 沒變 → 不重繪（同上：避免打斷點擊）
   state.postsSig = sig;
   if (!posts.length) {
-    list.innerHTML = '<div class="empty">' + (state.search ? '沒有符合的貼文' : '尚無貼文') + '</div>';
+    var na = noAccountText(state.platform);
+    list.innerHTML = '<div class="empty">'
+      + esc(na || (state.search ? '沒有符合的貼文' : '尚無貼文')) + '</div>';
     return;
   }
   list.innerHTML = posts.map(function (p) {
@@ -1842,6 +1918,9 @@ function openPost(postId, acc) {
 
 function renderPostDetail(post) {
   var box = $('postDetail');
+  // 記住這份資料：留言送出後狀態一變就要用同一份資料重繪（不必再打一次 API）
+  state.postDetail = post;
+  state.postDetailSig = _postSig(post);
   var media = post.media_url
     ? '<img src="' + esc(post.media_url) + '" onerror="this.parentNode.innerHTML=\'<div class=no-media>媒體無法載入</div>\'">'
     : '<div class="no-media">無媒體</div>';
@@ -1881,26 +1960,92 @@ function renderPostDetail(post) {
   $('messages').style.display = 'none';
   $('composer').style.display = 'none';
   box.style.display = 'block';
+  _restoreReplyBoxes();     // 重繪會清掉 DOM → 把還開著的回覆框（含草稿）裝回去
+}
+
+/* 重繪後把「還開著的留言回覆框」還原（草稿、鎖住狀態一起）。
+   ⚠️ 沒有這個，10 秒輪詢一重繪，正在打字的內容就整段消失。 */
+function _restoreReplyBoxes() {
+  Object.keys(state.replyOpen || {}).forEach(function (cid) {
+    if (!state.replyOpen[cid]) return;
+    if (!$('cr_' + cid)) { delete state.replyOpen[cid]; return; }
+    showReplyBox(cid, null, false);
+  });
+}
+
+/* ---------------------------------------------------------------- 樂觀氣泡
+   「按下送出 → 立刻畫出來 → 送出完成 → 標籤消失、留言翻成已回」。
+   ★ 舊版的做法是 `setTimeout(600)` 重抓一次貼文，但那時任務幾乎都還在 `pending`
+     （Connector 每秒 claim、還要打 Graph API）→ 什麼都看不到，之後也沒有補刷
+     → 只能 F5。現在：本機先畫、短輪詢任務狀態、`sent` 就補刷。
+   ★★ 這些氣泡**不是 DOM 一次性插入**，而是存在 `state.cmtPending` 裡由
+     `commentHtml()` 一起渲染 —— 否則 10 秒輪詢一重繪就不見了。 */
+
+function _pendingOf(cid) { return state.cmtPending[cid] || []; }
+
+function _pendInFlight(cid) {
+  return _pendingOf(cid).some(function (p) {
+    return p.status === 'sending' || p.status === 'queued';
+  });
+}
+
+function _pendSent(cid) {
+  return _pendingOf(cid).some(function (p) { return p.status === 'sent'; });
+}
+
+var _PEND_LABEL = {
+  sending: '發送中', queued: '發送中', sent: '已送出',
+  failed: '送出失敗', uncertain: '待確認',
+};
+
+function pendingBubbleHtml(p) {
+  var cls = 'comment comment-pending';
+  var tagCls = 'tag-sending';
+  if (p.status === 'failed' || p.status === 'uncertain') { cls += ' comment-failed'; tagCls = 'tag-failed'; }
+  else if (p.status === 'sent') { cls = 'comment comment-pending'; }
+  else { cls += ' comment-sending'; }
+  var reason = (p.status === 'failed' || p.status === 'uncertain')
+    ? '<div class="c-fail">' + esc(p.fail_reason || (p.status === 'uncertain'
+        ? '可能已送出，請到平台確認' : '送出失敗')) + '</div>'
+    : '';
+  return '<div class="' + cls + '" data-task="' + esc(p.task_id || '') + '">'
+    + '<div class="comment-head"><div class="avatar">' + esc(avatarChar('客服')) + '</div>'
+    + '<div class="c-name">客服（我）</div>'
+    + '<div class="c-time">' + fmtTime(p.at) + '</div>'
+    + '<div class="spacer"></div><span class="' + tagCls + '">'
+    + esc(_PEND_LABEL[p.status] || p.status) + '</span></div>'
+    + '<div class="comment-text">' + esc(p.text || '') + '</div>'
+    + reason + '</div>';
 }
 
 function commentHtml(c, isRoot) {
-  var replies = (c.replies || []).map(function (r) { return commentHtml(r, false); }).join('');
+  var pend = isRoot ? _pendingOf(c.comment_id) : [];
+  var pendHtml = pend.map(pendingBubbleHtml).join('');
+  var replies = (c.replies || []).map(function (r) { return commentHtml(r, false); }).join('')
+    + pendHtml;
+  // ★ 任務已送達（`sent`）就**先**翻成「已回」—— 不必等伺服器的 `replied` 回填，
+  //   否則「送出成功但標籤還是待處理」會讓客服以為沒發出去。
+  var done = isRoot && (!!c.replied || _pendSent(c.comment_id));
   var tag = '';
   if (isRoot) {
-    if (c.replied) tag = '<span class="tag-replied">已回</span>';
+    if (done) tag = '<span class="tag-replied">已回</span>';
     else if (c.is_handled) tag = '<span class="tag-ignored">已忽略</span>';
     else tag = '<span class="tag-pending">待處理</span>';
     tag += autoTag(c);
   }
   var foot = '';
-  if (isRoot && !c.replied && !c.is_handled) {
+  // ★ 送出中（sending/queued）→ 先把「回覆／忽略」按鈕收起來，避免連點重複送
+  var busy = isRoot && _pendInFlight(c.comment_id);
+  if (isRoot && !done && !c.is_handled) {
     foot = '<div class="comment-replies" id="cr_' + esc(c.comment_id) + '">' + replies + '</div>'
-      + '<div class="comment-foot">'
-      + '<button class="reply-btn" onclick="showReplyBox(\'' + esc(c.comment_id) + '\',\'\',true)">回覆</button>'
-      + '<button class="reply-btn" onclick="markCommentHandled(\'' + esc(c.comment_id) + '\')">忽略</button>'
-      + '</div>';
+      + (busy ? ''
+        : '<div class="comment-foot">'
+          + '<button class="reply-btn" onclick="showReplyBox(\'' + esc(c.comment_id) + '\',null,true)">回覆</button>'
+          + '<button class="reply-btn" onclick="markCommentHandled(\'' + esc(c.comment_id) + '\')">忽略</button>'
+          + '</div>');
   } else {
-    foot = '<div class="comment-replies">' + replies + '</div>';
+    foot = '<div class="comment-replies"'
+      + (isRoot ? ' id="cr_' + esc(c.comment_id) + '"' : '') + '>' + replies + '</div>';
   }
   // ★ 右鍵只掛在「還沒被處理的客戶留言內容框」上（不是整個貼文框）
   var ctx = commentReplyable(c, isRoot)
@@ -1923,38 +2068,218 @@ function commentReplyable(c, isRoot) {
     && engineSupported(state.platform, 'comment');
 }
 
+/* `value` 傳 null = 沿用已存的草稿（重繪還原、再點一次「回覆」都用這個） */
 function showReplyBox(commentId, value, focus) {
   var host = $('cr_' + commentId);
   if (!host) return;
+  state.replyOpen[commentId] = true;
+  if (typeof value === 'string' && value !== '') state.replyDrafts[commentId] = value;
+  else if (typeof value === 'string' && value === '' && !state.replyDrafts[commentId]) {
+    state.replyDrafts[commentId] = '';
+  }
   var exist = $('rb_' + commentId);
-  if (exist) { if (focus) exist.querySelector('textarea').focus(); return; }
+  if (exist) {
+    var ta0 = exist.querySelector('textarea');
+    var lk = !!state.replyLocked[commentId];
+    if (ta0) {
+      if (document.activeElement !== ta0) ta0.value = state.replyDrafts[commentId] || '';
+      ta0.disabled = lk;
+      ta0.placeholder = lk ? '自動回復引擎產生中…（不會自動送出）' : '回覆這則留言…';
+    }
+    var sb0 = exist.querySelector('.send-btn');
+    if (sb0) sb0.disabled = lk;
+    if (focus && !lk && ta0) ta0.focus();
+    return;
+  }
+  var locked = !!state.replyLocked[commentId];
   var div = document.createElement('div');
   div.className = 'reply-box'; div.id = 'rb_' + commentId;
-  div.innerHTML = '<textarea rows="1" placeholder="回覆這則留言…">' + esc(value || '') + '</textarea>'
-    + '<button class="send-btn" onclick="sendCommentReply(\'' + esc(commentId) + '\', this)">送出</button>';
+  div.innerHTML = '<textarea rows="1" placeholder="' + (locked ? '自動回復引擎產生中…（不會自動送出）' : '回覆這則留言…') + '"'
+    + (locked ? ' disabled' : '')
+    + ' oninput="state.replyDrafts[\'' + esc(commentId) + '\']=this.value"'
+    + ' onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();'
+    + 'sendCommentReply(\'' + esc(commentId) + '\', this.parentNode.querySelector(\'.send-btn\'))}">'
+    + esc(state.replyDrafts[commentId] || '') + '</textarea>'
+    + '<button class="send-btn' + (locked ? '" disabled' : '') + '"'
+    + ' onclick="sendCommentReply(\'' + esc(commentId) + '\', this)">送出</button>';
   host.insertBefore(div, host.firstChild);
-  if (focus) div.querySelector('textarea').focus();
+  if (focus && !locked) div.querySelector('textarea').focus();
+}
+
+function closeReplyBox(commentId) {
+  var box = $('rb_' + commentId);
+  if (box && box.parentNode) box.parentNode.removeChild(box);
+  delete state.replyOpen[commentId];
+  delete state.replyDrafts[commentId];
+  delete state.replyLocked[commentId];
 }
 
 function sendCommentReply(commentId, btn) {
   var box = $('rb_' + commentId);
   var ta = box ? box.querySelector('textarea') : null;
-  var text = ta ? ta.value.trim() : '';
+  var text = ta ? ta.value.trim() : (state.replyDrafts[commentId] || '').trim();
   if (!text) { showToast('請輸入回覆內容'); return; }
   if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
   var acc = state.activePost ? state.activePost.bp_account_id : 0;
+
+  // ★ 立刻畫上去（status='sending'）＋ 收起回覆框 —— 不等伺服器，畫面 0 延遲
+  var entry = { task_id: null, text: text, status: 'sending',
+                at: new Date().toISOString(), fail_reason: '' };
+  state.cmtPending[commentId] = _pendingOf(commentId).concat([entry]);
+  closeReplyBox(commentId);
+  _renderPostNow();
+
   apiJson('/console/agent/comment/reply', {
     business_id: state.bizId, platform: state.platform, bp_account_id: acc,
     comment_id: commentId, text: text
   }).then(function (res) {
     if (!guard(res)) {
-      if (btn) { btn.disabled = false; btn.textContent = '送出'; }
+      // 任務沒建立 → 明確標失敗，別讓氣泡一直轉「發送中」
+      entry.status = 'failed';
+      entry.fail_reason = (res && res.data && res.data.error) || '建立外送任務失敗';
+      _renderPostNow();
+      showToast(entry.fail_reason, 6000);
       return;
     }
-    showToast('已建立外送任務 #' + res.data.task_id);
+    entry.task_id = res.data.task_id;
+    entry.status = 'queued';
+    _renderPostNow();
+    _startCmtPoll();        // 短輪詢任務狀態：sent 就翻「已回」＋ 補刷留言串
     loadAllCounts();
-    setTimeout(function () { openPost(state.activePost.post_id, acc); loadPosts(); }, 600);
+  }).catch(function (e) {
+    entry.status = 'failed';
+    entry.fail_reason = (e && e.message) || '送出失敗';
+    _renderPostNow();
+    showToast(entry.fail_reason, 6000);
   });
+}
+
+/* 用「現有資料」重繪貼文詳情（不重新抓取），讓樂觀氣泡/標籤立刻更新 */
+function _renderPostNow() {
+  if (state.postDetail) renderPostDetail(state.postDetail);
+}
+
+/* 貼文詳情的內容指紋（沒變就不重繪，免得打斷正在打的回覆框、也省流量） */
+function _postSig(post) {
+  if (!post) return '';
+  var parts = [post.post_id || '', post.media_url || '', String(post.comments_count || 0)];
+  (post.comments || []).forEach(function (c) {
+    parts.push([c.comment_id || '', c.replied ? 'r' : '-', c.is_handled ? 'h' : '-',
+                (c.from_name || ''), (c.text || '').length].join(':'));
+    (c.replies || []).forEach(function (r) {
+      parts.push(['>', r.comment_id || '', r.from_name || '', (r.text || '').length].join(':'));
+    });
+  });
+  return parts.join('|');
+}
+
+/* 伺服器已經有這則回覆了 → 把本機的「已送出」氣泡收掉（否則會重複顯示兩條） */
+function _pruneSentPending(post) {
+  var byCid = {};
+  (post.comments || []).forEach(function (c) { byCid[c.comment_id] = c; });
+  var now = Date.now();
+  Object.keys(state.cmtPending).forEach(function (cid) {
+    var root = byCid[cid];
+    var keep = _pendingOf(cid).filter(function (p) {
+      var age = now - new Date(p.at).getTime();
+      var echoed = !!root && (root.replies || []).some(function (r) {
+        return String(r.from_name || '').indexOf('客服') === 0
+          && String(r.text || '').trim() === String(p.text || '').trim();
+      });
+      if (echoed) return false;                   // 伺服器版回覆已經有了
+      if (p.status === 'sent') return age < 90000;                 // 先自己畫著，等 echo
+      if (p.status === 'failed' || p.status === 'uncertain') return true;  // 留給人看
+      return age < 300000;                        // 狀態不明（端點暫時不可用）最多留 5 分鐘
+    });
+    if (keep.length) state.cmtPending[cid] = keep; else delete state.cmtPending[cid];
+  });
+}
+
+/* 補刷「目前開啟的貼文詳情」（留言串 / 已回標籤 / 新留言） */
+function refreshPost(force) {
+  if (state.section !== 'posts') return;   // 切去私訊欄目就別再抓貼文
+  if (!state.activePost || !state.activePost.post_id) return;
+  if (!state.postDetail) return;          // 還沒開過貼文詳情就不打
+  var acc = state.activePost.bp_account_id || 0;
+  api(qs('/console/agent/post', [['business_id', state.bizId], ['platform', state.platform],
+    ['bp_account_id', acc], ['post_id', state.activePost.post_id]])).then(function (res) {
+    if (!guard(res)) return;
+    _pruneSentPending(res.data);
+    if (!force && _postSig(res.data) === state.postDetailSig) return;
+    renderPostDetail(res.data);
+  });
+}
+
+/* -------------------------------------------------- 送出後的任務狀態短輪詢 */
+var _cmtPollTimer = null;
+var _cmtPollFails = 0;
+
+function _anyCmtInFlight() {
+  return Object.keys(state.cmtPending).some(function (cid) { return _pendInFlight(cid); });
+}
+
+function _startCmtPoll() {
+  if (_cmtPollTimer) return;
+  // ★ 只在「有東西在飛」時跑，1.5 秒一次 → 送出後幾乎立刻就看得到「已送達」。
+  //   一般情況（沒有待送任務）完全不發請求，成本為 0。
+  _cmtPollTimer = setInterval(function () {
+    if (!_anyCmtInFlight()) {
+      clearInterval(_cmtPollTimer); _cmtPollTimer = null; return;
+    }
+    if (document.hidden) return;
+    pollCommentTasks();
+  }, 1500);
+}
+
+function pollCommentTasks() {
+  var ids = [];
+  Object.keys(state.cmtPending).forEach(function (cid) {
+    _pendingOf(cid).forEach(function (p) {
+      if (p.task_id && (p.status === 'sending' || p.status === 'queued')) ids.push(p.task_id);
+    });
+  });
+  if (!ids.length) return;
+  api(qs('/console/agent/task-status', [['business_id', state.bizId], ['ids', ids.join(',')]]))
+    .then(function (res) {
+      // ⚠️ 這裡刻意不叫 `guard()`：端點若暫時不可用（例如後端還沒重啟），
+      //    1.5 秒一次的 toast 會把畫面洗掉。失敗就安靜跳過，交給 20 秒的
+      //    `refreshPost()` 與 `_pruneSentPending()` 的超時回收兜底。
+      if (!res || !res.data) return;
+      if (res.status === 401) { window.location.href = '/login'; return; }
+      if (res.status >= 400 || !res.data.ok) {
+        // 連續失敗（端點不存在／後端沒重啟）→ 停掉短輪詢，別空打
+        if (++_cmtPollFails >= 3 && _cmtPollTimer) {
+          clearInterval(_cmtPollTimer); _cmtPollTimer = null;
+        }
+        return;
+      }
+      _cmtPollFails = 0;
+      var map = {};
+      (res.data.items || []).forEach(function (t) { map[String(t.task_id)] = t; });
+      var changed = false, sentAny = false;
+      Object.keys(state.cmtPending).forEach(function (cid) {
+        _pendingOf(cid).forEach(function (p) {
+          if (!p.task_id) return;
+          var st = map[String(p.task_id)];
+          if (!st) return;
+          if (st.status === 'sent') {
+            if (p.status !== 'sent') { p.status = 'sent'; changed = true; sentAny = true; }
+          } else if (st.status === 'failed' || st.status === 'uncertain') {
+            if (p.status !== st.status) {
+              p.status = st.status;
+              p.fail_reason = st.fail_reason || '';
+              changed = true;
+            }
+          }
+        });
+      });
+      if (changed) _renderPostNow();
+      if (sentAny) {
+        refreshPost(true);      // 伺服器版回覆 + 真正的「已回」
+        loadPosts();
+        loadAllCounts();
+      }
+    });
 }
 
 function markCommentHandled(commentId) {
@@ -2067,6 +2392,8 @@ function loadAutoSettings() {
     if (!guard(res)) return;
     state.overview = res.data;
     renderAutoBar();
+    syncAccountGating();          // 有／沒有綁定帳號確定後，列表文案才會對
+    if (!state.activeKey && !state.activePost) resetChat();   // 右側空白區同步換文案
   });
 }
 
@@ -2427,6 +2754,7 @@ function loadAutoSettingsAnd() {
     if (!guard(res)) return;
     state.overview = res.data;
     renderAutoBar();
+    syncAccountGating();          // 同上：確定有沒有綁定帳號
     if (state.settingsTab === 'autoreply') renderSettingsAutoreply($('spBody'));
   });
 }
@@ -5128,9 +5456,11 @@ function closeEngineMiss() { var el = $('engineMiss'); if (el) el.classList.remo
 
 /* ---------------------------------------------------------------- 其他 */
 function resetChat() {
+  // 該平台沒綁定帳號 → 右側也講同一句話（左側列表已經顯示，這裡不重複堆字解釋）
+  var na = noAccountText(state.platform);
   $('chatHead').innerHTML = '<div class="chat-placeholder" style="flex:1;flex-direction:row;gap:16px">'
-    + '<span class="big">💬</span><p>' + (state.section === 'posts'
-      ? '選擇左側一篇貼文開始查看' : '選擇左側一位用戶開始查看') + '</p></div>';
+    + '<span class="big">💬</span><p>' + esc(na || (state.section === 'posts'
+      ? '選擇左側一篇貼文開始查看' : '選擇左側一位用戶開始查看')) + '</p></div>';
   $('messages').style.display = 'none';
   $('postDetail').style.display = 'none';
   $('composer').style.display = 'none';
@@ -5186,17 +5516,18 @@ function boot() {
   //        · 紅點數字（`loadAllCounts`，有簽名比較不會亂重繪）
   //        · 會話列表 / 貼文列表（依欄目）
   //        · 目前開啟的那個會話的訊息（`refreshThread`，沒變就不重繪、保住滾動位置）
+  //        · 目前開啟的貼文詳情（`refreshPost`，留言串／已回標籤／新留言）
   setInterval(function () {
     if (document.hidden) return;
     loadAllCounts();
-    if (state.section === 'posts') loadPosts(); else loadConversations();
+    if (state.section === 'posts') { loadPosts(); refreshPost(false); } else loadConversations();
     refreshThread(false);
   }, COUNT_POLL_MS);
   // 從背景切回來 → 立刻補一次（不然要等一輪才更新）
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) return;
     loadAllCounts();
-    if (state.section === 'posts') loadPosts(); else loadConversations();
+    if (state.section === 'posts') { loadPosts(); refreshPost(false); } else loadConversations();
     refreshThread(false);
   });
 }

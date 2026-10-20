@@ -281,6 +281,33 @@ def comment_handle(payload: "CommentHandleIn", sess: dict = Depends(deps.require
     return {"ok": True, "updated": n}
 
 
+@router.get("/task-status")
+def task_status(business_id: int = Query(...), ids: str = Query(default=""),
+                sess: dict = Depends(deps.require_agent)):
+    """查外送任務的狀態（前端「送出後即時反饋」用）。
+
+    ★ 為什麼需要（2026-10-20 小jo：「點擊回覆後只有重置整個頁面才看得到內容」）：
+      留言送出後前端原本只能 `setTimeout(600)` 重抓一次貼文 —— 那時任務幾乎都還在
+      `pending`（Connector 每秒 claim 一次，還要打 Graph API），重抓當然看不到，
+      之後也沒有任何補刷 → 只能手動 F5。有了這支，前端可以只針對「剛送出的那幾筆」
+      短輪詢，看到 `sent` 就補刷貼文詳情（那時 Connector 已把回覆寫進留言串、
+      `replied` 也翻成 true）。
+
+    `ids` 逗號分隔（上限 20 筆，避免濫用）；只回**屬於該商家**的任務。
+    """
+    bad = _guard(sess, business_id)
+    if bad:
+        return bad
+    want: list[int] = []
+    for p in (ids or "").split(","):
+        p = p.strip()
+        if p.isdigit():
+            want.append(int(p))
+    if not want:
+        return {"ok": True, "items": []}
+    return {"ok": True, "items": repo.tasks_status(want[:20], int(business_id))}
+
+
 @router.get("/merchant-stats")
 def merchant_stats(sess: dict = Depends(deps.require_agent)):
     """工作台頂部商家列用：每個商家「未處理數 + 最近訊息時間」。

@@ -65,6 +65,29 @@ def list_accounts(business_id: int, platform: str = "") -> list[dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
+def tasks_status(task_ids: list[int], business_id: int) -> list[dict]:
+    """批次查外送任務狀態（工作台「送出後即時反饋」用）。
+
+    ⚠️ 一定要帶 `business_id` 條件 —— 任務 id 是自增的，不擋就能拿別家商家的
+      任務狀態（雖然只是狀態，也是越權）。
+    """
+    ids = [int(i) for i in (task_ids or [])][:20]
+    if not ids:
+        return []
+    with ro() as cur:
+        cur.execute(
+            "SELECT id, status, fail_reason, finished_at FROM crm_outbound_task"
+            " WHERE id = ANY(%s) AND business_id = %s",
+            (ids, int(business_id)),
+        )
+        return [{
+            "task_id": r["id"],
+            "status": r["status"],
+            "fail_reason": r["fail_reason"],
+            "finished_at": r["finished_at"].isoformat() if r["finished_at"] else None,
+        } for r in cur.fetchall()]
+
+
 def ai_switch_row(business_id: int, platform: str, scope: str) -> bool:
     """該商家（平台×場景）的 AI 總開關（工作台顯示用）。"""
     with ro() as cur:
