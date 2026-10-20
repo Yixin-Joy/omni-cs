@@ -566,6 +566,31 @@ def comment_watermarks(platform: str, post_ids: list[str]) -> dict[str, datetime
 
 # ---------------------------------------------------------------- 計數（紅點）
 
+def comment_text(platform: str, comment_id: str) -> dict | None:
+    """某則留言的原文 + 所屬貼文（工作台右鍵「引擎生成回覆」的兜底）。
+
+    回 `{comment_id, post_id, text, from_name, parent_id}`；找不到回 None。
+    """
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT comment_id, post_id, text, from_name, parent_id"
+                "  FROM igfb_comment WHERE platform=%s AND comment_id=%s LIMIT 1",
+                (platform, comment_id))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {"comment_id": row[0], "post_id": row[1] or "",
+                    "text": row[2] or "", "from_name": row[3] or "",
+                    "parent_id": row[4] or ""}
+    except Exception as e:  # noqa: BLE001
+        log.warning("取留言原文失敗 %s/%s: %s", platform, comment_id, e)
+        return None
+    finally:
+        conn.close()
+
+
 def count_pending(platform: str, account_id: str, scope: str) -> int:
     """某帳號在該平台的「未處理」筆數（工作台紅點）。
 

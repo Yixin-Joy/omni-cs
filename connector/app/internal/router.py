@@ -843,6 +843,28 @@ def pending_count(
     return {"ok": True, "count": n, "platform": platform, "scope": scope}
 
 
+@router.get("/comment-text")
+def comment_text(
+    platform: str = Query(...),
+    comment_id: str = Query(...),
+):
+    """某則留言的原文（工作台右鍵「由自動回復引擎給出回覆」的兜底）。
+
+    ★ 為什麼需要（2026-10-20 小jo：留言右鍵生成回覆「沒有任何內容出現」）：
+      前端 `engineDraft` 忘了帶 `text` → 後端 `question` 為空 → 400
+      「找不到要回覆的內容」。前端已補上傳原文，這支是**第二道保險**：
+      只要知道 comment_id，就一定能拿回原文（例如從別處觸發、或 DOM 上取不到）。
+    """
+    if platform not in ("ig", "fb"):
+        return _err(400, f"留言只支援 ig / fb（收到 {platform}）")
+    if not (comment_id or "").strip():
+        return _err(400, "缺少 comment_id")
+    rows = igfb_store.comment_text(platform, comment_id.strip())
+    if not rows:
+        return _err(404, "找不到該留言")
+    return {"ok": True, **rows}
+
+
 @router.get("/ping")
 def ping():
     return {"ok": True, "service": config.SERVICE_NAME}

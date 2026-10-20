@@ -134,11 +134,52 @@ def test_crm_enqueue_scope() -> None:
     check('content["comment_id"] = comment_id' in body, "comment 仍會帶 comment_id")
 
 
+def test_comment_text_endpoint() -> None:
+    """新增的 /internal/api/comment-text（右鍵生成回覆缺 text 時的兜底）。"""
+    print("\n[5] /internal/api/comment-text 端點")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.core import config
+    from app.internal import router as ir
+
+    app = FastAPI()
+    app.include_router(ir.router)
+    H = {"X-Internal-Token": config.INTERNAL_API_TOKEN}
+    with TestClient(app) as c:
+        # 找一則真實留言來查
+        from app.core import db
+        conn = db.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT platform, comment_id FROM igfb_comment"
+                            " WHERE COALESCE(text,'') <> '' ORDER BY id DESC LIMIT 1")
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            check(False, "DB 裡有一則可測的留言")
+            return
+        plat, cid = row
+        r = c.get("/internal/api/comment-text",
+                  params={"platform": plat, "comment_id": cid}, headers=H)
+        check(r.status_code == 200, "查得到（200）", str(r.status_code))
+        body = r.json() if r.status_code == 200 else {}
+        check(bool((body or {}).get("text")), "回傳 text 原文", str((body or {}).get("text"))[:40])
+        r2 = c.get("/internal/api/comment-text",
+                   params={"platform": plat, "comment_id": "__nope__"}, headers=H)
+        check(r2.status_code == 404, "查不到回 404", str(r2.status_code))
+        r3 = c.get("/internal/api/comment-text",
+                   params={"platform": "wechat", "comment_id": "x"}, headers=H)
+        check(r3.status_code == 400, "非 ig/fb 回 400", str(r3.status_code))
+
+
 def main() -> int:
     test_build_sub_items()
     test_send_routing()
     test_target_override()
     test_crm_enqueue_scope()
+    test_comment_text_endpoint()
     print(f"\n{'=' * 60}\n  留言自動回復：PASS {_pass} / FAIL {len(_fail)}")
     if _fail:
         print("  失敗：" + "、".join(_fail))

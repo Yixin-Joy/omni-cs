@@ -1718,12 +1718,19 @@ function engineReplyForComment(commentId) {
   hideCtxMenu();
   var acc = state.activePost ? state.activePost.bp_account_id : 0;
   var postId = state.activePost ? state.activePost.post_id : '';
+  // ★ 一定要把「被右鍵那一則的原文」傳給後端（`DraftIn.text`）。
+  //   原本這裡只傳 comment_id → 後端 `question` 為空 → 400
+  //   「找不到要回覆的內容」→ 看起來就是「右鍵生成回覆沒有任何內容出現」。
+  //   （私訊那條 `engineReplyForMessage` 一直有傳 `text: m.text`，只有留言這條漏了）
+  //   原文直接從畫面上那則留言取 —— 與使用者看到的一致，不必再多打一次 API。
+  var textEl = document.querySelector('.comment[data-cid="' + commentId + '"] .comment-text');
+  var srcText = textEl ? (textEl.textContent || '').trim() : '';
   showReplyBox(commentId, '', true);
   var box = $('rb_' + commentId);
   var ta = box ? box.querySelector('textarea') : null;
   if (ta) { ta.disabled = true; ta.placeholder = '自動回復引擎產生中…（不會自動送出）'; }
   engineDraft({
-    scope: 'comment', comment_id: commentId,
+    scope: 'comment', text: srcText, comment_id: commentId,
     post_config_id: 0
   }).then(function (d) {
     if (ta) { ta.disabled = false; ta.placeholder = '回覆這則留言…'; }

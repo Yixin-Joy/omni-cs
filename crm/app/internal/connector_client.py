@@ -279,6 +279,23 @@ def fetch_post(platform: str, platform_account_id, post_id: str) -> dict | None:
         return None
 
 
+def fetch_comment_text(platform: str, comment_id: str) -> str:
+    """某則留言的原文（右鍵「引擎生成回覆」缺 `text` 時的兜底）。取不到回空字串。"""
+    if not comment_id:
+        return ""
+    try:
+        with _client() as c:
+            r = c.get("/internal/api/comment-text",
+                      params={"platform": platform, "comment_id": comment_id})
+            if r.status_code != 200:
+                log.warning("取留言原文失敗 status=%s", r.status_code)
+                return ""
+            return str((r.json() or {}).get("text") or "")
+    except Exception as e:  # noqa: BLE001
+        log.warning("取留言原文異常: %s", e)
+        return ""
+
+
 def fetch_merchant_stats(accounts: list[dict]) -> list[dict] | None:
     """一次算多帳號的「未處理數 + 最近訊息時間」（工作台頂部商家列）。連不上回 None。
 

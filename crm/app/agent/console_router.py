@@ -1021,6 +1021,13 @@ async def draft_reply(payload: DraftIn, sess: dict = Depends(deps.require_agent)
                     if str(m.get("message_id") or "") == payload.message_id:
                         question = (m.get("text") or "").strip()
                         break
+    if not question and scope == "comment" and payload.comment_id:
+        # ★ 第二道保險：留言場景不像私訊有 history 可查原文，
+        #   前端一旦漏給 `text`（2026-10-20 就是這樣）就直接 400
+        #   「找不到要回覆的內容」→ 使用者看到的是「右鍵生成回覆沒有任何內容」。
+        #   這裡按 comment_id 反查資料庫把原文補回來。
+        question = (await asyncio.to_thread(
+            connector_client.fetch_comment_text, plat, payload.comment_id) or "").strip()
     if not question:
         return _err(400, "找不到要回覆的內容（請重新整理後再試）")
 
