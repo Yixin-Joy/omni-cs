@@ -73,9 +73,9 @@ def part_a() -> None:
           "★ 驗 business_id：切換商家時殘留的 overview 不能用")
     check("o.accounts.filter" in ba, "按 platform 過濾")
 
-    rc = body_of("renderConversations", 1800)
+    rc = body_of("renderConversations", 2600)
     check("noAccountText(state.platform)" in rc, "★ 私訊列表空清單會先問有沒有綁定帳號")
-    check("esc(na ||" in rc, "文案有轉義")
+    check("esc(txt)" in rc or "esc(na ||" in rc, "文案有轉義")
     check("(noAccountText(state.platform) ? 'na' : '')" in rc,
           "★ 列表指紋含「有沒有帳號」→ 翻轉時才會重繪")
 
@@ -128,7 +128,7 @@ var state = {
   overview: null
 };
 var NODES = {};
-function $(id) { if (!NODES[id]) NODES[id] = { innerHTML: '' }; return NODES[id]; }
+function $(id) { if (!NODES[id]) NODES[id] = { innerHTML: '', style: {} }; return NODES[id]; }
 function esc(s) {
   return String(s === null || s === undefined ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -141,6 +141,8 @@ function _convsSig(items) {
   return (items || []).map(function (c) { return c.key + ':' + c.pending; }).join('|');
 }
 function renderBadges() {}
+// 帳號下拉模組在文件層掛了「點空白收起」的監聽；這裡只需要它不要炸。
+var document = { addEventListener: function () {} };
 """ + code + r"""
 // 計數器：包住兩支 render，用來驗「syncAccountGating 只在翻轉時重繪」
 var nRC = 0, nRP = 0;

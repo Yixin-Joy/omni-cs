@@ -359,8 +359,11 @@ def pending_counts(business_id: int = Query(...), scope: str = Query(default="dm
       **在還沒點進該平台前就顯示**，而 `/conversations` 一次只回一個平台 → 前端
       算不出其他平台的數字。這裡走 Connector 的 `/pending-count`（最輕量的 count）。
 
-    回 `{counts: {wechat: n, ...}, total: N, unreachable: bool}`；
+    回 `{counts: {wechat: n, ...}, total: N, unreachable: bool, accounts: [...]}`；
     `unreachable=true` 代表有帳號取不到（前端要區分「0 筆」與「連不上」）。
+    ★ `accounts` = **逐帳號**明細（`{id, platform, name, count}`）—— 同一平台綁了多個
+      帳號時（例如兩個 WhatsApp），工作台的帳號下拉需要各自的红點。`count` 為 `None`
+      代表那個帳號取不到。
     """
     bad = _guard(sess, business_id)
     if bad:
@@ -370,19 +373,28 @@ def pending_counts(business_id: int = Query(...), scope: str = Query(default="dm
 
     accounts_ = repo.list_accounts(int(business_id), "")
     counts: dict[str, int] = {}
+    per_acc: list[dict] = []
     unreachable = False
     total = 0
     for a in accounts_:
         plat = a["platform"]
         if scope == "comment" and plat not in ("ig", "fb"):
             continue
+        name = a.get("display_name") or a.get("platform_business_account_id") or str(a["id"])
         n = connector_client.fetch_pending_count(plat, a["id"], scope=scope)
         if n is None:
+            # 取不到就回 `count=None`：前端要能區分「真的 0 筆」與「連不上」，
+            # 否則紅點會消失得像「已經處理完了」。
             unreachable = True
+            per_acc.append({"id": a["id"], "platform": plat,
+                            "name": name, "count": None})
             continue
         counts[plat] = counts.get(plat, 0) + int(n)
         total += int(n)
-    return {"ok": True, "counts": counts, "total": total, "unreachable": unreachable}
+        per_acc.append({"id": a["id"], "platform": plat,
+                        "name": name, "count": int(n)})
+    return {"ok": True, "counts": counts, "total": total, "unreachable": unreachable,
+            "accounts": per_acc}
 
 
 @router.post("/sync-history")

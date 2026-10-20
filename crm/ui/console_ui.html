@@ -98,6 +98,48 @@
     z-index: 2;
   }
 
+  /* 同一平台綁了多個帳號時的「帳號選擇」下拉（例如兩個 WhatsApp）。
+     ★ 只有 >=2 個帳號才出現；單一帳號不騷擾使用者。 */
+  .acc-bar { position: relative; padding: 0 0 2px; }
+  .acc-btn {
+    width: 100%; display: flex; align-items: center; gap: 8px; cursor: pointer;
+    padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: #fff; color: var(--text); font-size: 12.5px; font-weight: 600;
+    text-align: left; transition: border-color .15s;
+  }
+  .acc-btn:hover { border-color: var(--accent); }
+  .acc-btn .acc-dot { width: 7px; height: 7px; border-radius: 50%; background: #cbd5e1; flex-shrink: 0; }
+  .acc-btn.has-unread .acc-dot { background: var(--red); }
+  .acc-btn .acc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acc-btn .acc-caret { color: var(--text-soft); font-size: 10px; }
+  .acc-menu {
+    position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 30;
+    background: #fff; border: 1px solid var(--border); border-radius: 9px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, .13); overflow: hidden; padding: 4px;
+    max-height: 260px; overflow-y: auto;
+  }
+  .acc-item {
+    display: flex; align-items: center; gap: 8px; padding: 8px 9px; border-radius: 7px;
+    cursor: pointer; font-size: 12.5px; color: var(--text);
+  }
+  .acc-item:hover { background: #f4f6f9; }
+  .acc-item.on { background: var(--accent-soft); color: var(--accent-dark); font-weight: 700; }
+  .acc-item .acc-ico { width: 14px; text-align: center; color: var(--accent); flex-shrink: 0; }
+  .acc-item .acc-lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acc-item .acc-n {
+    min-width: 18px; height: 18px; line-height: 18px; border-radius: 9px;
+    background: var(--red); color: #fff; font-size: 11px; font-weight: 700;
+    text-align: center; padding: 0 5px;
+  }
+  .acc-item .acc-na { font-size: 11px; color: var(--text-soft); }
+  /* 合併顯示（全部帳號）時，每則會話標出它屬於哪個帳號 */
+  .conv-acc {
+    display: inline-block; max-width: 96px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; padding: 0 5px; border-radius: 4px; margin-left: 2px;
+    background: #eef2f7; color: #64748b; font-size: 10.5px; font-weight: 600;
+    vertical-align: 1px;
+  }
+
   .search { padding: 10px 16px; }
   .search input {
     width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px;
@@ -950,6 +992,7 @@
         <div class="nav" id="nav-posts" onclick="switchSection('posts')">貼文留言<span class="nav-badge" id="nav-badge-posts" style="display:none"></span></div>
       </div>
       <div class="tabs" id="tabs"></div>
+      <div class="acc-bar" id="accBar" style="display:none"></div>
       <div class="ar-bar" id="arBar">
         <span class="ar-label" id="arLabel">AI 自動回復</span>
         <button class="ar-btn off" id="arBtn" onclick="toggleAutoReply()">載入中…</button>
@@ -1050,6 +1093,13 @@ var state = {
   platform: 'whatsapp',
   scope: 'dm',
   counts: { dm: {}, comment: {} },          // 各平台未處理數（紅點；由 loadCounts 拉）
+  // ★ 逐帳號未處理數：{dm: {<bp_account_id>: n}, comment: {...}}。
+  //   同一平台綁多個帳號時（例如兩個 WhatsApp），帳號下拉每一項都要自己的紅點。
+  accCounts: { dm: {}, comment: {} },
+  // ★ 目前選中的帳號（0 = 該平台全部帳號合併）；只有 >=2 個帳號時才顯示下拉。
+  bpAccount: 0,
+  accPickOpen: false,                        // 帳號下拉是否展開
+  accPickSig: '',                            // 帳號下拉的指紋（沒變不重繪，避免打斷點擊）
   refreshing: false,                        // 「重新整理」（補拉歷史）進行中
   convs: [], convsTotal: 0,
   posts: [], postsHasMore: false,
@@ -1383,16 +1433,139 @@ function noAccountText(platform) {
   return '本商戶暫無綁定的【' + (PLATFORM_LABEL[platform] || platform) + '】賬號';
 }
 
+/* ---------------------------------------------------------------- 帳號選擇（同平台多帳號） */
+/* 同一個平台綁了多個帳號（最常見：兩個 WhatsApp 號）時，訊息不能混在一起看。
+   規則：
+   · 帳號 <= 1 → 不顯示下拉（單一帳號沒有選擇的意義，也不該多佔一行）。
+   · 帳號 >= 2 → 出現下拉，第一項「全部賬號」（合併、按時間排序），其後每個帳號各一項。
+   · 每一項帶自己的未處理紅點（`state.accCounts`，來源 `pending-counts.accounts`）。
+   ★ 貼文留言頁不做（`scope=comment` 只有 IG/FB，且以貼文為單位瀏覽）—— 只在私訊頁出現。 */
+
+function accCountOf(bpId, scope) {
+  var m = (state.accCounts[scope || state.scope] || {});
+  var v = m[String(bpId)];
+  return (v === undefined || v === null) ? null : (parseInt(v, 10) || 0);
+}
+
+function accTotalOf(platform) {
+  var arr = boundAccountsOf(platform) || [];
+  var sum = 0;
+  arr.forEach(function (a) {
+    var n = accCountOf(a.id);
+    if (n) sum += n;
+  });
+  return sum;
+}
+
+function accLabel(a) {
+  return a.display_name || a.platform_business_account_id || ('帳號 ' + a.id);
+}
+
+/* 目前選中的帳號物件（找不到就是 null） */
+function currentAccount() {
+  if (!state.bpAccount) return null;
+  var arr = boundAccountsOf(state.platform) || [];
+  return arr.filter(function (a) { return Number(a.id) === Number(state.bpAccount); })[0] || null;
+}
+
+function renderAccountPicker() {
+  var bar = $('accBar');
+  if (!bar) return;
+  var show = state.section === 'dm';
+  var arr = show ? (boundAccountsOf(state.platform) || []) : [];
+  var hide = (!show || arr.length <= 1);
+  if (hide && state.bpAccount) {                 // 帳號被解綁/停用後殘留的選擇 → 回到「全部」
+    state.bpAccount = 0;
+    state.accPickOpen = false;
+  }
+  // ★ 指紋比對：20 秒輪詢每次都重繪會把節點換掉，
+  //   使用者按在按鈕上（還沒放開）那一下就會失效（點不開下拉）。
+  var sig = _accPickerSig(hide, arr);
+  if (sig === state.accPickSig) return;
+  state.accPickSig = sig;
+
+  if (hide) {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+    state.accPickOpen = false;
+    return;
+  }
+  bar.style.display = '';
+  var cur = currentAccount();                    // null → 全部
+  var unread = cur ? accCountOf(cur.id) : accTotalOf(state.platform);
+  var html = '<button class="acc-btn' + (unread > 0 ? ' has-unread' : '') + '"'
+    + ' onclick="toggleAccMenu(event)" title="切換要查看的帳號">'
+    + '<span class="acc-dot"></span>'
+    + '<span class="acc-name">' + esc(cur ? accLabel(cur) : '全部賬號') + '</span>'
+    + (unread > 0 ? '<span class="acc-n">' + (unread > 99 ? '99+' : unread) + '</span>' : '')
+    + '<span class="acc-caret">▼</span></button>';
+  if (state.accPickOpen) {
+    html += '<div class="acc-menu" id="accMenu">';
+    html += accMenuItemHtml(0, '全部賬號（' + arr.length + ' 個）', accTotalOf(state.platform), true);
+    arr.forEach(function (a) {
+      html += accMenuItemHtml(a.id, accLabel(a), accCountOf(a.id), false);
+    });
+    html += '</div>';
+  }
+  bar.innerHTML = html;
+}
+
+function _accPickerSig(hide, arr) {
+  return [state.section, state.platform, state.bizId, state.bpAccount || 0,
+          state.accPickOpen ? 1 : 0, hide ? 'hide' : 'show',
+          (arr || []).map(function (a) {
+            return a.id + ':' + (a.display_name || a.platform_business_account_id || '')
+              + ':' + accCountOf(a.id);
+          }).join(',')].join('#');
+}
+
+
+function accMenuItemHtml(id, label, n, isAll) {
+  var on = Number(state.bpAccount) === Number(id);
+  var badge = '';
+  if (n === null || n === undefined) badge = '<span class="acc-na">—</span>';
+  else if (n > 0) badge = '<span class="acc-n">' + (n > 99 ? '99+' : n) + '</span>';
+  return '<div class="acc-item' + (on ? ' on' : '') + '" onclick="pickAccount(' + id + ', event)">'
+    + '<span class="acc-ico">' + (on ? '✓' : (isAll ? '＊' : '')) + '</span>'
+    + '<span class="acc-lbl">' + esc(label) + '</span>' + badge + '</div>';
+}
+
+function toggleAccMenu(e) {
+  if (e) e.stopPropagation();
+  state.accPickOpen = !state.accPickOpen;
+  renderAccountPicker();
+}
+
+function pickAccount(id, e) {
+  if (e) e.stopPropagation();
+  state.bpAccount = parseInt(id, 10) || 0;
+  state.accPickOpen = false;
+  state.activeKey = null; state.activeAcc = null;
+  state.thread = []; state.convs = [];
+  state.convsSig = null;                       // 換帳號一定要重畫
+  renderAccountPicker();
+  resetChat();
+  loadConversations();
+}
+
+/* 點空白處收起下拉（只在展開時掛，避免常駐監聽） */
+document.addEventListener('click', function () {
+  if (state.accPickOpen) { state.accPickOpen = false; renderAccountPicker(); }
+});
+
 /* overview 是非同步的：它到貨之後「有沒有帳號」才算確定。
    只有狀態真的翻轉才重繪 —— 無謂重繪會把節點換掉，害正在按的那一下 click 不觸發。 */
 function syncAccountGating() {
   var arr = boundAccountsOf(state.platform);
   if (arr === null) return;                       // 還不確定 → 不動
-  var flag = state.platform + ':' + (arr.length ? 'ok' : 'na') + ':' + state.bizId;
-  if (flag === state.accGate) return;
+  // ★ 把「帳號數量」也放進指紋：從 1 個變 2 個（新增帳號）時要出現帳號下拉，
+  //   只記 ok/na 是翻轉不了的。
+  var flag = state.platform + ':' + arr.length + ':' + state.bizId;
+  if (flag === state.accGate) { renderAccountPicker(); return; }
   state.accGate = flag;
   state.convsSig = null; state.postsSig = null;  // 讓列表一定重畫
   if (state.section === 'posts') renderPosts(); else renderConversations();
+  renderAccountPicker();
 }
 
 function renderTabs() {
@@ -1406,6 +1579,7 @@ function renderTabs() {
       + '<span class="badge" id="badge-' + p + '" style="display:none"></span></div>';
   }).join('');
   renderBadges();
+  renderAccountPicker();     // 平台 tab 換了 → 帳號下拉也要換（可能這個平台有 2 個帳號）
 }
 
 function switchSection(section) {
@@ -1414,6 +1588,8 @@ function switchSection(section) {
   if (platformsForSection().indexOf(state.platform) < 0) {
     state.platform = platformsForSection()[0];
   }
+  state.bpAccount = 0;              // 換欄目 → 帳號篩選回到「全部」
+  state.accPickOpen = false;
   $('nav-dm').className = 'nav' + (section === 'dm' ? ' active' : '');
   $('nav-posts').className = 'nav' + (section === 'posts' ? ' active' : '');
   state.activeKey = null; state.activeAcc = null; state.activePost = null;
@@ -1427,6 +1603,8 @@ function switchSection(section) {
 
 function switchPlatform(p) {
   state.platform = p;
+  state.bpAccount = 0;              // 換平台 → 帳號篩選回到「全部」（新平台的帳號不是同一批）
+  state.accPickOpen = false;
   state.activeKey = null; state.activeAcc = null; state.activePost = null;
   state.thread = []; state.convs = []; state.posts = [];
   renderTabs();
@@ -1444,7 +1622,10 @@ function onSearchInput() {
 function loadConversations() {
   if (!state.bizId) { state.convs = []; renderConversations(); return; }
   var url = qs('/console/agent/conversations', [
-    ['business_id', state.bizId], ['platform', state.platform], ['scope', 'dm'], ['limit', 100]]);
+    ['business_id', state.bizId], ['platform', state.platform], ['scope', 'dm'],
+    ['limit', 100],
+    // ★ 0 = 該平台全部帳號合併；>0 = 只看這一個帳號（同平台多帳號時由下拉選擇）
+    ['bp_account_id', state.bpAccount || 0]]);
   api(url).then(function (res) {
     if (!guard(res)) { state.convs = []; renderConversations(); return; }
     state.convs = res.data.items || [];
@@ -1459,7 +1640,10 @@ function loadConversations() {
    瞬間把節點換掉，導致那一下 click 根本不會觸發（點不動）。 */
 function _convsSig(items) {
   return (items || []).map(function (c) {
-    return [c.key, c.pending, c.last_ts, c.direction, (c.text || '').length].join(':');
+    // ★ 帶 `bp_account_id`：同平台多帳號時，`key`（客戶 ID）可能重複，
+    //   少了帳號就分不出「換了哪一筆」→ 指紋相同會被誤判成沒變。
+    return [c.key, c.bp_account_id || 0, c.pending, c.last_ts, c.direction,
+            (c.text || '').length].join(':');
   }).join('|');
 }
 
@@ -1472,28 +1656,46 @@ function renderConversations() {
   });
   var sig = _convsSig(items) + '#' + (state.search || '') + '#' + state.activeKey
     + '#' + state.platform + '#' + state.bizId
+    + '#' + (state.bpAccount || 0)          // 換帳號要重畫（即使訊息一模一樣）
     + '#' + (noAccountText(state.platform) ? 'na' : '');
   if (sig === state.convsSig) return;      // 沒變 → 不重繪
   state.convsSig = sig;
   if (!items.length) {
-    // ★ 沒綁定帳號 ≠ 還沒有訊息：前者要說清楚是「這個商家沒綁這個平台」，
+    // ★ 沒綁定帳號 ≠ 還沒有訊息 ≠ 該帳號沒有訊息：三種都要說清楚，
     //   否則使用者會以為是資料沒同步／系統壞了。
     var na = noAccountText(state.platform);
-    list.innerHTML = '<div class="empty">'
-      + esc(na || (state.search ? '沒有符合的用戶' : '尚無訊息')) + '</div>';
+    var txt = na;
+    if (!txt) {
+      if (state.search) txt = '沒有符合的用戶';
+      else if (state.bpAccount) {
+        var _a = currentAccount();
+        txt = '【' + (_a ? accLabel(_a) : '該賬號') + '】暫無訊息';
+      } else txt = '尚無訊息';
+    }
+    list.innerHTML = '<div class="empty">' + esc(txt) + '</div>';
     return;
   }
+  // 同平台多帳號且正在看「全部」→ 每則會話標出它屬於哪個帳號（否則兩邊的人混在一起分不清）
+  var multiAcc = (boundAccountsOf(state.platform) || []).length > 1 && !state.bpAccount;
   list.innerHTML = items.map(function (c) {
     var cid = c.key;
-    var active = String(cid) === String(state.activeKey);
+    // ★ `key` 只是客戶 ID（`sender_id`），**不含帳號**：同一個客戶被兩個
+    //   WhatsApp 號聊過 → 合併檢視會出現兩筆同 key。用 key+bpId 才能分辨
+    //   「哪一筆是 active」與「點下去要開哪個帳號的會話」。
+    var acc = c.bp_account_id || 0;
+    var active = String(cid) === String(state.activeKey)
+      && String(acc) === String(state.activeAcc || 0);
     var badge = c.pending > 0
       ? '<span class="conv-badge">' + (c.pending > 99 ? '99+' : c.pending) + '</span>' : '';
     return '<div class="conv' + (active ? ' active' : '') + '" data-key="' + esc(cid) + '"'
-      + ' data-bp="' + esc(c.bp_account_id || '') + '" onclick="openConversation(\'' + esc(cid) + '\')">'
+      + ' data-bp="' + esc(acc) + '"'
+      + ' onclick="openConversation(\'' + esc(cid) + '\',' + acc + ')">'
       + badge
       + '<div class="avatar">' + esc(avatarChar(c.sender_name || cid)) + '</div>'
       + '<div class="conv-meta">'
-      + '<div class="conv-row1"><span class="conv-name">' + esc(c.sender_name || cid) + '</span></div>'
+      + '<div class="conv-row1"><span class="conv-name">' + esc(c.sender_name || cid) + '</span>'
+      + (multiAcc && c.account_name ? '<span class="conv-acc">' + esc(c.account_name) + '</span>' : '')
+      + '</div>'
       + '<div class="conv-row2"><span class="conv-preview">'
       + (c.direction === 'outbound' || c.direction === 'out' ? '我：' : '')
       + mdPreview(c.text, 60) + '</span></div>'
@@ -1502,11 +1704,17 @@ function renderConversations() {
   }).join('');
 }
 
-function openConversation(cid) {
+/* `bpId` 一定要帶：同一客戶可能同時存在於多個帳號的會話裡（見上面註解）。
+   其他呼叫點（送出後重載、標記已讀）要傳 `state.activeAcc`，否則會開到第一個帳號。 */
+function openConversation(cid, bpId) {
   state.activeKey = cid;
   state.activeAcc = null;
-  var c = state.convs.filter(function (x) { return String(x.key) === String(cid); })[0];
+  var c = state.convs.filter(function (x) {
+    return String(x.key) === String(cid)
+      && (bpId == null || String(x.bp_account_id || 0) === String(bpId));
+  })[0];
   if (c) state.activeAcc = c.bp_account_id;
+  else if (bpId != null) state.activeAcc = bpId;
   renderConversations();
   var url = qs('/console/agent/conversation', [
     ['business_id', state.bizId], ['platform', state.platform], ['scope', 'dm'],
@@ -1656,7 +1864,7 @@ function markRead() {
     showToast('已標記為處理（' + (res.data.updated || 0) + ' 筆）');
     loadConversations();
     loadAllCounts();
-    openConversation(state.activeKey);
+    openConversation(state.activeKey, state.activeAcc);
   });
 }
 
@@ -1722,7 +1930,7 @@ function markMessageHandled(m) {
     if (!res.data.updated) { showToast('這一則無法標記（找不到對應訊息）'); return; }
     showToast('已標記這一則為處理');
     loadAllCounts();
-    openConversation(state.activeKey);
+    openConversation(state.activeKey, state.activeAcc);
     loadConversations();
   });
 }
@@ -2436,7 +2644,15 @@ function loadCounts(scope) {
     [['business_id', state.bizId], ['scope', scope]])).then(function (res) {
       if (!res.data || !res.data.ok) return;
       state.counts[scope] = res.data.counts || {};
+      // ★ 逐帳號未處理數（後端 `accounts`）—— 帳號下拉每一項要自己的紅點。
+      //   `count === null` 代表那個帳號取不到 → 不放進 map（下拉顯示「—」，不假裝 0）。
+      var m = {};
+      (res.data.accounts || []).forEach(function (a) {
+        if (a && a.id != null && a.count != null) m[String(a.id)] = parseInt(a.count, 10) || 0;
+      });
+      state.accCounts[scope] = m;
       renderBadges();
+      renderAccountPicker();
     }).catch(function () { /* 輪詢/載入失敗不影響畫面 */ });
 }
 
