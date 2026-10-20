@@ -2,6 +2,14 @@
 
 - 客戶來訊媒體：永久（`media/`，由 webhook 側寫入 —— 階段三搬入）。
 - 知識庫圖片**發送快取**：`media/kb_cache/`，sha256 去重，7 天清理（設計案 §12.2）。
+- **貼文縮圖**：`media/post_cache/`，sha256 去重，**永久**（不可清理）。
+
+  ★ 為什麼要本地存一份貼文圖（2026-10-20 小jo 回報「facebook 的貼文圖片不見了」）：
+    `igfb_post.media_url` 存的是 Meta CDN 的**簽名網址**（`scontent-*.fbcdn.net`），
+    URL 裡的 `oe=` 是到期時間，**約 24 小時後簽名失效**，之後一律回 403。
+    實測 8 篇貼文的簽名全部在 10-18 18:00 UTC 到期 → 圖片全掛（FB 與 IG 都是）。
+    所以在同步貼文時就把圖抓下來存本地，`media_url` 改存 `/files/post_cache/<sha>`，
+    前端（CRM 的 `/files` 代理）照舊渲染，**再也不受簽名到期影響**。
 """
 from __future__ import annotations
 
@@ -13,13 +21,14 @@ from pathlib import Path
 from app.core import config
 
 _EXT_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
-SCOPES = ("kb_cache", "outbound")
+SCOPES = ("kb_cache", "outbound", "post_cache")
 
 
 def _scope_dirs() -> dict[str, Path]:
     return {
         "kb_cache": Path(config.KB_CACHE_DIR),
         "outbound": Path(config.MEDIA_DIR) / "outbound",
+        "post_cache": Path(config.MEDIA_DIR) / "post_cache",
     }
 
 

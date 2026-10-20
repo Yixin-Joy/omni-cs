@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 
+from app import media
 from app.channels.igfb_recv import to_dt
 from app.core import config
 from app.core import db
@@ -295,6 +297,79 @@ def land_comment(platform: str, ev: dict, account: dict | None, *,
 
 # ---------------------------------------------------------------- 貼文（歷史補拉）
 
+# ★ 貼文圖本地快取（2026-10-20 修「FB 貼文圖片不見了」）
+#
+#   `igfb_post.media_url` 原本直接存 Meta CDN 的**簽名網址**，URL 裡的 `oe=` 是到期時間
+#   —— 實測有效期約 24 小時，過期後一律 403（FB 與 IG 都會，8 篇全在 10-18 18:00 UTC 到期）。
+#   所以在寫入貼文時把圖抓下來存 `media/post_cache/`（sha 去重、永久不清理），
+#   `media_url` 改存 `/files/post_cache/<sha>.jpg`：
+#     · 前端（CRM `/files` 代理 → Connector `media_fetch`）照舊渲染
+#     · **不再有任何到期問題**，也不需要為了圖片反覆打 Graph API
+_POST_URL_RE = re.compile(r"^https?://[^/]+/files/(.+)$", re.I)
+
+
+def local_media_key(url: str) -> str:
+    """已經是本地 `/files/xxx`（或絕對網址但路徑是 `/files/xxx`）→ 回 `xxx`；否則空字串。"""
+    s = str(url or "").strip()
+    if not s:
+        return ""
+    if s.startswith("/files/"):
+        return s[len("/files/"):]
+    m = _POST_URL_RE.match(s)
+    return m.group(1) if m else ""
+
+
+def cache_post_image(url: str, post_id: str = "") -> str:
+    """把貼文圖抓下來存本地；成功回 `/files/post_cache/<sha>.<ext>`，失敗回空字串。
+
+    **盡力而為**：抓不到（簽名已過期、網路不通）就回空字串，呼叫端沿用原網址。
+    ⚠️ 用 sha256 去重 → 同一張圖重複同步不會產生新檔。
+    """
+    key = local_media_key(url)
+    if key:
+        # 已經是本地；檔案還在就直接用，不在就當作快取失效（重新抓由呼叫端決定）
+        try:
+            media.resolve(key)
+            return f"/files/{key}"
+        except Exception:  # noqa: BLE001
+            return ""
+    if not str(url or "").startswith(("http://", "https://")):
+        return ""
+    try:
+        r = httpx.get(url, timeout=20, follow_redirects=True,
+                      headers={"User-Agent": "Mozilla/5.0 (compatible; Multi-CS/1.0)"})
+        if r.status_code != 200 or not r.content:
+            log.info("貼文圖下載失敗（post=%s status=%s）", post_id, r.status_code)
+            return ""
+        ctype = (r.headers.get("content-type") or "").lower()
+        if not ctype.startswith("image/"):
+            log.info("貼文圖不是圖片（post=%s ctype=%s）", post_id, ctype)
+            return ""
+        ext = {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
+               "image/webp": ".webp", "image/gif": ".gif"}.get(ctype.split(";")[0], ".jpg")
+        got = media.save_bytes("post_cache", r.content, "post" + ext)
+        return f"/files/{got['media_key']}"
+    except Exception as e:  # noqa: BLE001
+        log.info("貼文圖快取失敗（post=%s）: %s", post_id, e)
+        return ""
+
+
+def _current_media_url(platform: str, post_id: str) -> str:
+    """讀 DB 裡現在的 `media_url`（用來判斷是否已有本地快取，避免重複下載）。"""
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT media_url FROM igfb_post WHERE platform=%s AND post_id=%s",
+                (platform, post_id))
+            row = cur.fetchone()
+            return (row[0] or "") if row else ""
+    except Exception:  # noqa: BLE001
+        return ""
+    finally:
+        conn.close()
+
+
 def upsert_post(platform: str, account: dict | None, post: dict) -> None:
     """貼文 upsert（歷史補拉用）。
 
@@ -306,6 +381,27 @@ def upsert_post(platform: str, account: dict | None, post: dict) -> None:
     if not pid:
         return
     acc_native, biz_id, bp_id = _account_cols(account)
+    raw_url = (post.get("full_picture") or post.get("media_url") or "").strip()
+    # ★ 圖片改成「本地快取」再入庫（Meta CDN 簽名約 24h 就失效 → 圖片全掛）。
+    #   · 已經是 /files/... 就直接沿用
+    #   · 已有本地快取檔就**不重抓**（同步很常跑，沒必要每次重下）
+    #   · 抓不到（簽名已過期等）就保留原網址，至少不會比現在更差
+    media_url = raw_url
+    if raw_url:
+        local = local_media_key(raw_url)
+        if local:
+            media_url = f"/files/{local}"
+        else:
+            prev = _current_media_url(platform, pid)
+            prev_key = local_media_key(prev)
+            if prev_key:
+                try:
+                    media.resolve(prev_key)
+                    media_url = f"/files/{prev_key}"      # 本地還在 → 沿用，省一次下載
+                except Exception:  # noqa: BLE001
+                    media_url = cache_post_image(raw_url, pid) or raw_url
+            else:
+                media_url = cache_post_image(raw_url, pid) or raw_url
     conn = db.connect()
     try:
         with conn.cursor() as cur:
@@ -332,7 +428,7 @@ def upsert_post(platform: str, account: dict | None, post: dict) -> None:
                 (platform, pid,
                  post.get("message") or post.get("caption") or "",
                  post.get("type") or post.get("media_type") or "",
-                 post.get("full_picture") or post.get("media_url") or "",
+                 media_url,
                  post.get("permalink_url") or post.get("permalink") or "",
                  int(post.get("like_count") or 0),
                  int(post.get("comments_count") or 0),

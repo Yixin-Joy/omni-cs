@@ -51,6 +51,11 @@ MEDIA_DIR = _path("MEDIA_DIR", "media")
 #    對外網址 = `PUBLIC_BASE_URL + /files/ + media_key`（見 media.public_url）。
 KB_CACHE_DIR = _path("KB_CACHE_DIR", os.path.join(MEDIA_DIR, "kb_cache"))
 KB_CACHE_TTL_DAYS = int(_get("KB_CACHE_TTL_DAYS", "7") or 7)
+# 貼文縮圖續命：每 N 小時拉一次最近貼文，把 Meta CDN 會過期（約 24h）的簽名圖
+# 存成本地檔。設 0 = 關掉（不建議：關了圖會在一天後全部 403）。
+# 啟動後先等 `POST_MEDIA_FIRST_DELAY_SECONDS` 秒再跑第一輪（避開開機忙碌期）。
+POST_MEDIA_REFRESH_HOURS = float(_get("POST_MEDIA_REFRESH_HOURS", "6") or 6)
+POST_MEDIA_FIRST_DELAY_SECONDS = float(_get("POST_MEDIA_FIRST_DELAY_SECONDS", "90") or 90)
 # 對外可訪問基址（ngrok / 正式域名），拼媒體 URL 用
 PUBLIC_BASE_URL = _get("PUBLIC_BASE_URL", "")
 

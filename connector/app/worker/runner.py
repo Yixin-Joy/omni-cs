@@ -9,6 +9,7 @@ import logging
 
 from app import media
 from app.core import config
+from app import history_sync
 from app.worker import account_sync, callback, outbound
 
 log = logging.getLogger("connector")
@@ -55,6 +56,30 @@ async def _cache_loop() -> None:
         await asyncio.sleep(CACHE_SWEEP_SECONDS)
 
 
+async def _post_media_loop() -> None:
+    """貼文縮圖續命（Meta CDN 簽名約 24h 到期，過期就 403）。
+
+    週期拉一次最近貼文，讓 `upsert_post` 把還沒有本地快取的圖存進
+    `media/post_cache/`；已有快取的不會重下。`POST_MEDIA_REFRESH_HOURS=0` 可關閉。
+    """
+    hours = float(config.POST_MEDIA_REFRESH_HOURS or 0)
+    if hours <= 0:
+        log.info("貼文縮圖續命已停用（POST_MEDIA_REFRESH_HOURS=0）")
+        return
+    # 開機先等一下，別和映射同步／出站搶資源
+    await asyncio.sleep(max(0.0, float(config.POST_MEDIA_FIRST_DELAY_SECONDS or 0)))
+    while True:
+        try:
+            stats = await history_sync.refresh_post_media_once()
+            if stats.get("errors"):
+                log.info("貼文縮圖續命有 %s 項警告", len(stats["errors"]))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.warning("貼文縮圖續命失敗: %s", e)
+        await asyncio.sleep(max(300.0, hours * 3600.0))
+
+
 def start() -> None:
     global _tasks
     if not config.WORKER_ENABLED:
@@ -66,6 +91,7 @@ def start() -> None:
         asyncio.create_task(_outbound_loop()),
         asyncio.create_task(_account_loop()),
         asyncio.create_task(_cache_loop()),
+        asyncio.create_task(_post_media_loop()),
     ]
     log.info("Connector worker 啟動：輪詢 %.1fs / 映射同步 %.0fs（發送模式 %s）",
              float(config.POLL_SECONDS or 1), float(config.ACCOUNT_MAP_SYNC_SECONDS or 60),

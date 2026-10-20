@@ -415,3 +415,84 @@ async def sync_many(items: list[dict], **kw) -> dict:
         "errors": [e for r in results for e in (r.get("errors") or [])],
     }
     return {"ok": True, "items": results, "totals": totals}
+
+
+# ======================================================================
+# 貼文縮圖續命（週期性）
+#
+# ★ 為什麼需要（2026-10-20 小jo 回報「facebook 的貼文圖片不見了」）：
+#   `igfb_post.media_url` 存的是 Meta CDN **簽名網址**（`oe=` 是到期時間），
+#   有效期約 24 小時，過期後一律 403 —— 實測 8 篇貼文的簽名全在 10-18 18:00 UTC
+#   到期，FB 與 IG 的圖同時全掛。
+#
+#   `igfb_store.upsert_post()` 現在會在寫入時把圖抓下來存 `media/post_cache/`
+#   （sha 去重、永久），`media_url` 改存 `/files/post_cache/...`。
+#   但**貼文只在「重新整理」時同步** → 沒人按就一直沒人續命。
+#   所以加這個週期任務：每 `POST_MEDIA_REFRESH_HOURS` 小時（預設 6）拉一次最近貼文，
+#   把「還沒有本地快取」的圖補下來。已有快取的貼文**不會重下**（`upsert_post` 內判斷）。
+#
+#   ⚠️ 成本很低：每個帳號一次 Graph 呼叫；圖片只在首次（或快取檔遺失時）才下載。
+# ======================================================================
+
+_POST_REFRESH_LIMIT = 25
+
+
+def _igfb_accounts() -> list[dict]:
+    """帳號映射裡啟用中的 IG/FB 帳號（含憑證）。"""
+    from app.core import db
+
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT platform, platform_business_account_id, business_id,"
+                "       bp_account_id, credential"
+                "  FROM connector_account_map"
+                " WHERE enabled AND platform IN ('fb', 'ig')"
+                " ORDER BY platform, platform_business_account_id")
+            cols = ("platform", "platform_business_account_id", "business_id",
+                    "bp_account_id", "credential")
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+async def refresh_post_media_once(limit: int = _POST_REFRESH_LIMIT) -> dict:
+    """拉最近貼文 → `upsert_post`（順便把缺的縮圖存到本地）。回統計。"""
+    stats = {"accounts": 0, "posts": 0, "errors": []}
+    for acc in _igfb_accounts():
+        plat = acc["platform"]
+        native = str(acc.get("platform_business_account_id") or "")
+        cred = acc.get("credential") or {}
+        if isinstance(cred, str):                       # jsonb 有時回字串
+            import json as _json
+            try:
+                cred = _json.loads(cred)
+            except Exception:  # noqa: BLE001
+                cred = {}
+        try:
+            if plat == "fb":
+                page_id, token = igfb._fb_creds(cred)
+                if not page_id or not token:
+                    stats["errors"].append(f"fb/{native}: 憑證缺少 page_id/token")
+                    continue
+                posts = await igfb.fb_posts(page_id or native, token, limit)
+            else:
+                ig_id, _t = igfb._ig_creds(cred)
+                token = cred.get("page_access_token") or ""
+                if not token:
+                    stats["errors"].append(f"ig/{native}: 憑證缺少 page_access_token")
+                    continue
+                posts = await igfb.ig_posts(ig_id or native, token, limit)
+
+            for p in posts:
+                if str(p.get("id") or ""):
+                    await asyncio.to_thread(igfb_store.upsert_post, plat, acc, p)
+            stats["accounts"] += 1
+            stats["posts"] += len(posts)
+        except Exception as e:  # noqa: BLE001
+            stats["errors"].append(f"{plat}/{native}: {type(e).__name__}: {e}")
+            log.warning("貼文縮圖續命失敗 %s/%s: %s", plat, native, e)
+    if stats["posts"]:
+        log.info("貼文縮圖續命：%s", {k: v for k, v in stats.items() if k != "errors"})
+    return stats
