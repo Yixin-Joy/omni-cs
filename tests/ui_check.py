@@ -43,7 +43,7 @@ except Exception:
 BASE = os.environ.get("UI_BASE", "http://127.0.0.1:8001").rstrip("/")
 NODE = os.environ.get(
     "UI_NODE",
-    r"node")
+    "node")
 
 FAIL = []
 

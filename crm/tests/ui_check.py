@@ -26,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 UI_DIR = ROOT / "crm" / "ui"
-NODE = r"node"
+NODE = "node"
 
 fails: list[str] = []
 

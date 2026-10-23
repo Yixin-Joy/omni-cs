@@ -273,8 +273,7 @@ console.log('RESULT ' + JSON.stringify({ pass: out.length - bad.length, fail: ba
 
 
 def _node() -> Path:
-    c = Path(r"node")
-    return c if c.exists() else Path("node")
+    return Path("node")
 
 
 # ---------------------------------------------------------------- [C] 反證

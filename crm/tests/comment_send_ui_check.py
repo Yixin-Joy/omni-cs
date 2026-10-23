@@ -297,7 +297,7 @@ console.log('RESULT ' + JSON.stringify({ pass: out.length - bad.length, fail: ba
 
 def _node() -> Path:
     cands = [
-        Path(r"node"),
+        Path("node"),
     ]
     for c in cands:
         if c.exists():

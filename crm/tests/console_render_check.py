@@ -63,7 +63,7 @@ UI_HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
                        "ui", "console_ui.html")
 NODE = os.environ.get(
     "UI_NODE",
-    r"node")
+    "node")
 
 MARK = "__CK__"
 BIZ = ensure_business("前端渲染自檢", "console_render_check 專用")

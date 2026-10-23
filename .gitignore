@@ -52,3 +52,16 @@ _uv*.log
 
 # 瀏覽器冒煙自檢的截圖輸出（每次跑重建）
 crm/tests/_browser_out/
+
+# ★ 資料庫備份（pg_dump 產物）—— 內含客戶私訊、平台 ID、憑證，絕不可入庫
+*.dump
+*.sql.gz
+pf.dump
+crm.dump
+
+# ★★ WorkBuddy / AI 助手工作目錄 —— 絕不可入庫（本地保留，只是不進版控）
+# 內含：memory/（專案筆記與踩坑記錄）、removed_scripts/（歷史腳本）
+.workbuddy/
+.workbuddy/**
+**/.workbuddy/
+*.genie
