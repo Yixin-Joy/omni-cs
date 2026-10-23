@@ -11,8 +11,8 @@ import psycopg2
 
 HOST = "localhost"
 PORT = 5432
-USER = "LEE"
-PASSWORD = os.getenv("DB_PASSWORD", "postgres")
+USER = os.getenv("DB_USER", "postgres")
+PASSWORD = os.getenv("DB_PASSWORD", "postgres")  # 憑證只從環境讀，不寫死在版控裡
 ADMIN_DB = "igfb_bot"  # 用現有庫連上去，執行 CREATE DATABASE
 NEW_DB = "platform_forwarder"
 
