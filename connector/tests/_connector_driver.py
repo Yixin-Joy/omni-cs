@@ -109,20 +109,34 @@ def main() -> int:
         from app.core import db as _db
         from app.internal import router as _router
         row, dbg = {}, {}
+        _plat = task.get("platform") or "fb"
+        _sender = task.get("end_user_sender_id") or ""
+        _mid = f"out-{task.get('task_id')}"
         try:
             _c = _db.connect()
             try:
                 with _c.cursor() as _cur:
                     _cur.execute("SELECT current_database()")
                     dbg["dbname"] = _cur.fetchone()[0]
-                    _cur.execute(
-                        "SELECT message_type, text, attachments FROM igfb_dm"
-                        " WHERE platform=%s AND conversation_key=%s AND message_id=%s",
-                        (task.get("platform") or "fb", task.get("end_user_sender_id") or "",
-                         f"out-{task.get('task_id')}"))
-                    got = _cur.fetchone()
-                    if got:
-                        row = dict(zip(("message_type", "text", "attachments"), got))
+                    if _plat in ("wechat", "whatsapp"):
+                        # ⚠️ 這兩個平台落地在 forward_log（不是 igfb_dm）——
+                        #    只讀 igfb_dm 的自檢會永遠看到「沒落地」，誤判成鏈路壞掉。
+                        _cur.execute(
+                            "SELECT message_type, COALESCE(raw_content::text,''),"
+                            "       COALESCE(forwarded_payload::text,'')"
+                            "  FROM forward_log WHERE platform=%s AND message_id=%s",
+                            (_plat, _mid))
+                        got = _cur.fetchone()
+                        if got:
+                            row = {"message_type": got[0], "raw": got[1], "fwd": got[2]}
+                    else:
+                        _cur.execute(
+                            "SELECT message_type, text, attachments FROM igfb_dm"
+                            " WHERE platform=%s AND conversation_key=%s AND message_id=%s",
+                            (_plat, _sender, _mid))
+                        got = _cur.fetchone()
+                        if got:
+                            row = dict(zip(("message_type", "text", "attachments"), got))
             finally:
                 _c.close()
         except Exception as e:  # noqa: BLE001 —— 回報而不是讓整支崩掉
@@ -130,12 +144,17 @@ def main() -> int:
         dbg["app_file"] = _app.__file__
         dbg["dsn"] = _cfg.DATABASE_URL
         dbg["logs"] = _caught
-        files = _router._files_of(None, None, row.get("attachments")) if row else []
+        if _plat in ("wechat", "whatsapp"):
+            files = _router._files_of(row.get("raw"), row.get("fwd"), None) if row else []
+        else:
+            files = _router._files_of(None, None, row.get("attachments")) if row else []
         out = {
             "items": [{"kind": i["kind"], "media_key": i.get("media_key")} for i in items],
             "sends": sends,
             "db": {"message_type": row.get("message_type"),
-                   "attachments": row.get("attachments")},
+                   "attachments": row.get("attachments"),
+                   "uploadedFiles": (json.loads(row["fwd"]).get("uploadedFiles")
+                                     if row.get("fwd") else None)},
             "files": files,
             "media_dir": _cfg.MEDIA_DIR,
             "kb_cache_dir": _cfg.KB_CACHE_DIR,

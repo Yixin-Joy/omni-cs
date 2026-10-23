@@ -453,6 +453,10 @@ async def _bg_sync_post(platform: str, account: dict | None, ev: dict) -> None:
         log.info("新貼文 %s/%s 用 webhook 欄位入庫（Graph 讀取失敗）", platform, post_id)
     else:
         post.setdefault("id", post_id)
+        # ★ Graph 有時回 200 但某些欄位缺失（權限分級）——`created_time` 缺了就沒有時間，
+        #   工作台那篇貼文會是空白的時間欄。有 webhook 給的時間就當備援。
+        if not post.get("created_time") and not post.get("timestamp") and ev.get("created_at"):
+            post["created_time"] = ev["created_at"]
     try:
         await asyncio.to_thread(igfb_store.upsert_post, platform, account, post)
         log.info("新貼文已落地 %s/%s", platform, post_id)
@@ -498,6 +502,16 @@ async def _handle_igfb_event(ev: dict) -> None:
         )
     elif t in ("fb_comment", "ig_comment"):
         await asyncio.to_thread(igfb_store.land_comment, platform, ev, account)
+
+        # ★ 貼文資料還沒同步過（只有留言先到建的佔位列）→ 立刻補一次。
+        #   不補的話工作台會看到「這篇貼文沒有時間、沒有圖」，而且要等 5 分鐘的
+        #   貼文同步迴圈；粉專 `/feed` 讀不到（缺權限回 200+空陣列）時更是永遠不補。
+        #   一次留言觸發一次 Graph 呼叫，`post_needs_sync` 在補完後就回 False。
+        _pid = str(ev.get("post_id") or "")
+        if _pid and await asyncio.to_thread(igfb_store.post_needs_sync, platform, _pid):
+            # 用留言自己的時間當最後保險：Graph 讀不到時至少不會是空白
+            asyncio.create_task(_bg_sync_post(platform, account, {
+                "post_id": _pid, "created_at": ev.get("created_at")}))
 
         # 我方自己發的留言不觸發自動回復（避免回覆自己，形成循環）
         if not (me and str(ev.get("from_id") or "") == str(me)):

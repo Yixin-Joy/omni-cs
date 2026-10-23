@@ -74,6 +74,26 @@ def set_ops_config(key: str, value) -> None:
         )
 
 
+def set_ops_config_many(pairs: dict) -> None:
+    """一次寫多個運維參數 —— **同一事務**（2026-10-23）。
+
+    ★ 為什麼要（郵件告警參數）：host / port / 帳號 / 密碼 / 寄件人 / TLS / 開關
+      是一組**必須同時生效**的設定。逐鍵寫的話中間只要斷一次，就會留下
+      「新的 host + 舊的帳號」這種半套狀態 —— 那比沒存更難排查。
+    """
+    if not pairs:
+        return
+    with tx() as cur:
+        for key, value in pairs.items():
+            cur.execute(
+                "INSERT INTO crm_ops_config (config_key, config_value, updated_at)"
+                " VALUES (%s, %s::jsonb, now())"
+                " ON CONFLICT (config_key) DO UPDATE SET config_value = EXCLUDED.config_value,"
+                " updated_at = now()",
+                (key, json.dumps(value)),
+            )
+
+
 # ================================================================ 帳號映射
 
 def account_map(since=None) -> list[dict]:

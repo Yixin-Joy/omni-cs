@@ -29,6 +29,10 @@ def init_schema_sync() -> None:
             for stmt in schema.MIGRATIONS:
                 cur.execute(stmt)
             for key, val in schema.OPS_CONFIG_DEFAULTS.items():
+                # ⚠️ 有些 key 的「有沒有這一列」本身就是語義（見 `OPS_CONFIG_NO_SEED`）：
+                #    寫了預設列就等於「運維端設過」，會把 .env 的值靜默蓋掉。
+                if key in schema.OPS_CONFIG_NO_SEED:
+                    continue
                 cur.execute(
                     "INSERT INTO crm_ops_config (config_key, config_value) VALUES (%s, %s::jsonb) "
                     "ON CONFLICT (config_key) DO NOTHING",

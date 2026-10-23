@@ -23,6 +23,7 @@ from app.agent.console_router import router as agent_console_router
 from app.agent.router import router as agent_router
 from app.auth import deps, rbac
 from app.auth.router import router as auth_router
+from app.autoreply import autoreply_db
 from app.core import config
 from app.core import db
 from app.internal import connector_client
@@ -44,6 +45,9 @@ _STARTED_AT = _dt.now(_tz.utc).isoformat(timespec="seconds")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_schema_async()
+    # ★ 舊商家補齊 AI 開關列（新商家在 create_business 就 seed 好了）。
+    #   不補的話管理員端與客服端會對同一個商家顯示相反狀態。
+    await autoreply_db.backfill_ai_switches_async()
     worker_runner.start()
     log.info("CRM 啟動：port=%s", config.PORT)
     yield

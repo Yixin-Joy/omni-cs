@@ -34,6 +34,8 @@ import asyncio
 import logging
 import time
 
+import httpx
+
 from app import account_map
 from app.channels import igfb, igfb_recv, igfb_store
 
@@ -194,42 +196,59 @@ async def _sync_dm(platform: str, native_id: str, acc: dict, self_id: str,
         msgs.sort(key=lambda m: m.get("created_time") or "")
         n_threads += 1
 
+        # ★★ 先把「這次真的要入庫」的訊息挑出來，附件**並行**下載（2026-10-22）。
+        #   原本是「每則訊息 → 下載它的附件 → 寫庫」串在一起：一次補拉幾十則帶圖的
+        #   舊訊息時，等於一輪一輪排隊下載，這就是「重新整理很久」的主因。
+        pending: list[dict] = []
         for m in msgs:
             ts = igfb_recv.to_dt(m.get("created_time"))
             # ★ 消息級水位：只處理「最後一則之後」的新消息（不重複處理、不覆蓋既有狀態）
             if w is not None and ts is not None and ts <= w:
                 skipped_msgs += 1
                 continue
-
             from_id, from_name = igfb_recv._from_parts(m.get("from") or {})
             norm = igfb_recv._norm_message(m or {})
             is_self = bool(self_id) and str(from_id) == str(self_id)
-            direction = "outbound" if is_self else "inbound"
             mid = str(m.get("id") or m.get("mid") or "")
             if not mid:
                 continue
+            pending.append({"mid": mid, "ts": ts, "norm": norm,
+                            "from_id": from_id, "from_name": from_name,
+                            "direction": "outbound" if is_self else "inbound"})
 
-            atts = norm["attachments"]
-            if atts and direction == "inbound":
-                try:
-                    atts = await igfb_store.download_attachments(atts)
-                except Exception as e:  # noqa: BLE001
-                    log.warning("歷史附件下載失敗 %s: %s", mid, e)
+        if pending:
+            # 附件下載：同一個 client + 併發上限 4（Meta CDN 對單帳號很寬容）
+            sem = asyncio.Semaphore(4)
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as dl:
+                async def _dl(p: dict) -> None:
+                    atts = p["norm"]["attachments"]
+                    if not atts or p["direction"] != "inbound":
+                        return
+                    async with sem:
+                        try:
+                            p["norm"] = {**p["norm"],
+                                         "attachments": await igfb_store.download_attachments(atts, dl)}
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("歷史附件下載失敗 %s: %s", p["mid"], e)
 
+                await asyncio.gather(*[_dl(p) for p in pending])
+
+        for p in pending:
             new_id = await asyncio.to_thread(
                 igfb_store.land_dm, platform,
-                {"message_id": mid, "message_type": norm["message_type"], "text": norm["text"]},
+                {"message_id": p["mid"], "message_type": p["norm"]["message_type"],
+                 "text": p["norm"]["text"]},
                 acc,
-                atts,
-                direction=direction,
-                conversation_key=customer_id or from_id,
-                sender_name=customer_name or from_name,
+                p["norm"]["attachments"],
+                direction=p["direction"],
+                conversation_key=customer_id or p["from_id"],
+                sender_name=customer_name or p["from_name"],
                 thread_id=thread_id,
-                created_at=ts,
+                created_at=p["ts"],
             )
             if new_id is None:
                 continue
-            if direction == "inbound":
+            if p["direction"] == "inbound":
                 new_ids.append(new_id)
                 n_new += 1
             else:
@@ -380,24 +399,44 @@ async def sync_account(platform: str, native_id: str, account: dict | None = Non
 
 # ---------------------------------------------------------------- 批次
 
+# 同時補拉的帳號數。★ 為什麼要並行（2026-10-22 小jo「重新整理時間過長」）：
+#   原本是 `for` 逐個 await —— 每個帳號各有 60s 上限，3 個帳號最壞要等 3 分鐘，
+#   而且中間還夾著 Graph 的網路等待（純 I/O，根本不該排隊）。
+#   並行後總時間 ≈ 最慢那個帳號；3 是保守值，避免同時打太多 Meta 呼叫被限流。
+SYNC_CONCURRENCY = 3
+
+
 async def sync_many(items: list[dict], **kw) -> dict:
-    """逐帳號補拉。`items` = `[{platform, platform_business_account_id}]`。
+    """逐帳號補拉（**並行**，最多 `SYNC_CONCURRENCY` 個同時跑）。
+
+    `items` = `[{platform, platform_business_account_id}]`。
 
     ⚠️ 逐帳號容錯：任一個失敗只讓它自己帶 errors，不影響其他帳號。
+    ⚠️ 結果順序**與輸入一致**（`gather` 保序）—— 前端是照這個順序顯示的。
     """
-    results: list[dict] = []
+    jobs: list[tuple[str, str]] = []
     for it in items or []:
         plat = (it.get("platform") or "").strip()
         native = str(it.get("platform_business_account_id") or "").strip()
-        if not plat or not native:
-            continue
-        try:
-            results.append(await sync_account(plat, native, **kw))
-        except Exception as e:  # noqa: BLE001
-            log.warning("歷史補拉失敗 %s/%s: %s", plat, native, e)
-            results.append({"platform": plat, "platform_business_account_id": native,
+        if plat and native:
+            jobs.append((plat, native))
+
+    if not jobs:
+        results: list[dict] = []
+    else:
+        sem = asyncio.Semaphore(max(1, int(SYNC_CONCURRENCY)))
+
+        async def _one(plat: str, native: str) -> dict:
+            async with sem:
+                try:
+                    return await sync_account(plat, native, **kw)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("歷史補拉失敗 %s/%s: %s", plat, native, e)
+                    return {"platform": plat, "platform_business_account_id": native,
                             "supported": False, "reason": f"{type(e).__name__}: {e}",
-                            "errors": [str(e)]})
+                            "errors": [str(e)]}
+
+        results = list(await asyncio.gather(*(_one(p, n) for p, n in jobs)))
 
     totals = {
         "accounts": len(results),

@@ -27,7 +27,15 @@ OPS_AUDIT_TYPES = ("task_retry", "ops_config_change", "alert_ack", "alert_notify
 
 
 # 可寫入的運維參數白名單 —— **唯一真相在 schema.OPS_CONFIG_DEFAULTS**
-CONFIG_KEYS = frozenset(schema.OPS_CONFIG_DEFAULTS.keys())
+# ★ 但 SMTP 那幾個**排除**在單鍵保存之外（2026-10-23）：
+#   它們是一組必須同時生效、而且**必須先測試成功**才能存的設定，
+#   走專用端點 `POST /console/ops/alert/email/save`（帶測試 ticket）。
+#   留在單鍵白名單裡就等於留了一個「不用測試也能存」的後門。
+MAIL_SMTP_KEYS = frozenset((
+    "alert.email_enabled", "alert.smtp_host", "alert.smtp_port",
+    "alert.smtp_user", "alert.smtp_password", "alert.smtp_from", "alert.smtp_tls",
+))
+CONFIG_KEYS = frozenset(schema.OPS_CONFIG_DEFAULTS.keys()) - MAIL_SMTP_KEYS
 
 SEVERITIES = ("info", "warning", "critical")
 _SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}

@@ -7,6 +7,11 @@
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+import uuid
+
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -17,6 +22,7 @@ from app.auth import deps, rbac
 from app.internal import connector_client
 
 router = APIRouter(prefix="/console/agent", tags=["agent"])
+log = logging.getLogger("crm")
 
 PLATFORMS = ("wechat", "whatsapp", "ig", "fb")
 SCOPES = ("dm", "comment")
@@ -397,6 +403,98 @@ def pending_counts(business_id: int = Query(...), scope: str = Query(default="dm
             "accounts": per_acc}
 
 
+def _sync_targets(sess: dict) -> tuple[list[dict], list[dict]]:
+    """補拉對象＝這次登入者可訪問商家的全部平台帳號。
+
+    回 `(businesses, accounts)`；一般客服只看自己被授權的商家（不越權）。
+    """
+    items = repo.list_businesses()
+    if not rbac.is_super_agent(sess):
+        allowed = set(rbac.allowed_business_ids(sess))
+        items = [b for b in items if b["id"] in allowed]
+    accounts: list[dict] = []
+    for b in items:
+        for a in repo.list_accounts(b["id"], ""):
+            accounts.append({"platform": a["platform"],
+                             "platform_business_account_id": a["platform_business_account_id"]})
+    return items, accounts
+
+
+# ---------------------------------------------------------------- 補拉：非阻塞任務
+#
+# ★★ 為什麼要有非阻塞版（2026-10-22 小jo「重新整理時間過長」）：
+#   舊版是「按下去 → HTTP 一路等 Connector 跑完 → 才回應」。帳號多、離線久
+#   （要下載一堆歷史附件）時，瀏覽器要卡幾十秒到幾分鐘，中間完全沒有反饋，
+#   使用者只會覺得壞了。現在改成「先回 job_id，前端每 1.5 秒問一次進度」。
+#   同步版（`POST /sync-history`）保留給自檢與其他呼叫端。
+_SYNC_JOBS: dict[str, dict] = {}
+_SYNC_JOB_KEEP = 20          # 只留最近 20 個（避免長時間執行累積記憶體）
+
+
+def _job_gc() -> None:
+    if len(_SYNC_JOBS) <= _SYNC_JOB_KEEP:
+        return
+    for k in sorted(_SYNC_JOBS, key=lambda x: _SYNC_JOBS[x].get("started_ts") or 0)[:-_SYNC_JOB_KEEP]:
+        _SYNC_JOBS.pop(k, None)
+
+
+@router.post("/sync-history/start")
+async def sync_history_start(sess: dict = Depends(deps.require_csrf)):
+    """啟動一次背景補拉，**立刻**回 `{job_id}`（前端輪詢 `/sync-history/status`）。"""
+    if not rbac.can_view_conversation(sess):
+        return _err(403, "需要客服坐席權限")
+    businesses, accounts = _sync_targets(sess)
+    if not accounts:
+        return {"ok": True, "job_id": "", "accounts": 0}
+
+    job_id = uuid.uuid4().hex[:12]
+    job = {"job_id": job_id, "status": "running", "started_ts": time.time(),
+           "accounts": len(accounts), "staff_id": sess.get("staff_id"),
+           "businesses": [b["id"] for b in businesses],
+           "totals": None, "items": [], "error": ""}
+    _SYNC_JOBS[job_id] = job
+    _job_gc()
+
+    async def _run() -> None:
+        try:
+            res = await asyncio.to_thread(connector_client.sync_history, accounts)
+            if res is None:
+                job["status"] = "failed"
+                job["error"] = "連不上 Connector，無法補拉歷史"
+                return
+            job["totals"] = res.get("totals") or {}
+            job["items"] = res.get("items") or []
+            job["status"] = "done"
+            try:
+                await asyncio.to_thread(
+                    audit.log_standalone, sess, "sync_history", payload={
+                        "accounts": len(accounts),
+                        "businesses": job["businesses"],
+                        "totals": job["totals"], "async": True})
+            except Exception as e:  # noqa: BLE001 —— 審計失敗不影響結果
+                log.warning("補拉審計寫入失敗: %s", e)
+        except Exception as e:  # noqa: BLE001
+            job["status"] = "failed"
+            job["error"] = f"{type(e).__name__}: {e}"
+            log.warning("背景補拉失敗: %s", e)
+        finally:
+            job["finished_ts"] = time.time()
+
+    asyncio.create_task(_run())
+    return {"ok": True, "job_id": job_id, "accounts": len(accounts)}
+
+
+@router.get("/sync-history/status")
+def sync_history_status(job_id: str = Query(...), sess: dict = Depends(deps.require_agent)):
+    """背景補拉的進度／結果。任務不存在（或已被回收）→ 404，前端據此停止輪詢。"""
+    job = _SYNC_JOBS.get((job_id or "").strip())
+    if not job or (job.get("staff_id") and job["staff_id"] != sess.get("staff_id")):
+        return _err(404, "補拉任務不存在（可能已完成並被回收）")
+    return {"ok": True, **{k: v for k, v in job.items() if k != "staff_id"},
+            "elapsed": round((job.get("finished_ts") or time.time())
+                             - (job.get("started_ts") or time.time()), 1)}
+
+
 @router.post("/sync-history")
 def sync_history(sess: dict = Depends(deps.require_csrf)):
     """★ 工作台「重新整理」：驅動 Connector 主動補拉歷史，避免公網中斷漏訊息。
@@ -408,20 +506,14 @@ def sync_history(sess: dict = Depends(deps.require_csrf)):
     `supported=false` 與原因（平台沒有可回溯的 API），這裡原樣帶回讓前端顯示。
 
     回：`{ok, totals, items}`；Connector 連不上 → 502。
+
+    ⚠️ 工作台前端走的是**非阻塞**的 `/sync-history/start`；這支保留給自檢與
+       需要同步結果的呼叫端（行為與舊版一致）。
     """
     if not rbac.can_view_conversation(sess):
         return _err(403, "需要客服坐席權限")
 
-    items = repo.list_businesses()
-    if not rbac.is_super_agent(sess):
-        allowed = set(rbac.allowed_business_ids(sess))
-        items = [b for b in items if b["id"] in allowed]
-
-    accounts: list[dict] = []
-    for b in items:
-        for a in repo.list_accounts(b["id"], ""):
-            accounts.append({"platform": a["platform"],
-                             "platform_business_account_id": a["platform_business_account_id"]})
+    items, accounts = _sync_targets(sess)
 
     res = connector_client.sync_history(accounts)
     if res is None:
@@ -491,7 +583,13 @@ def mark_read(payload: ReadIn, sess: dict = Depends(deps.require_csrf)):
 @router.post("/upload")
 async def upload(file: UploadFile = File(...), scope: str = Form(default="outbound"),
                  sess: dict = Depends(deps.require_csrf)):
-    """人工回覆的附件：CRM 轉推給 Connector 存檔，回 `media_key`。"""
+    """人工回覆的附件：CRM 轉推給 Connector 存檔，回 `media_key`。
+
+    ★ 回傳**原始檔名**與 mime：Connector 存檔後 `media_key` 只剩 `<sha16>.<ext>`，
+      原始檔名只有這裡知道。少了它，工作台氣泡與 WhatsApp document 都只能顯示 sha
+      （客戶看到 `7a1102f7f0eec5f8.pdf`，工作台也一樣），而且判斷「是不是圖片」
+      只能靠副檔名 → PDF 被當成圖變破圖。
+    """
     if not rbac.can_view_conversation(sess):
         return _err(403, "需要客服坐席權限")
     data = await file.read()
@@ -500,4 +598,6 @@ async def upload(file: UploadFile = File(...), scope: str = Form(default="outbou
     res = connector_client.upload_media(data, file.filename or "upload.bin", scope=scope)
     if not res:
         return _err(502, "推送附件到 Connector 失敗")
-    return {"ok": True, **{k: v for k, v in res.items() if k != "path"}}
+    return {"ok": True, **{k: v for k, v in res.items() if k != "path"},
+            "filename": file.filename or "", "mime": file.content_type or "",
+            "size": len(data)}

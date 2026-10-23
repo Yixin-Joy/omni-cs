@@ -893,6 +893,7 @@ class TestIn(BaseModel):
     scope: str = "dm"
     text: str = ""
     layers: list[str] | None = None
+    post_id: str = ""           # 貼文留言：用貼文原生 ID 反查特殊配置
     post_config_id: int = 0
     # ★ 與舊 console 的 `/test/engine` 對齊（命中測試頁要能模擬真實情境）：
     history: list[dict] | None = None      # 自備對話（[{direction,text},…]）
@@ -939,7 +940,8 @@ async def test_engine(payload: TestIn, sess: dict = Depends(deps.require_agent))
 
     ss = await asyncio.to_thread(
         autoreply_db.resolve_scope_set, int(payload.business_id),
-        scope=payload.scope, post_config_id=int(payload.post_config_id))
+        scope=payload.scope, post_config_id=int(payload.post_config_id),
+        post_id=(payload.post_id or ""), platform=payload.platform)
     ans = await reply_engine.answer(
         text, business_id=int(payload.business_id), channel=payload.platform,
         scope=payload.scope, history=history, layers=layers,
@@ -968,7 +970,11 @@ class DraftIn(BaseModel):
     message_id: str = ""        # 私訊：錨定「就回這一則」
     comment_id: str = ""        # 留言
     conversation_key: str = ""  # 私訊：會話鍵（＝end_user_sender_id）
-    post_config_id: int = 0     # 貼文留言：帶入該貼文的特殊配置
+    # 貼文留言：帶入該貼文的特殊配置。
+    # ★★ 前端只要傳 `post_id` 就好 —— `post_config_id` 是 CRM 主鍵，前端也不該知道；
+    #    但舊版前端一定是傳 0 且不傳 post_id → 貼文配置完全不生效（2026-10-22 修）。
+    post_id: str = ""
+    post_config_id: int = 0
 
 
 @router.post("/draft")
@@ -1033,7 +1039,8 @@ async def draft_reply(payload: DraftIn, sess: dict = Depends(deps.require_agent)
 
     ss = await asyncio.to_thread(
         autoreply_db.resolve_scope_set, int(payload.business_id),
-        scope=scope, post_config_id=int(payload.post_config_id))
+        scope=scope, post_config_id=int(payload.post_config_id),
+        post_id=(payload.post_id or ""), platform=plat)
     ans = await reply_engine.answer(
         question, business_id=int(payload.business_id), channel=plat, scope=scope,
         history=history, scope_set=ss)

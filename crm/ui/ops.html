@@ -169,6 +169,36 @@
   .err { display: none; margin-bottom: 12px; padding: 9px 12px; border-radius: 8px;
     background: var(--red-soft); color: var(--red); font-size: 12.5px; }
   .err.show { display: block; }
+  /* 成功提示（郵件設定測試通過時顯示）—— 必須與 .err 成對，否則使用者只看到「什麼都沒發生」 */
+  .ok { display: none; margin-bottom: 12px; padding: 9px 12px; border-radius: 8px;
+    background: var(--accent-soft); color: var(--accent-dark); font-size: 12.5px; }
+  .ok.show { display: block; }
+
+  /* 郵件設定表單：兩欄並排（窄螢幕自動疊） */
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+  @media (max-width: 560px) { .row2 { grid-template-columns: 1fr; } }
+  .fld .hint { font-size: 11.5px; color: var(--text-soft); margin-top: 4px; line-height: 1.5; }
+  .fld input[type=password] {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
+    background: #fafbfc; font-size: 13.5px; outline: none; color: var(--text); font-family: inherit; }
+  .box .acts .spacer { flex: 1; }
+  .switch:disabled { opacity: .55; cursor: not-allowed; }
+
+  /* 滑動開關（郵件提醒的啟用）—— 真的會滑的那種，比藥丸文字更直觀 */
+  .tgl { position: relative; width: 46px; height: 25px; border-radius: 999px; border: none;
+    background: #cbd5e1; cursor: pointer; padding: 0; flex-shrink: 0; transition: background .18s;
+    vertical-align: middle; }
+  .tgl::after { content: ''; position: absolute; top: 3px; left: 3px; width: 19px; height: 19px;
+    border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(15,30,50,.25);
+    transition: transform .18s; }
+  .tgl.on { background: var(--accent); }
+  .tgl.on::after { transform: translateX(21px); }
+  /* ★ 未配置時**不可用 disabled**：disabled 不觸發 click，使用者點了完全沒反應，
+     只會覺得壞掉。用 .locked + 攔截點擊 → showToast 講原因（專案既有慣例）。 */
+  .tgl.locked { background: #e2e8f0; cursor: not-allowed; }
+  .tgl.locked::after { background: #f8fafc; }
+  .swrow { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .swrow .hint { font-size: 11.5px; color: var(--text-soft); }
 
   /* toast */
   #toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%) translateY(20px);
@@ -240,16 +270,76 @@
   </div>
 </div>
 
-<div class="ov" id="ovMail">
-  <div class="box">
-    <h3>測試告警郵件</h3>
-    <div class="sub">寄一封測試信驗證 SMTP 設定。留空則寄給參數裡設定的收件人。</div>
-    <div class="err" id="ovMailErr"></div>
-    <div class="fld"><label>收件人（選填，逗號分隔）</label>
-      <input type="text" id="mailTo" placeholder="例：ops@example.com"></div>
+<!-- ⚠️ 舊的「測試告警郵件」彈窗已移除（2026-10-23）：
+     它的用途（寄一封測試信驗證已存參數）已被「參數配置」視窗的「測試並保存」涵蓋，
+     留著只會有兩個入口、兩套錯誤處理。後端 `POST /console/ops/mail/test` 仍保留
+     （自檢與其他呼叫端在用），只是 UI 不再有入口。 -->
+
+<div class="ov" id="ovMailCfg">
+  <div class="box wide">
+    <h3>郵件參數配置</h3>
+    <div class="sub">
+      填好參數後按「測試並保存」—— 系統會用**這份表單的參數**實際連線並寄一封測試信；
+      測試成功才會寫入設定（狀態變「參數已配置」），失敗則原設定完全不動。
+    </div>
+    <div class="err" id="ovMailCfgErr"></div>
+    <div class="ok" id="ovMailCfgOk"></div>
+
+    <div class="row2">
+      <div class="fld">
+        <label>SMTP 主機</label>
+        <input type="text" id="mcHost" placeholder="例：smtp.gmail.com">
+      </div>
+      <div class="fld">
+        <label>連接埠</label>
+        <input type="number" id="mcPort" value="587" min="1" max="65535">
+      </div>
+    </div>
+
+    <div class="row2">
+      <div class="fld">
+        <label>SMTP 帳號</label>
+        <input type="text" id="mcUser" placeholder="通常是完整信箱" autocomplete="off">
+      </div>
+      <div class="fld">
+        <label>SMTP 密碼</label>
+        <input type="password" id="mcPass" placeholder="留空＝沿用已存的密碼" autocomplete="new-password">
+        <div class="hint" id="mcPassHint"></div>
+      </div>
+    </div>
+
+    <div class="fld">
+      <label>寄件人</label>
+      <input type="text" id="mcFrom" placeholder="留空＝用 SMTP 帳號">
+      <div class="hint">多數信箱要求與帳號相同，否則會被 SMTP 伺服器拒絕</div>
+    </div>
+
+    <div class="fld">
+      <label>收件人</label>
+      <input type="text" id="mcTo" placeholder="多個用逗號分隔，例：ops@a.com, boss@b.com">
+    </div>
+
+    <div class="row2">
+      <div class="fld">
+        <label>只寄這個級別以上</label>
+        <select id="mcSev">
+          <option value="info">提醒（info）</option>
+          <option value="warning">警告（warning）</option>
+          <option value="critical">嚴重（critical）</option>
+        </select>
+      </div>
+      <div class="fld">
+        <label>加密連線 TLS</label>
+        <button class="switch on" id="mcTls" data-mcbool="tls">
+          <span class="dot2"></span><span class="lbl">開</span></button>
+        <div class="hint">587 用 STARTTLS（開）；465 是直接 SSL（可關）</div>
+      </div>
+    </div>
+
     <div class="acts">
+      <span class="spacer"></span>
       <button class="ghost" data-close>取消</button>
-      <button class="primary" id="mailSend">寄出</button>
+      <button class="primary" id="mcTest">測試並保存</button>
     </div>
   </div>
 </div>
@@ -476,11 +566,35 @@
       + '<span class="pill off">嚴重 ' + esc(a.critical || 0) + '</span></div></div>';
 
     var m = d.mail || {};
-    html += '<div class="card"><h3>郵件告警' + infotip('未配置 = 只記 log 不寄信，不影響任何業務流程。收件人每次讀資料庫，改參數不需重啟。') + '</h3>'
+    // ★★ 郵件告警：**參數配置**與**啟用開關**是兩件事（2026-10-23 小jo 指定）。
+    //   · 狀態欄看 `configured`（有 SMTP 主機 + 收件人 = 參數已配置）
+    //   · 開關只在 `configured` 時才能切到開；未配置時點它只提示「先配置參數」
+    //   · 「參數配置」按鈕放這一欄右上角，彈的還是原本那個視窗
+    var mcfg = !!m.configured;
+    var mon = mcfg && !!m.enabled;
+    html += '<div class="card"><h3>郵件告警'
+      + infotip('參數配置和提醒開關是分開的：先按右上角「參數配置」完成測試，'
+                + '狀態變成「參數已配置」後才能把開關切到開。未配置＝只記 log 不寄信，'
+                + '不影響任何業務流程；收件人每次讀資料庫，改參數不需重啟。')
+      + '<span style="flex:1"></span>'
+      + '<button class="ghost tiny" data-mailcfg="1">參數配置</button>'
+      + '</h3>'
       + '<div class="kv">'
-      + '<div class="k">狀態</div><div>' + (m.ready ? '<span class="pill ok">可用</span>'
-        : '<span class="pill off">未配置</span>') + '</div>'
-      + '<div class="k">啟用開關</div><div>' + (m.enabled ? '開' : '關（ALERT_EMAIL_ENABLED）') + '</div>'
+      + '<div class="k">狀態</div><div>'
+      + (mcfg ? '<span class="pill ok">參數已配置</span>'
+        : '<span class="pill off">參數未配置</span>')
+      + (mcfg && !m.password_set
+        ? ' <span class="hint" style="font-size:11.5px;color:var(--text-soft)">'
+          + '（未設密碼，僅適用不需認證的 SMTP）</span>' : '')
+      + '</div>'
+      + '<div class="k">啟用開關</div><div class="swrow">'
+      + '<button class="tgl ' + (mon ? 'on' : '') + (mcfg ? '' : ' locked') + '"'
+      + ' data-mailtgl="1" title="'
+      + (mcfg ? (mon ? '點一下關閉郵件提醒' : '點一下開啟郵件提醒') : '請先配置郵件參數')
+      + '" aria-label="郵件提醒開關" aria-pressed="' + (mon ? 'true' : 'false') + '"></button>'
+      + '<span class="pill ' + (mon ? 'ok' : '') + '">' + (mon ? '開' : '關') + '</span>'
+      + (mcfg ? '' : '<span class="hint">需先配置參數</span>')
+      + '</div>'
       + '<div class="k">SMTP</div><div class="mono">' + esc(m.smtp_host || '—')
       + (m.smtp_host ? ':' + esc(m.smtp_port) : '') + '</div>'
       + '<div class="k">寄件人</div><div class="mono">' + esc(m.smtp_from || '—') + '</div>'
@@ -748,8 +862,10 @@
           loadAlerts(); loadDash();
         });
       } },
-      { label: '寄測試信', cls: 'primary', onClick: function () {
-        ovErr('ovMailErr', ''); openOv('ovMail'); } }
+      // ★ 參數配置的入口統一在「概覽 → 郵件告警」那一欄的右上角（2026-10-23 小jo 指定），
+      //   這裡不再放第二個入口 —— 兩處入口＝兩套心智模型，容易只改到一邊。
+      { label: '回概覽配置郵件', cls: 'ghost', onClick: function () {
+        state.tab = 'dash'; render(); } }
     ]);
     if (!state.alerts.length) {
       $('view').innerHTML = '<div class="empty">' + (state.alertsOpenOnly ? '沒有未確認的告警。' : '沒有告警紀錄。') + '</div>';
@@ -889,19 +1005,140 @@
     }
     var cfgSave = t.getAttribute('data-cfgsave');
     if (cfgSave) { saveCfg(cfgSave, readCfgValue(cfgSave)); return; }
+    // 郵件告警：參數配置（概覽欄右上角）與啟用開關（同一欄的滑動鈕）
+    if (t.getAttribute && t.getAttribute('data-mailcfg')) { openMailCfg(); return; }
+    if (t.getAttribute && t.getAttribute('data-mailtgl')) { toggleMail(); return; }
   });
 
   $('btnTaskRetry').onclick = function () {
     if (state.openTaskId) doRetry([state.openTaskId]);
   };
 
-  $('mailSend').onclick = function () {
-    var raw = $('mailTo').value.trim();
-    var to = raw ? raw.split(',').map(function (s) { return s.trim(); }).filter(Boolean) : null;
-    api('/console/ops/mail/test', 'POST', to ? { to: to } : {}).then(function (res) {
-      if (!guard(res)) { ovErr('ovMailErr', res.data.error || '寄送失敗'); return; }
-      closeOv('ovMail');
-      toast('測試信已寄給 ' + (res.data.to || []).join(', '));
+  // ⚠️ 舊的「寄測試信」彈窗處理已移除（它依賴的 `#ovMail` / `#mailSend` 節點也一起刪了）。
+  //    要驗證已存的參數通不通 → 走「參數配置 → 測試並保存」（會真的寄一封）。
+
+  /* ================================================================
+     郵件參數配置 + 啟用開關（2026-10-23 第二版）
+     —— 需求：**參數與開關分開**。
+        · 「參數配置」按鈕在概覽「郵件告警」欄右上角，彈的就是這個視窗
+        · 開關是那一欄的滑動鈕；只有「參數已配置」時才切得開
+        · 測試成功 → 立即保存（狀態變「參數已配置」）
+        · 測試失敗 → 視窗內顯示「測試失敗，請重試」，**狀態完全不變**
+     ★ 為什麼測試成功就自動保存：後端規則是「參數只有測試成功才准落庫」
+       （ticket + 參數指紋），所以「測試 → 存」本來就是同一個動作的兩步。
+       讓使用者再按一次「儲存」只是多一次點擊，還會留下「測過了但沒存」的灰色地帶。
+     ================================================================ */
+  var mc = { values: { tls: true }, initing: false };
+
+  function mcSetTls(on) {
+    mc.values.tls = !!on;
+    var b = $('mcTls');
+    b.className = 'switch ' + (on ? 'on' : 'off');
+    var lbl = b.querySelector('.lbl');
+    if (lbl) lbl.textContent = on ? '開' : '關';
+  }
+
+  function mcFail(msg) { ovErr('ovMailCfgErr', msg); }
+
+  function mcRead() {
+    return {
+      tls: !!mc.values.tls,
+      host: $('mcHost').value.trim(),
+      port: parseInt($('mcPort').value, 10) || 587,
+      user: $('mcUser').value.trim(),
+      password: $('mcPass').value,
+      sender: $('mcFrom').value.trim(),
+      recipients: $('mcTo').value.split(',').map(function (x) { return x.trim(); })
+        .filter(Boolean),
+      min_severity: $('mcSev').value || 'warning'
+    };
+  }
+
+  function openMailCfg() {
+    mc.initing = true;
+    $('ovMailCfgOk').classList.remove('show');
+    ovErr('ovMailCfgErr', '');
+    api('/console/ops/alert/email').then(function (res) {
+      if (!guard(res)) { mc.initing = false; return; }
+      var s = res.data.settings || {};
+      mc.values.tls = s.tls !== false;
+      mcSetTls(mc.values.tls);
+      $('mcHost').value = s.smtp_host || '';
+      $('mcPort').value = s.smtp_port || 587;
+      $('mcUser').value = s.smtp_user || '';
+      $('mcFrom').value = s.smtp_from || '';
+      $('mcTo').value = (s.recipients || []).join(', ');
+      $('mcSev').value = s.min_severity || 'warning';
+      // ★ 密碼輸入框永遠留空：已存就靠 placeholder 表示「已填」。
+      //   不把遮蔽字串塞進 value —— 那會被當成真密碼再送出一次。
+      $('mcPass').value = '';
+      $('mcPass').placeholder = s.password_set ? '已設定（留空＝沿用）' : '未設定';
+      $('mcPassHint').textContent = s.password_set
+        ? '已存過密碼；不改就留空。'
+        : '這個信箱若要求認證，請填應用程式專用密碼。';
+      mc.initing = false;
+      openOv('ovMailCfg');
+    });
+  }
+
+  /* ---- 啟用開關（概覽頁那一欄的滑動鈕） ---- */
+  function toggleMail() {
+    var m = state.mail || {};
+    if (!m.configured) {
+      // 未配置時**不切**，只講原因 —— 直接打開會變成「顯示已開啟、其實一封都沒寄」
+      toast('請先配置郵件參數（按右上角「參數配置」）', true);
+      return;
+    }
+    var next = !m.enabled;
+    api('/console/ops/alert/email/toggle', 'POST', { enabled: next }).then(function (res) {
+      if (!guard(res)) return;
+      state.mail = res.data.settings || state.mail;
+      if (state.dash) state.dash.mail = state.mail;
+      if (state.tab === 'dash') viewDash();
+      toast(next ? '郵件提醒已開啟' : '郵件提醒已關閉');
+    });
+  }
+
+  $('mcTls').onclick = function () { mcSetTls(!mc.values.tls); };
+
+  $('mcTest').onclick = function () {
+    var btn = $('mcTest');
+    btn.disabled = true;
+    btn.textContent = '測試中…';
+    ovErr('ovMailCfgErr', '');
+    $('ovMailCfgOk').classList.remove('show');
+    var body = mcRead();
+
+    // ① 測試（用這份表單的參數真的連線＋寄信）→ 拿到 ticket
+    api('/console/ops/alert/email/test', 'POST', body).then(function (res) {
+      if (res.status === 401) { window.location.href = '/login'; return null; }
+      if (res.status >= 400 || !res.data.ok) {
+        // ★ 文案由後端給（測試失敗會帶「測試失敗，請重試：原因」、靜態校驗會帶
+        //   「請先填寫：…」）。這裡不再自己加前綴 —— 兩邊都加會變成
+        //   「測試失敗，請重試：測試失敗：…」。
+        mcFail(res.data.error || ('測試失敗，請重試：HTTP ' + res.status));
+        return null;
+      }
+      $('ovMailCfgOk').textContent = (res.data.message || '測試信已寄出') + ' —— 正在保存…';
+      $('ovMailCfgOk').classList.add('show');
+      // ② 存（帶 ticket；後端驗「票 + 參數指紋」）
+      return api('/console/ops/alert/email/save', 'POST',
+                 Object.assign({}, body, { ticket: res.data.ticket }));
+    }).then(function (res2) {
+      if (!res2) return;
+      if (res2.status === 401) { window.location.href = '/login'; return; }
+      if (res2.status >= 400 || !res2.data.ok) {
+        mcFail('測試通過但保存失敗，請重試：' + (res2.data.error || ('HTTP ' + res2.status)));
+        return;
+      }
+      closeOv('ovMailCfg');
+      toast('參數已配置並保存');
+      return loadDash();          // 概覽的狀態立刻變「參數已配置」
+    }).catch(function (e) {
+      mcFail('測試失敗，請重試：' + ((e && e.message) || e));
+    }).then(function () {
+      btn.disabled = false;
+      btn.textContent = '測試並保存';
     });
   };
 

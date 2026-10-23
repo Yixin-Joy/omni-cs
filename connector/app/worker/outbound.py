@@ -37,8 +37,14 @@ def build_sub_items(message_content) -> list[dict]:
         key = (a.get("media_key") or a.get("path") or "").strip()
         if not key:
             continue
+        # ★ `filename` / `mime` 一定要往下帶：
+        #   CRM 上傳時只拿得到 `media_key`（`<sha16>.<ext>`），原始檔名只有呼叫端知道。
+        #   少了它，工作台氣泡與 WhatsApp document 都只能顯示 sha 檔名，
+        #   而且判斷「是不是圖片」只能靠副檔名 → PDF 被當成圖（氣泡變破圖）。
         items.append({"sub_seq": seq, "kind": "asset", "media_key": key,
-                      "caption": (a.get("caption") or "")})
+                      "caption": (a.get("caption") or ""),
+                      "filename": (a.get("filename") or "").strip(),
+                      "mime": (a.get("mime") or "").strip()})
         seq += 1
     return items
 
@@ -99,8 +105,19 @@ async def _send_one(platform: str, target: str, item: dict,
     except (ValueError, FileNotFoundError) as e:
         # 媒體不存在 = 永久錯誤（不會因為重試而變好）
         return base.SendResult(ok=False, error=f"媒體不存在或不合法（{key}）: {e}")
+    # ★ 用**原始檔名**（呼叫端帶下來的）而不是 sha 檔名：
+    #   WhatsApp 的 document 訊息會把 `filename` 直接顯示給客戶，
+    #   顯示 `7a1102f7f0eec5f8.pdf` 會被當成損壞檔；IG／FB 則用它判 mime。
+    name = item.get("filename") or os.path.basename(path)
+    # ★ 平台能力差異先擋掉：IG／FB 的 attachment 只吃圖片、微信客服消息只發圖。
+    #   以前不擋 → 送 PDF 時 `igfb._guess_mime()` 一律回 image/png，Meta 端才報錯，
+    #   錯誤訊息跟真正原因（根本不支援文件）完全對不上。
+    if platform in ("ig", "fb", "wechat") and not _is_image(name, item.get("mime") or ""):
+        return base.SendResult(
+            ok=False,
+            error=f"{platform} 私訊不支援非圖片附件（{name}）；可改用 WhatsApp 或改放圖片")
     return await base.send_asset(platform, target, path, item.get("caption") or "",
-                                 filename=os.path.basename(path), credential=credential)
+                                 filename=name, credential=credential)
 
 
 # ---------------------------------------------------------------- 出站訊息落地
@@ -138,10 +155,27 @@ def _mark_inbound_handled(cur, platform: str, target: str, scope: str) -> int:
     return cur.rowcount
 
 
+_IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+
+
+def _is_image(name: str, mime: str = "") -> bool:
+    if (mime or "").lower().startswith("image/"):
+        return True
+    return (name or "").split("?")[0].lower().endswith(_IMG_EXT)
+
+
 def record_outbound_message(task: dict, items: list[dict]) -> None:
     """把送出的回覆也寫進訊息表（工作台才看得到回覆）。
 
     **best-effort**：失敗只記 log，絕不因此讓任務失敗。
+
+    ★★ 落地格式必須讓工作台**渲染得出附件**（2026-10-22 修 P0）：
+      工作台讀 `Connector._files_of()` ——
+        · ig / fb    → `igfb_dm.attachments`（要 `url` / `type` / `filename`）
+        · wechat / wa → `forward_log.forwarded_payload.uploadedFiles`（要 `url` / `filename`）
+      舊寫法對 wechat / whatsapp 只寫 `{"text", "assets"}` —— `uploadedFiles` 根本不存在
+      → `_files_of()` 回空陣列 → **客戶收到檔案、工作台氣泡只有文字**（就是這則回報）。
+      ⚠️ 兩個 key 都要寫：`assets` 是本系統的原始紀錄，`uploadedFiles` 是工作台的渲染契約。
     """
     platform = task.get("platform") or ""
     target = task.get("end_user_sender_id") or ""
@@ -150,8 +184,9 @@ def record_outbound_message(task: dict, items: list[dict]) -> None:
     bp = task.get("bp_account_id")
     mid = f"out-{task.get('task_id')}"
     text = " ".join(i["text"] for i in items if i["kind"] == "text")
+
     # ★ 附件要寫**可渲染的 url**：工作台（`_files_of`）讀的是 `url` / `type`，
-    #   只寫 media_key 的話前端拿不到任何網址 → 我方帶圖的回覆在氣泡裡**只顯示文字**。
+    #   只寫 media_key 的話前端拿不到任何網址 → 我方帶檔的回覆在氣泡裡**只顯示文字**。
     #   路徑用 `<PUBLIC_BASE_URL>/files/<media_key>`（前端會把它正規化成相對 `/files/...`，
     #   走 CRM 的代理）；PUBLIC_BASE_URL 沒設時退回相對 `/files/<media_key>`。
     assets = []
@@ -159,15 +194,41 @@ def record_outbound_message(task: dict, items: list[dict]) -> None:
         if i["kind"] != "asset":
             continue
         key = i.get("media_key") or ""
+        name = i.get("filename") or os.path.basename(key)
+        img = _is_image(name, i.get("mime") or "")
+        size = 0
+        try:
+            size = int(os.path.getsize(str(media.resolve(key))))
+        except Exception:  # noqa: BLE001 —— 量不到大小不影響送出，只是氣泡不顯示大小
+            size = 0
         assets.append({
             "media_key": key,
             "url": media.public_url(key) or (f"/files/{key.lstrip('/')}" if key else ""),
-            "type": "image",
-            "filename": os.path.basename(key),
+            "type": "image" if img else "file",
+            "mime": i.get("mime") or "",
+            "filename": name,
+            "fileSize": size,
             "caption": i.get("caption") or "",
         })
-    mtype = "text" if not assets else ("image" if len(assets) == 1 else "mixed")
-    payload = json.dumps({"text": text, "assets": assets}, ensure_ascii=False)
+
+    if not assets:
+        mtype = "text"
+    elif len(assets) == 1:
+        mtype = assets[0]["type"]          # image / file
+    else:
+        mtype = "mixed"
+
+    # ig / fb 的附件格式（工作台直接讀 attachments）
+    att_payload = json.dumps(assets, ensure_ascii=False)
+    # wechat / whatsapp 的附件格式：`uploadedFiles` 是舊單體沿用下來的渲染契約
+    uploaded = [{"url": a["url"], "filename": a["filename"], "fileSize": a["fileSize"],
+                 "isImage": a["type"] == "image"} for a in assets]
+    raw_obj = {"text": text, "assets": assets}
+    fwd_obj = {"text": text, "assets": assets}
+    if uploaded:
+        fwd_obj["uploadedFiles"] = uploaded
+    raw_payload = json.dumps(raw_obj, ensure_ascii=False)
+    fwd_payload = json.dumps(fwd_obj, ensure_ascii=False)
 
     scope = (task.get("message_content") or {}).get("scope") or "dm"
 
@@ -199,9 +260,10 @@ def record_outbound_message(task: dict, items: list[dict]) -> None:
                     " (platform, message_id, sender_id, conversation_id, message_type,"
                     "  raw_content, forwarded_payload, direction, message_time, is_handled,"
                     "  platform_business_account_id, business_id, bp_account_id)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, 'outbound', now(), true,"
+                    " VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, 'outbound', now(), true,"
                     "         %s, %s, %s)",
-                    (platform, mid, target, target, mtype, payload, payload, native, bid, bp),
+                    (platform, mid, target, target, mtype, raw_payload, fwd_payload,
+                     native, bid, bp),
                 )
             elif platform in ("ig", "fb"):
                 cur.execute(
@@ -212,7 +274,7 @@ def record_outbound_message(task: dict, items: list[dict]) -> None:
                     " VALUES (%s, %s, %s, %s, 'out', %s, %s, %s::jsonb, %s, now(), true,"
                     "         %s, %s, %s)",
                     (platform, target, target, target, mtype, text,
-                     json.dumps(assets, ensure_ascii=False), mid, native, bid, bp),
+                     att_payload, mid, native, bid, bp),
                 )
             else:
                 return

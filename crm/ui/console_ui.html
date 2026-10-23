@@ -554,17 +554,24 @@
     transition: opacity .12s ease-out;
   }
   .infotip:hover::after, .infotip:focus::after { opacity: 1; visibility: visible; }
-  /* ★ 顯示時由 JS（placeTip）算好座標改用 fixed 定位：
-     `.sp-body` 是 overflow:auto、`.settings-panel` 是 overflow:hidden，
-     絕對定位的提示只要圓標靠右緣（或靠底部）就會被面板裁掉、看不全。
-     fixed 不受祖先 overflow 裁切，座標再夾在視窗內就永遠看得完整。
-     前端腳本沒跑起來時退回上面的 absolute 版本，功能不會全失。
+  /* ★ 提示氣泡的真正實作（JS 定位，見 `tipPlace()`）：
+     `.sp-body` 是 overflow:auto、`.settings-panel` 是 overflow:hidden —— 上面那個
+     絕對定位的 `::after` 只要圓標靠右緣（或靠底部），超出面板的部分就被裁掉、看不全。
+     所以 hover 時改用這個**獨立的 fixed 節點**（掛在 body、z-index 壓過所有 overlay），
+     座標再夾進視窗內。腳本沒跑起來時 `body.has-tipbox` 不存在 → 退回上面的
+     `::after`，功能不會全失。
      ⚠️ 這段註解不要出現 script 開標籤的字樣：ui_check 是用「第一個開標籤」
      切出 JS 的，會在 CSS 裡誤切。 */
-  .infotip.tip-fixed::after {
-    position: fixed; left: var(--tip-x, 0px); top: var(--tip-y, 0px);
-    transform: none; max-width: min(290px, calc(100vw - 24px));
+  .tipbox {
+    position: fixed; z-index: 9999; display: none;
+    max-width: min(290px, calc(100vw - 16px));
+    background: #1f2937; color: #fff; font-size: 12px; font-weight: 400;
+    line-height: 1.6; padding: 8px 11px; border-radius: 8px;
+    text-align: left; white-space: normal; word-break: break-word;
+    pointer-events: none; box-shadow: 0 10px 28px rgba(0,0,0,.22);
   }
+  body.has-tipbox .infotip:hover::after,
+  body.has-tipbox .infotip:focus::after { opacity: 0; visibility: hidden; }
 
   /* 滑動開關（全部開／關） */
   .sw-toggle {
@@ -1057,6 +1064,7 @@
     </div>
     <div class="fm-body">
       <div class="fm-hint" id="postCfgHint">這一則貼文的留言要用哪些資料回答。沒配置過＝與私訊完全相同。</div>
+      <div class="fm-hint" id="postCfgWarn" style="display:none;background:#fff8e6;border-color:#f0dca8;color:#7a5b12"></div>
       <div id="postCfgErr"></div>
       <div style="display:flex;align-items:center;gap:10px;margin:8px 0 12px">
         <b>這則貼文的留言回覆</b>
@@ -1128,6 +1136,8 @@ var state = {
   search: '',
   aiEnabled: null,
   pendingFile: null,
+  // ★ 送出中的附件本地預覽：localId → objectURL（伺服器落庫後要 revoke，否則記憶體不會釋放）
+  localBlobs: {},
   sending: false,
   settingsTab: 'autoreply',
   overview: null,
@@ -1181,6 +1191,86 @@ function mdPreview(s, n) {
 function infotip(text) {
   return '<span class="infotip" data-tip="' + esc(text) + '">i</span>';
 }
+
+/* ---------- 「i」圓標提示：fixed 定位，不被彈窗的 overflow 裁切 ----------
+   ★ 為什麼不靠純 CSS 的 `.infotip::after`：那是 absolute，`.sp-body`(overflow:auto)
+     與 `.settings-panel`(overflow:hidden) 會把超出面板的部分切掉 —— 圓標靠右緣或
+     靠底部時，提示只露出半截（內容看不完）。改成獨立節點 + fixed 座標夾邊。
+   ★ 與 admin.html 的 `.tipbox` 同一套做法（那邊沒有 pseudo 版，只有這套）。
+   ⚠️ 節點掛 body、z-index 9999：設定面板(500) / FAQ 視窗(600) / 未命中提醒(640)
+     都在它下面，所以面板開著時提示照樣完整顯示。 */
+var tipBoxEl = document.createElement('div');
+tipBoxEl.className = 'tipbox';
+tipBoxEl.setAttribute('aria-hidden', 'true');
+document.body.appendChild(tipBoxEl);
+document.body.classList.add('has-tipbox');   // 關掉 CSS 的 ::after 降級版本
+
+var tipCur = null;        // 目前正在顯示提示的圓標
+var TIP_GAP = 8;          // 圓標與提示的間距
+var TIP_EDGE = 8;         // 提示與視窗邊緣的最小距離
+
+/* 算座標：預設在圓標下方，下方放不下就翻到上方，水平夾回視窗內。 */
+function tipPlace(el) {
+  var r = el.getBoundingClientRect();
+  var w = tipBoxEl.offsetWidth, h = tipBoxEl.offsetHeight;
+  var vw = window.innerWidth, vh = window.innerHeight;
+  var x = r.left + r.width / 2 - w / 2;
+  x = Math.max(TIP_EDGE, Math.min(x, vw - w - TIP_EDGE));
+  var y = r.bottom + TIP_GAP;
+  if (y + h > vh - TIP_EDGE) {
+    var up = r.top - TIP_GAP - h;
+    // 上方也不夠放 → 夾成「視窗內最大可見」，寧可貼邊也不要整塊跑出去
+    y = up >= TIP_EDGE ? up : Math.max(TIP_EDGE, vh - h - TIP_EDGE);
+  }
+  tipBoxEl.style.left = Math.round(x) + 'px';
+  tipBoxEl.style.top = Math.round(y) + 'px';
+}
+
+function tipShow(el) {
+  var text = el.getAttribute('data-tip') || '';
+  if (!text) { tipHide(); return; }
+  tipCur = el;
+  tipBoxEl.textContent = text;
+  tipBoxEl.style.display = 'block';
+  tipPlace(el);   // 先顯示才量得到寬高
+}
+
+function tipHide() {
+  tipCur = null;
+  tipBoxEl.style.display = 'none';
+}
+
+function tipTarget(e) {
+  var t = e.target;
+  return (t && t.closest) ? t.closest('.infotip') : null;
+}
+
+document.addEventListener('mouseover', function (e) {
+  var t = tipTarget(e);
+  if (!t || t === tipCur) return;
+  if (e.relatedTarget && t.contains(e.relatedTarget)) return;   // 圓標內部移動，不重算
+  tipShow(t);
+});
+document.addEventListener('mouseout', function (e) {
+  var t = tipTarget(e);
+  if (!t) return;
+  if (e.relatedTarget && t.contains(e.relatedTarget)) return;
+  tipHide();
+});
+document.addEventListener('focusin', function (e) {
+  var t = tipTarget(e);
+  if (t) tipShow(t);
+});
+document.addEventListener('focusout', function (e) {
+  if (tipTarget(e)) tipHide();
+});
+/* 面板內部滾動時 fixed 座標會失準 → 還在 hover 就重新定位，否則收起。 */
+document.addEventListener('scroll', function () {
+  if (!tipCur) return;
+  if (tipCur.matches && tipCur.matches(':hover')) tipPlace(tipCur);
+  else tipHide();
+}, true);
+window.addEventListener('resize', function () { if (tipCur) tipPlace(tipCur); });
 
 function fmtTime(iso) {
   if (!iso) return '';
@@ -1406,12 +1496,28 @@ function pickBiz(bid) {
   state.bizId = parseInt(bid, 10);
   state.activeKey = null; state.activeAcc = null; state.thread = [];
   state.activePost = null; state.convs = []; state.posts = [];
+  // ★★ 一定要清掉 overview：它是「上一個商家」的資料，
+  //   留著會讓設定面板／帳號判斷在等新資料的空窗期顯示錯商家的內容。
+  //   清成 null 後 `overviewReady()` 回 false → 面板顯示「載入中…」。
+  state.overview = null;
+  // ★ 命中測試頁的「層勾選」只同步一次（避免蓋掉使用者手動勾的），
+  //   所以換商家必須解鎖，否則新商家的層狀態不會被套用。
+  if (typeof stState !== 'undefined' && stState) stState.ktSynced = false;
+  // ★★ 設定面板有**兩套自己的狀態**，都不吃 state.overview：
+  //   `kbState`（知識庫）/ `stState`（FAQ、業務表格、記錄、命中測試）。
+  //   不清掉 → 換商家後那幾個分頁還顯示上一個商家的內容。
+  if (typeof kbResetFor === 'function') kbResetFor(state.bizId);
+  if (typeof stResetFor === 'function') stResetFor();
   renderMerchantBar();
   resetChat();
   renderBadges();
   if (state.section === 'posts') loadPosts(); else loadConversations();
   loadAllCounts();
   loadAutoSettings();
+  // 面板開著時，先重繪一次讓它進「載入中」狀態（不要繼續顯示上一個商家）
+  // ★ 用 renderSettingsTab() 而不是只重繪 autoreply：面板可能停在 FAQ／業務表格，
+  //   那兩個分頁雖然自己會打 API，但只有「重繪」才會真的去呼叫它們。
+  if (_settingsOpen()) renderSettingsTab();
 }
 
 /* ---------------------------------------------------------------- 一級/二級導覽 */
@@ -1428,9 +1534,11 @@ function platformsForSection() {
    ★ 另外要驗 `business_id`：切換商家時舊商家的 overview 可能還在 state 裡，
      不驗就會拿 A 商家的帳號去判斷 B 商家的頁面。 */
 function boundAccountsOf(platform) {
+  // ★ 判準與 `overviewReady()` 一致（切商家時 state.overview 會先清成 null，
+  //   新資料回來才寫入）—— 兩處若各寫一套，遲早有一邊漏掉。
+  if (!overviewReady()) return null;
   var o = state.overview;
-  if (!o || !Array.isArray(o.accounts)) return null;
-  if (o.business_id != null && Number(o.business_id) !== Number(state.bizId)) return null;
+  if (!Array.isArray(o.accounts)) return null;
   return o.accounts.filter(function (a) {
     return String(a.platform || '') === String(platform);
   });
@@ -1785,12 +1893,49 @@ function _nearBottom(box) {
   return box.scrollTop + box.clientHeight >= box.scrollHeight - 48;
 }
 
-/* 這串訊息的「內容指紋」：沒變就不重繪（避免輪詢一直閃、也保住選取/滾動）。 */
+/* 這串訊息的「內容指紋」：沒變就不重繪（避免輪詢一直閃、也保住選取/滾動）。
+   ⚠️ 指紋一定要含**附件的 url / 檔名**：只算「有幾個檔案」的話，
+      「本地預覽(blob) → 伺服器版(/files)」這種同數量、不同內容的變化會被當成沒變
+      → 氣泡停在 blob 或停在空的附件，看起來就是「附件不見了」。 */
 function _threadSig(list) {
   return (list || []).map(function (m) {
+    var fs = (m.files || []).map(function (f) {
+      return (f.url || '').slice(-28) + '/' + (f.filename || '');
+    }).join(',');
     return [m.message_id || '', m.status || '', (m.text || '').length,
-            (m.files || []).length, m.is_handled === false ? 'p' : 'h'].join(':');
+            fs, m.is_handled === false ? 'p' : 'h'].join(':');
   }).join('|');
+}
+
+/* 本地樂觀氣泡（`local-*`）裡，哪些該繼續畫在畫面上。
+   ★★ 2026-10-22 修「沒送出去的訊息永久卡在對話裡」：
+     `refreshThread` 原本只比對**伺服器訊息**的指紋，指紋沒變就 early-return，
+     於是 `sendReply()` 塞進 `state.thread` 的本地氣泡**永遠不會被覆蓋掉**。
+     症狀（商家123 FB 私訊實例）：訂單／回覆根本沒送出（Connector 502、
+     `crm_outbound_task` 一筆都沒建），畫面上卻多出好幾條**跟上一則一模一樣**、
+     時間是按下送出那一刻的氣泡，要重開會話或 F5 才消失。
+   規則：
+     `sending`        → 保留（還沒拿到 task_id，正在送）
+     `queued` + task  → 伺服器出現 `out-<task_id>` 才移除，否則保留（在飛）
+     `failed`         → **丟掉**（已經用 toast 告知失敗，不該留在對話裡冒充已發送）
+*/
+function _pendingLocal(serverItems) {
+  var have = {};
+  (serverItems || []).forEach(function (m) {
+    if (m && m.message_id) have[String(m.message_id)] = 1;
+  });
+  return (state.thread || []).filter(function (m) {
+    if (!m || String(m.message_id || '').indexOf('local-') !== 0) return false;
+    if (m.status === 'failed') return false;
+    if (m._task_id && have['out-' + m._task_id]) return false;
+    return m.status === 'sending' || m.status === 'queued';
+  });
+}
+
+function _localIds(list) {
+  return (list || []).filter(function (m) {
+    return m && String(m.message_id || '').indexOf('local-') === 0;
+  }).map(function (m) { return m.message_id + ':' + (m.status || ''); }).join(',');
 }
 
 /* 只刷「目前開啟的會話」的訊息（不動列表）。輪詢與送出後都用這支。 */
@@ -1803,12 +1948,33 @@ function refreshThread(force) {
     if (!guard(res)) return;
     var items = res.data.items || [];
     state.logs = res.data.logs || [];
-    var sig = _threadSig(items);
-    if (!force && sig === state.threadSig) return;   // 沒變 → 不重繪
+    // ★ 把「還在飛」的本地氣泡併進來一起算指紋 —— 否則伺服器沒變就 early-return，
+    //   本地氣泡（含已失敗的）會永久留在畫面上。詳見 _pendingLocal。
+    var merged = items.concat(_pendingLocal(items));
+    var sig = _threadSig(merged);
+    var localNow = _localIds(merged), localPrev = _localIds(state.thread);
+    if (!force && sig === state.threadSig && localNow === localPrev) return;
     var box = $('messages');
     var stick = force || _nearBottom(box);
     state.threadSig = sig;
-    renderMessages(items, stick);
+    renderMessages(merged, stick);
+    // 只釋放「已經不在畫面上」的 blob（在飛的本地預覽還要靠它顯示）
+    releaseLocalBlobs(merged);
+  });
+}
+
+/* 釋放送出時建立的 objectURL（見 sendReply）。只釋放**已經不在清單裡**的，
+   太早 revoke 會讓正在顯示的預覽變成破圖。 */
+function releaseLocalBlobs(keepList) {
+  var keep = {};
+  (keepList || []).forEach(function (m) {
+    if (m && String(m.message_id || '').indexOf('local-') === 0) keep[m.message_id] = 1;
+  });
+  var m = state.localBlobs || {};
+  Object.keys(m).forEach(function (k) {
+    if (keep[k]) return;                 // 還在畫面上用著
+    try { URL.revokeObjectURL(m[k]); } catch (e) { /* 已經釋放過 */ }
+    delete m[k];
   });
 }
 
@@ -2033,7 +2199,10 @@ function engineReplyForComment(commentId) {
 
   engineDraft({
     scope: 'comment', text: srcText, comment_id: commentId,
-    post_config_id: 0
+    // ★ 傳 `post_id`（不是 post_config_id）—— 後端用「平台 + 貼文原生 ID」
+    //   自己反查該貼文的特殊配置。原本這裡硬寫 `post_config_id: 0`，
+    //   等於右鍵草稿永遠用「私訊基準集」，貼文裡取消的項目照樣會被命中。
+    post_id: postId
   }).then(function (d) {
     _unlock();
     if (d && d.would_send && d.answer) {
@@ -2111,13 +2280,15 @@ function renderPosts() {
       : '<span style="font-size:20px">🖼</span>';
     var badge = p.new_comments > 0
       ? '<span class="post-badge new">' + p.new_comments + ' 新</span>' : '';
+    // 貼文時間還沒同步時 fmtTime 回空字串 → 整格不輸出（避免 flex gap 留下空位）
+    var pt = fmtTime(p.created_at);
     return '<div class="post-card' + (active ? ' active' : '') + '"'
       + ' data-post="' + esc(p.post_id) + '" data-bp="' + esc(p.bp_account_id || '') + '"'
       + ' onclick="openPost(\'' + esc(p.post_id) + '\',' + (p.bp_account_id || 0) + ')">'
       + '<div class="post-thumb">' + thumb + '</div>'
       + '<div class="post-meta"><div class="post-name">'
       + esc(String(p.name || '(無文字)').slice(0, 50) || '(無文字)') + '</div>'
-      + '<div class="post-sub"><span>' + fmtTime(p.created_at) + '</span>'
+      + '<div class="post-sub">' + (pt ? '<span>' + pt + '</span>' : '')
       + '<span>💬 ' + (p.comments_count || 0) + '</span></div></div>'
       + badge + '</div>';
   }).join('')
@@ -2530,9 +2701,28 @@ function markCommentHandled(commentId) {
 }
 
 /* ---------------------------------------------------------------- 私訊回覆 */
+/* 各平台「附件」能送什麼（與 Connector `send_asset` 的實作對齊）：
+   WhatsApp 可發圖片與**文件**；微信客服消息只有圖片；IG／FB 的 attachment 只吃圖片。
+   ★ 前端先擋一次 —— 否則送 PDF 到 IG／FB 會等到 Meta 回一個看不懂的錯，
+     客服只知道「客戶沒收到」。 */
+var ATTACH_KINDS = { whatsapp: ['image', 'file'], wechat: ['image'],
+                     ig: ['image'], fb: ['image'] };
+
+function fileIsImage(f) {
+  return /^image\//.test(f.type || '')
+    || /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name || '');
+}
+
 function onFilePicked(input) {
   var f = input.files && input.files[0];
   if (!f) return;
+  var kinds = ATTACH_KINDS[state.platform] || ['image'];
+  if (!fileIsImage(f) && kinds.indexOf('file') < 0) {
+    showToast((PLATFORM_LABEL[state.platform] || state.platform)
+              + ' 私訊只能傳圖片；要傳文件請改用 WhatsApp', 6000);
+    input.value = '';
+    return;
+  }
   state.pendingFile = f;
   $('pfName').textContent = f.name + '（' + fmtSize(f.size) + '）';
   $('pendingFile').style.display = 'flex';
@@ -2555,12 +2745,21 @@ function sendReply() {
 
   // ★ 樂觀顯示：立刻把自己這條畫上去（標「正在送出…」），
   //   不等伺服器回應 —— 否則按下送出後畫面要等好幾秒才有反應。
+  //   ⚠️ 附件用 `URL.createObjectURL()` 先本地預覽：伺服器回來的訊息要等
+  //     Connector 落庫（1~3 秒），這段空窗若沒有預覽，圖片會顯示成「[圖片]」灰塊。
   var localId = 'local-' + Date.now();
+  var localFiles = [];
+  if (file) {
+    var objUrl = '';
+    try { objUrl = URL.createObjectURL(file); } catch (e) { objUrl = ''; }
+    state.localBlobs = state.localBlobs || {};
+    if (objUrl) state.localBlobs[localId] = objUrl;
+    localFiles = [{ url: objUrl, filename: file.name,
+                    isImage: /^image\//.test(file.type || ''), fileSize: file.size }];
+  }
   var localMsg = {
     message_id: localId, direction: 'outbound', text: text,
-    ts: new Date().toISOString(), status: 'sending',
-    files: file ? [{ url: '', filename: file.name, isImage: /^image\//.test(file.type || ''),
-                     fileSize: file.size }] : [],
+    ts: new Date().toISOString(), status: 'sending', files: localFiles,
   };
   state.thread = (state.thread || []).concat([localMsg]);
   renderMessages(state.thread, true);
@@ -2589,7 +2788,10 @@ function sendReply() {
     }).then(function (r) { return r.json().catch(function () { return {}; }); })
       .then(function (d) {
         if (!d || !d.ok) throw new Error((d && d.error) || '附件上傳失敗');
-        return { media_key: d.media_key, caption: '' };
+        // ★ `filename` / `mime` 一定要一起送回：Connector 落庫後 `media_key`
+        //   只剩 `<sha16>.<ext>`，工作台氣泡與 WhatsApp document 就只剩 sha 可顯示。
+        return { media_key: d.media_key, caption: '',
+                 filename: d.filename || file.name, mime: d.mime || file.type || '' };
       });
   }
 
@@ -2620,18 +2822,42 @@ function sendReply() {
 }
 
 /* ---------------------------------------------------------------- AI 開關 */
+var _ovLoadingFor = null;      // 正在為哪個 business_id 拉 overview（去重用）
+
 function loadAutoSettings() {
   if (!state.bizId) return;
+  var wantBiz = Number(state.bizId);
+  // 同一個商家已經在飛 → 不重複打（`openSettings` 的兜底會撞上 `pickBiz` 的請求）
+  if (_ovLoadingFor === wantBiz) return;
+  _ovLoadingFor = wantBiz;
   api(qs('/console/agent/overview', [['business_id', state.bizId]])).then(function (res) {
+    if (_ovLoadingFor === wantBiz) _ovLoadingFor = null;
     if (!guard(res)) return;
+    // ★ 競態防護：非同步期間使用者可能又切了商家 —— 這份回應就過期了，
+    //   寫進去會讓畫面顯示上一個商家的配置（正是這則回報的另一半原因）。
+    if (Number(state.bizId) !== wantBiz) return;
     state.overview = res.data;
     renderAutoBar();
     syncAccountGating();          // 有／沒有綁定帳號確定後，列表文案才會對
     if (!state.activeKey && !state.activePost) resetChat();   // 右側空白區同步換文案
+    // ★ 設定面板開著就一起重繪 —— 否則資料已更新、DOM 還是舊商家的。
+    //   只重繪 autoreply（它直接吃 state.overview）；faq/table 各自會打 API。
+    if (_settingsOpen() && state.settingsTab === 'autoreply') renderSettingsAutoreply($('spBody'));
+  }).catch(function () {
+    if (_ovLoadingFor === wantBiz) _ovLoadingFor = null;
   });
 }
 
+/* 設定面板是否開著（只有 ✕ 能關，所以看 class 即可） */
+function _settingsOpen() {
+  var ov = $('settingsOverlay');
+  return !!(ov && ov.classList.contains('open'));
+}
+
 function currentScopeEntry() {
+  // ★ 頂部「AI 自動回復」開關條也吃 overview —— 同樣必須確認是這個商家的，
+  //   否則切商家後那一小條會顯示上一個商家的開關狀態（比面板更容易被忽略）。
+  if (!overviewReady()) return null;
   var o = state.overview;
   if (!o || !o.scopes) return null;
   return o.scopes.filter(function (s) {
@@ -2690,47 +2916,88 @@ function loadAllCounts() {
 
 /* ---------------------------------------------------------------- 重新整理（補拉歷史） */
 /* ★ 公網隧道中斷時 webhook 推不進來 → 訊息沒入庫。這顆按鈕驅動 CRM → Connector
-     主動打平台 API 把最近的消息撈回來，並依「後面有沒有我方回覆」決定要不要補紅點。 */
+     主動打平台 API 把最近的消息撈回來，並依「後面有沒有我方回覆」決定要不要補紅點。
+
+   ★★ 改成「先啟動、再輪詢」（2026-10-22 小jo「重新整理時間過長」）：
+      舊版是一個 HTTP 請求等到底 —— 帳號多、離線久（要下載一堆歷史附件）時
+      要卡幾十秒到幾分鐘，畫面完全沒反應，只能盯著一個 5 分鐘不消失的 toast。
+      現在：POST /sync-history/start 立刻拿 job_id，每 1.2 秒問一次進度，
+      按鈕上直接顯示「補拉中 Ns」，完成才一次刷新列表。 */
 function refreshHistory() {
   var btn = $('btnRefresh');
   if (!btn || state.refreshing) return;
   state.refreshing = true;
   btn.disabled = true;
+  // ★ 只轉圈、不顯示秒數（2026-10-22 小jo：點手動更新不需要顯示計時）。
+  //   原本每秒把 innerHTML 改成「⟳ 3s」，數字跳動很干擾，而且補拉要幾秒是浮動的，
+  //   使用者看到數字停在 8s 反而以為卡住。
   btn.innerHTML = '<span class="spinner"></span>';
-  showToast('正在向平台補拉歷史訊息…（WhatsApp / 微信沒有可回溯的 API，只補 IG / FB）', 300000);
 
-  apiJson('/console/agent/sync-history', {}).then(function (res) {
-    if (!guard(res)) return;
-    var t = res.data.totals || {};
-    // ★ 增量：沒有新消息時明確說「已是最新」，不要讓客服以為按了沒反應
-    if (!(t.dm_new || 0) && !(t.comments_new || 0)) {
-      var none = '已是最新（沒有新訊息）';
-      if (t.accounts_unsupported) none += '；' + t.accounts_unsupported + ' 個帳號不支援補拉';
-      showToast(none, 5000);
-      return;
-    }
-    var parts = ['新增私訊 ' + (t.dm_new || 0) + ' 則',
-                 '補紅點 ' + (t.dm_pending || 0) + ' 則',
-                 '已回覆不補 ' + (t.dm_handled || 0) + ' 則'];
-    if (t.posts) parts.push('貼文 ' + t.posts + ' 篇');
-    if (t.comments_new) parts.push('新留言 ' + t.comments_new + ' 則');
-    var msg = '補拉完成：' + parts.join('、');
-    if (t.accounts_unsupported) msg += '（' + t.accounts_unsupported + ' 個帳號不支援補拉）';
-    var errs = t.errors || [];
-    if (errs.length) msg += '；' + errs.length + ' 項警告（見 console）';
-    showToast(msg, 8000);
-    if (errs.length) console.warn('[sync-history]', errs);
-    return loadBusinesses().then(function () {
-      if (state.section === 'posts') loadPosts(); else loadConversations();
-      loadAllCounts();
-      loadAutoSettings();
-    });
-  }).catch(function (e) {
-    showToast('補拉失敗：' + ((e && e.message) || e), 6000);
-  }).then(function () {
+  function stop() {
     state.refreshing = false;
     btn.disabled = false;
     btn.innerHTML = '⟳';
+  }
+
+  function done(t) {
+    // ★ 增量：沒有新消息時明確說「已是最新」，不要讓客服以為按了沒反應
+    // ★ 不再提「N 個帳號不支援補拉」—— 那是平台能力差異（微信／WhatsApp 沒有歷史
+    //   補拉端點），不是使用者要處理的問題，顯示出來只會讓人以為出錯了。
+    if (!(t.dm_new || 0) && !(t.comments_new || 0)) {
+      showToast('已是最新（沒有新訊息）', 5000);
+    } else {
+      var parts = ['新增私訊 ' + (t.dm_new || 0) + ' 則',
+                   '補紅點 ' + (t.dm_pending || 0) + ' 則',
+                   '已回覆不補 ' + (t.dm_handled || 0) + ' 則'];
+      if (t.posts) parts.push('貼文 ' + t.posts + ' 篇');
+      if (t.comments_new) parts.push('新留言 ' + t.comments_new + ' 則');
+      var msg = '補拉完成：' + parts.join('、');
+      // 真失敗（連線／權限）才提示；平台不支援已經不顯示了
+      var errs = t.errors || [];
+      if (errs.length) msg += '；' + errs.length + ' 項警告（見 console）';
+      showToast(msg, 8000);
+      if (errs.length) console.warn('[sync-history]', errs);
+    }
+    return loadBusinesses().then(function () {
+      if (state.section === 'posts') loadPosts(); else loadConversations();
+      // ★ 目前開著的會話也要重畫 —— 否則補拉進來的新訊息要等下一次輪詢才出現
+      if (state.activeKey && state.section !== 'posts') refreshThread(true);
+      loadAllCounts();
+      loadAutoSettings();
+    });
+  }
+
+  apiJson('/console/agent/sync-history/start', {}).then(function (res) {
+    if (!guard(res)) { stop(); return; }
+    var jobId = res.data.job_id;
+    if (!jobId) {                       // 沒有任何帳號 → 直接當成「已是最新」
+      stop(); done({});
+      return;
+    }
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries += 1;
+      api('/console/agent/sync-history/status?job_id=' + encodeURIComponent(jobId))
+        .then(function (r) {
+          var d = r.data || {};
+          if (!d.ok) {
+            // 任務被回收（例如服務重啟）→ 停止輪詢，不要無限問下去
+            if (r.status === 404 || tries > 900) { clearInterval(timer); stop(); }
+            return;
+          }
+          if (d.status === 'running') return;
+          clearInterval(timer);
+          stop();
+          if (d.status === 'failed') { showToast('補拉失敗：' + (d.error || '未知錯誤'), 8000); return; }
+          done(d.totals || {});
+        })
+        .catch(function () {
+          if (tries > 20) { clearInterval(timer); stop(); showToast('補拉狀態查詢失敗', 6000); }
+        });
+    }, 1200);
+  }).catch(function (e) {
+    stop();
+    showToast('補拉失敗：' + ((e && e.message) || e), 6000);
   });
 }
 
@@ -2757,19 +3024,20 @@ function setBadge(id, n) {
 }
 
 /* ---------------------------------------------------------------- 貼文特殊配置（新） */
+/* ⚠️ 舊版：`comment_switch_on=false`（該平台「留言」總開關關著）時**直接把彈窗關掉**，
+   只丟一個 toast。人很容易錯過 → 以為「我改好了」，其實連改都沒改到。
+   現在改成：彈窗照開、頂部黃字說明，內容唯讀（`.locked`），儲存 / 移除一律擋下。 */
 function openPostCfg(postId, acc) {
   state.post = { id: postId, acc: acc || 0 };
   $('postCfgErr').textContent = '';
+  var warn = $('postCfgWarn');
+  if (warn) { warn.style.display = 'none'; warn.textContent = ''; }
   $('postCfgBody').innerHTML = '<div class="empty">載入中…</div>';
   $('postCfgOverlay').classList.add('open');
   api(qs('/console/agent/post-config', [['business_id', state.bizId], ['platform', state.platform],
     ['post_id', postId], ['bp_account_id', acc || 0]])).then(function (res) {
     if (!guard(res)) { closePostCfg(); return; }
-    if (!res.data.comment_switch_on) {
-      closePostCfg();
-      showToast('該平台的「留言」總開關是關的，先到 ⚙ 自動回復 打開');
-      return;
-    }
+    state.postCfgLocked = !res.data.comment_switch_on;
     state.postCfg = res.data;
     state.postEnabled = !!res.data.enabled;
     state.postLayers = {}; state.postChecked = {};
@@ -2793,6 +3061,15 @@ function togglePostEnabled() {
 function renderPostCfg() {
   var cfg = state.postCfg;
   if (!cfg) return;
+  var locked = !!state.postCfgLocked;
+  var warn = $('postCfgWarn');
+  if (warn) {
+    warn.style.display = locked ? '' : 'none';
+    warn.textContent = locked
+      ? '這個平台（' + (PLATFORM_LABEL[state.platform] || state.platform) + '）的「留言」總開關是關的'
+        + ' —— 這則貼文現在不會跑 AI，這裡的勾選也不會生效。先到 ⚙ 自動回復 → 場景層 把「留言」打開。'
+      : '';
+  }
   $('postEnabled').textContent = state.postEnabled ? '開' : '關（這則貼文不用 AI）';
   $('postEnabled').className = 'ar-btn ' + (state.postEnabled ? 'on' : 'off');
   $('postCfgHint').textContent = cfg.configured
@@ -2821,7 +3098,7 @@ function renderPostCfg() {
       items.forEach(function (it) {
         html += '<label class="chk' + (state.postLayers[k] ? '' : ' off') + '">'
           + '<input type="checkbox" data-pck="' + k + '" value="' + it.id + '"'
-          + (pset[it.id] ? ' checked' : '') + '>'
+          + (pset[it.id] ? ' checked' : '') + (locked ? ' disabled' : '') + '>'
           + '<span>' + esc(it.title)
           + (it.kind === 'image' ? ' <span class="chip">圖片庫</span>' : '')
           + (baseSet[k][it.id] ? ' <span class="chip">私訊有</span>' : '')
@@ -2838,6 +3115,7 @@ function bindPostCfgEvents() {
   // 同 `bindOverviewEvents`：只在自己的容器裡找，不用 document 全域選取
   var box = $('postCfgBody');
   if (!box) return;
+  if (state.postCfgLocked) return;      // 唯讀（留言總開關關著）→ 不綁任何互動
   Array.prototype.forEach.call(box.querySelectorAll('[data-pgroup]'), function (b) {
     b.onclick = function () {
       var k = b.getAttribute('data-pgroup');
@@ -2860,6 +3138,11 @@ function collectPostChecks() {
 }
 
 function savePostCfg(remove) {
+  if (state.postCfgLocked) {
+    showToast('先到 ⚙ 自動回復 → 場景層 打開「'
+              + (PLATFORM_LABEL[state.platform] || state.platform) + ' 留言」，這裡的設定才有意義', 6000);
+    return;
+  }
   collectPostChecks();
   var body = {
     business_id: state.bizId, platform: state.platform,
@@ -2887,6 +3170,10 @@ function openSettings(tab) {
   if (ov) ov.classList.remove('open');
   $('settingsOverlay').classList.add('open');
   switchSettingsTab(state.settingsTab);
+  // ★ 兜底：手上沒有「這個商家」的 overview 就補拉一次。
+  //   （正常情況下 pickBiz 已經拉過；但首次載入失敗、或面板在等資料時切過商家，
+  //     沒有這一步會永遠停在「載入中…」）
+  if (state.settingsTab === 'autoreply' && !overviewReady()) loadAutoSettings();
 }
 
 /* ================================================================
@@ -3057,8 +3344,23 @@ function renderSettingsTab() {
 }
 
 /* ---------- FAQ 問答對 ---------- */
+/* 目前手上的 overview 是不是**這個商家**的？
+   ★★ 2026-10-22 修「換商家後自動回復配置還是上一個商家的」：
+     `pickBiz()` 會呼叫 `loadAutoSettings()`（非同步）重新拉 overview，但
+     ① `state.overview` 在切換當下**沒被清掉**；
+     ② 面板 DOM 也不會因此重繪。
+     於是「開著面板切商家」或「切完立刻開面板」都會看到舊商家的配置，
+     要手動按「重新讀取」才對 —— 那就是這則回報。
+   ★ 與 `boundAccountsOf()` 用同一條判準（比 `business_id`），兩處不要走偏差。 */
+function overviewReady() {
+  var o = state.overview;
+  if (!o) return false;
+  if (o.business_id == null) return false;         // 後端沒帶 → 不敢用
+  return Number(o.business_id) === Number(state.bizId);
+}
+
 function renderSettingsAutoreply(body) {
-  if (!state.overview) { body.innerHTML = '<div class="empty">載入中…</div>'; return; }
+  if (!overviewReady()) { body.innerHTML = '<div class="empty">載入中…</div>'; return; }
   var o = state.overview;
   var h = '<div class="card"><h3>場景層'
     + infotip('先決定「哪個平台的哪種場景」要用 AI：私訊與貼文留言是兩種獨立場景。'
@@ -3103,8 +3405,9 @@ function renderSettingsAutoreply(body) {
 /* 該平台在「場景層」是否至少勾了一個場景（dm／comment 任一）。
    都沒勾 → 帳號層該平台的帳號變灰、點擊只提示。 */
 function arPlatformScopeOn(platform) {
+  // ★ 用 overviewReady()：拿上一個商家的 overview 會讓帳號層的灰階判斷錯亂
+  if (!overviewReady()) return false;
   var o = state.overview;
-  if (!o) return false;
   return (o.scopes || []).some(function (s) { return s.platform === platform && s.enabled; });
 }
 
@@ -3143,12 +3446,14 @@ function bindOverviewEvents() {
 }
 
 function loadAutoSettingsAnd() {
+  var wantBiz = Number(state.bizId);
   api(qs('/console/agent/overview', [['business_id', state.bizId]])).then(function (res) {
     if (!guard(res)) return;
+    if (Number(state.bizId) !== wantBiz) return;   // 競態：回應回來時已切走
     state.overview = res.data;
     renderAutoBar();
     syncAccountGating();          // 同上：確定有沒有綁定帳號
-    if (state.settingsTab === 'autoreply') renderSettingsAutoreply($('spBody'));
+    if (state.settingsTab === 'autoreply' && _settingsOpen()) renderSettingsAutoreply($('spBody'));
   });
 }
 
@@ -3176,7 +3481,16 @@ function closeAsk() { var ov = $('askOverlay'); if (ov) ov.classList.remove('ope
      ③ 渲染進「設定 → 知識庫」分頁（#spBody）而不是舊版的 arState.tab。
    ================================================================== */
 
+/* 知識庫整組狀態清空（切換商家時用）。
+   ★★ 2026-10-22 修「換商家後知識庫頁面還是上一個商家的」：
+     `renderSettingsKb` 原本是 `if (!kbState.kb) loadKbOverview()` ——
+     `kbState.kb` 一旦有值就**永遠不再重拉**，所以換商家只會看到舊資料。
+     而且 `kbCollection` / `kbDocId` 這些導覽位置也要清，否則會拿著
+     A 商家的 collection_id 去查 B 商家（後端有隔離，會回空或 403，畫面像壞掉）。
+   ★ 為什麼要記 `kbBizId`：只有「商家真的變了」才重載 ——
+     面板內切分頁（autoreply ↔ kb）不該每次都重打 5~6 個 API。 */
 var kbState = {
+  kbBizId: null,        // 這份 kb 資料是「哪個商家」的（null = 沒載過）
   kb: null,             // GET /console/kb/overview
   kbView: 'list',       // list | docs | doc | new | assets
   kbCollection: 0,
@@ -3195,6 +3509,36 @@ var kbState = {
   kbAssetNote: '',
   kbDocAssets: null,
 };
+
+/* 把知識庫狀態重置成「這個商家的全新一份」。
+   保留 UI 偏好（沒有），其餘全部歸零 —— 寧可多按一次，也不要顯示別人的資料。 */
+function kbResetFor(bizId) {
+  kbState.kbBizId = bizId == null ? null : Number(bizId);
+  kbState.kb = null;
+  kbState.kbView = 'list';
+  kbState.kbCollection = 0;
+  kbState.kbUngrouped = false;
+  kbState.kbDocs = [];
+  kbState.kbDocId = 0;
+  kbState.kbDoc = null;
+  kbState.kbPreview = null;
+  kbState.kbParams = null;
+  kbState.kbParamCid = 0;
+  kbState.kbUploadNote = '';
+  kbState.kbAssets = null;
+  kbState.kbAssetCid = 0;
+  kbState.kbAssetAll = false;
+  kbState.kbAssetBusy = '';
+  kbState.kbAssetNote = '';
+  kbState.kbDocAssets = null;
+}
+
+/* 手上的資料是不是「這個商家」的？ */
+function kbReady() {
+  if (!kbState.kb) return false;
+  if (kbState.kbBizId == null) return false;
+  return Number(kbState.kbBizId) === Number(state.bizId);
+}
 
 /* 知識庫 API —— 沿用舊版寫法（kbApi() 直接回資料、kbApiJson() 回 {status,data}），
    差別是**自動帶上當前商家**與 CSRF。 */
@@ -3258,7 +3602,9 @@ function askInputOk() {
 /* 設定分頁「知識庫」的入口（renderSettingsTab 會呼叫）。 */
 function renderSettingsKb(body) {
   body.innerHTML = kbTabHtml();
-  if (!kbState.kb) loadKbOverview();
+  // ★ 換成「這個商家的資料還沒載」就重拉（原本只判斷 `!kbState.kb`，
+  //   導致第一次載入後永遠不重載 → 換商家還是看到舊的知識庫清單）。
+  if (!kbReady()) loadKbOverview();
 }
 
 function kbDocTag(d) {
@@ -3451,6 +3797,7 @@ function kbOpenAssets(cid) {
 
 async function kbLoadAssets() {
   const cid = kbState.kbAssetCid || 0;
+  const wantBiz = Number(state.bizId);
   let d;
   try {
     d = await kbApi('/console/kb/assets' +
@@ -3459,6 +3806,7 @@ async function kbLoadAssets() {
   } catch (e) {
     d = { assets: [], stats: {}, error: e.message };
   }
+  if (Number(state.bizId) !== wantBiz) return;   // 競態：已切換商家
   kbState.kbAssets = d;
   kbRender();
 }
@@ -4177,6 +4525,8 @@ function kbNewDoc() {
 
 // 進某份文件（解析與分塊頁）
 async function kbOpenDoc(docId) {
+  const wantBiz = Number(state.bizId);
+  const wantDoc = Number(docId);
   kbState.kbView = 'doc';
   kbState.kbDocId = docId;
   kbState.kbDoc = null;
@@ -4186,6 +4536,8 @@ async function kbOpenDoc(docId) {
   try { await kbParamsFor(0); } catch (e) { /* 忽略 */ }
   try {
     const d = await kbApi('/console/kb/document?id=' + docId + '&chunks=1&chunks_limit=600');
+    // ★ 競態防護：期間換了商家、或使用者已經點開別的文件 → 丟棄
+    if (Number(state.bizId) !== wantBiz || Number(kbState.kbDocId) !== wantDoc) return;
     kbState.kbDoc = d;
     if (d.doc) {
       // 文件的知識庫可能不是「目前所在」那個（例如從未分組點進來）→ 對齊，麵包屑才不會指錯
@@ -4199,6 +4551,7 @@ async function kbOpenDoc(docId) {
       }
     }
   } catch (e) {
+    if (Number(state.bizId) !== wantBiz || Number(kbState.kbDocId) !== wantDoc) return;
     kbState.kbDoc = { doc: { id: docId, filename: '（讀取失敗）', error: e.message }, stats: {} };
   }
   // 這份文件的圖（先清空避免殘影，抓到再重畫）
@@ -4206,8 +4559,10 @@ async function kbOpenDoc(docId) {
   kbRender();
   try {
     const ad = await kbApi('/console/kb/assets?doc_id=' + docId + '&include_filtered=1');
+    if (Number(state.bizId) !== wantBiz || Number(kbState.kbDocId) !== wantDoc) return;
     kbState.kbDocAssets = ad.assets || [];
   } catch (e) {
+    if (Number(state.bizId) !== wantBiz || Number(kbState.kbDocId) !== wantDoc) return;
     kbState.kbDocAssets = [];
   }
   kbRender();
@@ -4217,17 +4572,27 @@ async function kbOpenDoc(docId) {
 /* ----- 知識庫：讀取 ----- */
 
 async function loadKbOverview(keepDocs) {
+  var wantBiz = Number(state.bizId);
   try {
     const d = await kbApi('/console/kb/overview');
+    // ★ 競態防護：非同步期間可能又切了商家，這份回應就過期了
+    if (Number(state.bizId) !== wantBiz) return;
     kbState.kb = d;
+    kbState.kbBizId = wantBiz;      // 記住這份資料屬於哪個商家（kbReady() 靠它判斷）
     // 順便補上支援的副檔名（給上傳提示用）
     if (!kbState.kb.model) kbState.kb.model = {};
     if (!kbState.kb.model.doc_types) {
-      try { const t = await kbApi('/console/kb/doc-types'); kbState.kb.model.doc_types = t.types || []; }
+      try {
+        const t = await kbApi('/console/kb/doc-types');
+        if (Number(state.bizId) !== wantBiz) return;
+        kbState.kb.model.doc_types = t.types || [];
+      }
       catch (e) { /* 忽略 */ }
     }
   } catch (e) {
+    if (Number(state.bizId) !== wantBiz) return;
     kbState.kb = { collections: [], totals: {}, model: {}, error: e.message };
+    kbState.kbBizId = wantBiz;
   }
   if (!keepDocs && kbState.kbView !== 'list' && kbState.kbView !== 'assets') await kbLoadDocs();
   kbRender();
@@ -4235,12 +4600,15 @@ async function loadKbOverview(keepDocs) {
 
 async function kbLoadDocs() {
   if (kbState.kbView === 'list') { kbState.kbDocs = []; kbRender(); return; }
+  const wantBiz = Number(state.bizId);
   const qs = kbState.kbUngrouped ? '?ungrouped=1'
     : (kbState.kbCollection ? '?collection_id=' + kbState.kbCollection : '');
   try {
     const d = await kbApi('/console/kb/documents' + qs);
+    if (Number(state.bizId) !== wantBiz) return;   // 競態：已切換商家
     kbState.kbDocs = d.documents || [];
   } catch (e) {
+    if (Number(state.bizId) !== wantBiz) return;
     kbState.kbDocs = [];
   }
   kbRender();
@@ -4257,17 +4625,26 @@ async function kbReload() {
 
 // 有背景任務在跑就自動再撈一次（解析 / 向量化是背景執行緒，不會推播）
 let _kbPollTimer = null;
+/* 面板現在是不是停在「知識庫」分頁。
+   ★★ 原本寫 `kbState.tab !== 'kb'` —— 但 `kbState` **根本沒有 `tab` 這個欄位**
+     （移植時漏了），所以恆為 `undefined !== 'kb'` = true → **每次都提前 return**，
+     輪詢從來沒跑過。症狀：上傳/解析後文件狀態永遠停在「處理中」，
+     要手動按「重新讀取」才會變。改用 `state.settingsTab`（`kbRender` 也是看它）。 */
+function kbTabActive() {
+  return state.settingsTab === 'kb';
+}
+
 function kbMaybePoll() {
   clearTimeout(_kbPollTimer);
-  if (kbState.tab !== 'kb') return;
+  if (!kbTabActive()) return;
   const busy = (kbState.kbDocs || []).some(d => d.running) ||
                !!(kbState.kbDoc && kbState.kbDoc.running);
   if (!busy) return;
   _kbPollTimer = setTimeout(function () {
-    if (kbState.tab !== 'kb') return;
+    if (!kbTabActive()) return;
     if (kbState.kbView === 'doc' && kbState.kbDocId) kbOpenDoc(kbState.kbDocId);
     else if (kbState.kbView === 'docs') kbLoadDocs();
-      else if (kbState.kbView === 'assets') kbLoadAssets();
+    else if (kbState.kbView === 'assets') kbLoadAssets();
   }, 2500);
 }
 
@@ -4891,6 +5268,29 @@ var stState = {
   ktSynced: false, ktNoHistory: false, ktRewrite: '',
 };
 
+/* 設定面板（FAQ / 表格 / 記錄 / 命中測試）的資料全部清空。
+   ★★ 2026-10-22 修「換商家後記錄頁還是上一個商家的」：
+     `renderSettingsLogs` 原本是 `else if (!stState.logs.length) loadLogs()` ——
+     logs 一旦有值就**永遠不再重拉**，換商家只會看到舊紀錄。
+     （FAQ / 表格沒這個問題：它們每次 render 都無條件 loadFaqs()/loadTables()。）
+   ★ 保留 `logsSub`（使用者停在哪個子頁）與 `ktLayers`（下一行會重新同步），
+     其餘資料類欄位一律歸零。 */
+function stResetFor() {
+  stState.faqs = [];
+  stState.faqQ = '';
+  stState.faqTotal = 0;
+  stState.tables = [];
+  stState.openTableId = null;
+  stState.logs = [];
+  stState.openLogId = null;
+  stState.logDetail = null;
+  stState.stats = null;
+  stState.ktResult = null;
+  stState.ktNoHistory = false;
+  stState.ktRewrite = '';
+  stState.ktSynced = false;      // 讓 ktSyncLayers 重新照新商家的層開關對齊
+}
+
 // 舊版叫 AR_CHANNEL_LABEL（值就是平台中文名）
 var AR_CHANNEL_LABEL = PLATFORM_LABEL;
 
@@ -5427,10 +5827,16 @@ async function stTableImportGo(file, tableId, mode) {
 // 第一次進這個分頁時，勾選狀態先照「自動回復」頁的實際開關（試跑卡片已經搬過來，
 // 這裡就是它唯一的家）。之後使用者自己改的勾選**不會**被 30 秒的設定同步蓋掉。
 function ktSyncLayers(force) {
+  // ★ 必須確認 overview 是**這個商家**的，否則會拿上一個商家的層開關
+  if (!overviewReady()) return;
   const s = state.overview;
-  if (!s) return;
   if (stState.ktSynced && !force) return;
-  stState.ktLayers = { faq: !!s.faq_layer, table: !!s.table_layer, rag: !!s.rag_layer };
+  // ★★ 後端 `/overview` 回的是 `layers: {faq,table,rag}` —— 不是 `faq_layer` 這種扁平欄位。
+  //    原本寫 `s.faq_layer` 永遠是 undefined → `ktLayers` 全 false → 命中測試頁的層
+  //    一進去就是「全關」，跟「自動回復」頁顯示的實際狀態相反（看起來像 bug 但沒人報，
+  //    因為大家都直接用預設的三層全勾去測）。
+  const lay = (s && s.layers) || {};
+  stState.ktLayers = { faq: lay.faq !== false, table: lay.table !== false, rag: lay.rag !== false };
   stState.ktSynced = true;
 }
 
@@ -5808,6 +6214,7 @@ async function loadLogs() {
   const box = document.getElementById('logList');
   const sel = document.getElementById('logChannel');
   const tier = document.getElementById('logTier');
+  const wantBiz = Number(state.bizId);      // ★ 競態：換商家後舊回應要丟棄
   const parts = (sel && sel.value) ? sel.value.split('|') : ['', ''];
   const qs = new URLSearchParams();
   if (parts[0]) qs.set('platform', parts[0]);
@@ -5817,6 +6224,7 @@ async function loadLogs() {
   if (box) box.innerHTML = '<div class="empty-note">載入中…</div>';
   try {
     const d = await stApi('/console/agent/logs?' + qs.toString());
+    if (Number(state.bizId) !== wantBiz) return;
     stState.logs = d.logs || [];
     stState.openLogId = null;      // 換一批結果就把展開狀態歸零
     stState.logDetail = null;
@@ -5855,7 +6263,10 @@ function renderSettingsLogs(body) {
     loadStats().then(function (d) {
       renderStatsInto(document.getElementById('logStatsBox'), d);
     });
-  } else if (!stState.logs.length) {
+  } else {
+    // ★ 改成無條件重載：原本 `if (!stState.logs.length)` 一旦有資料就永不重拉，
+    //   換商家後會一直看到上一個商家的紀錄。紀錄頁本來就該反映最新狀態
+    //   （AI 剛剛回了哪幾則），多打一次 API 完全值得。
     loadLogs();
   }
 }

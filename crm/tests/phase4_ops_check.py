@@ -120,6 +120,14 @@ def cleanup():
       (OPS_USER, AGENT_USER, ADMIN_USER))
     q(CRM_DSN, "DELETE FROM crm_business_platform_account WHERE business_id IN"
                " (SELECT id FROM crm_business WHERE business_name = %s)", (BIZ_NAME,))
+    # ⚠️ `crm_business` 還被這幾張表引用 —— 少刪一張就 FK violation，
+    #    而且錯誤發生在 finally 裡，會蓋掉真正的測試結果（2026-10-23 踩到）。
+    #    `business_ai_switch` 是 `main.lifespan` 的 `backfill_ai_switches()` 建的
+    #    （自檢跑了 TestClient 啟動，所以自檢商家也被補了 6 把開關）。
+    for t in ("business_ai_switch", "business_layer_switch",
+              "business_faq_binding", "business_table_binding", "business_kb_binding"):
+        q(CRM_DSN, f"DELETE FROM {t} WHERE business_id IN"
+                   " (SELECT id FROM crm_business WHERE business_name = %s)", (BIZ_NAME,))
     q(CRM_DSN, "DELETE FROM crm_business WHERE business_name = %s", (BIZ_NAME,))
 
 
@@ -412,7 +420,8 @@ def main() -> int:
             real_connect = alerting._connect
             real_enabled, real_host = config.ALERT_EMAIL_ENABLED, config.SMTP_HOST
             try:
-                alerting._connect = lambda: _FakeSMTP()
+                # 2026-10-23：`_connect` 現在吃「這次要用的參數」（DB 優先、退回 .env）
+                alerting._connect = lambda s=None: _FakeSMTP()
                 config.ALERT_EMAIL_ENABLED = True
                 config.SMTP_HOST = "smtp.test.local"
                 c.post("/console/ops/config",

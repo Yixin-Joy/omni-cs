@@ -72,7 +72,14 @@ def create_business(cur, name: str, memo: str | None,
         " VALUES (%s, %s, %s, %s) RETURNING id",
         (name, memo, meta_app_id, meta_app_secret),
     )
-    return cur.fetchone()["id"]
+    bid = cur.fetchone()["id"]
+    # ★ 新商家一出生就把 6 把場景開關**寫成實列（全開）**，同一事務。
+    #   為什麼不靠「讀取時 fallback true」：客服端 `effective_scope_mode()`
+    #   是「表裡沒有此列 = 關」，只有管理員端 fallback true → 兩邊對同一個商家
+    #   顯示相反（管理員看到開、客服看到關）。寫入實列 = 唯一真相，之後手動改
+    #   就是改這幾列，不存在「預設值」這層東西。
+    seed_ai_switches(cur, bid)
+    return bid
 
 
 def update_business(cur, bid: int, name: str, memo: str | None, enabled: bool,
@@ -248,8 +255,28 @@ def set_staff_permissions(cur, staff_id: int, business_ids: list[int]) -> None:
 
 # ---------------------------------------------------------------- AI 開關
 
+def seed_ai_switches(cur, business_id: int) -> None:
+    """把該商家的 6 把「平台 × 場景」開關補成**開啟**（已存在的列不動）。
+
+    ★ 只在「新建商家」與「舊商家一次性補齊」時呼叫 —— 補的是**實際狀態**，
+      不是「預設值」。使用者手動關掉的那把永遠不會被這裡蓋回來。
+    """
+    for p, s in AI_SWITCH_SCOPES:
+        cur.execute(
+            "INSERT INTO business_ai_switch (business_id, platform, scope, enabled)"
+            " VALUES (%s, %s, %s, true)"
+            " ON CONFLICT (business_id, platform, scope) DO NOTHING",
+            (business_id, p, s),
+        )
+
+
 def list_ai_switches(business_id: int) -> list[dict]:
-    """回傳該商家全部 6 種「平台 × 場景」的開關（表裡沒有的預設 true）。"""
+    """回傳該商家全部 6 種「平台 × 場景」的開關（直接讀表）。
+
+    ★ 缺列＝關 —— 與客服端 `effective_scope_mode()` 完全同一套語義。
+      正常流程（新建商家 / 啟動時補齊）不會有缺列，所以「管理員看到什麼，
+      客服端就是什麼」。
+    """
     with ro() as cur:
         cur.execute(
             "SELECT platform, scope, enabled FROM business_ai_switch WHERE business_id = %s",
@@ -257,12 +284,7 @@ def list_ai_switches(business_id: int) -> list[dict]:
         )
         saved = {(r["platform"], r["scope"]): r["enabled"] for r in cur.fetchall()}
     return [
-        {
-            "platform": p,
-            "scope": s,
-            "enabled": bool(saved.get((p, s), True)),
-            "configured": (p, s) in saved,
-        }
+        {"platform": p, "scope": s, "enabled": bool(saved.get((p, s), False))}
         for (p, s) in AI_SWITCH_SCOPES
     ]
 

@@ -547,5 +547,32 @@ OPS_CONFIG_DEFAULTS = {
     # 寄信的最低嚴重度：'info' | 'warning' | 'critical'（低於此值只留在清單、不寄）
     "alert.email_min_severity": "warning",
     "alert.email_recipients": [],
+    # ===== 郵件告警的 SMTP 參數（2026-10-23 從 .env 搬到運維端可填）=====
+    # ★★ 判讀規則（重要）：
+    #   `crm_ops_config` 裡**有沒有這一列**才是「有沒有被運維端設定過」的依據。
+    #   沒有那一列 → 一律退回 `.env`（`config.ALERT_EMAIL_*` / `SMTP_*`），
+    #   所以既有部署升級後行為完全不變；一旦在運維端存過一次，就以 DB 為準
+    #   —— 包含「刻意把 enabled 存成 false」這種情況（不能因為 env 是 true 就翻回來）。
+    #   實作見 `app/ops/alerting.settings()`。
+    "alert.email_enabled": False,
+    "alert.smtp_host": "",
+    "alert.smtp_port": 587,
+    "alert.smtp_user": "",
+    # ⚠️ 敏感欄：API 一律只回「已填/未填」，不回明文（見 ops/router._mask_config）
+    "alert.smtp_password": "",
+    "alert.smtp_from": "",
+    "alert.smtp_tls": True,
     "media.kb_cache_ttl_days": 7,
 }
+
+# ★★ 啟動時**不要**寫入預設列的參數（2026-10-23）。
+#   為什麼：這些 key 的判讀規則是「DB 有沒有這一列」＝「運維端有沒有設定過」，
+#   沒那一列就退回 `.env`。但 `db.init_schema_sync()` 會把 `OPS_CONFIG_DEFAULTS`
+#   全部 `INSERT ... DO NOTHING` —— 一旦寫了空字串那一列，
+#   `alerting.settings()` 就會認為「運維端設成空的」→ **.env 的 SMTP 設定被靜默忽略**
+#   → 升級後郵件告警突然不通，而且看不出原因（實測踩過）。
+#   所以這幾個 key 只在運維端按「儲存」時才寫（`/console/ops/alert/email/save`）。
+OPS_CONFIG_NO_SEED = frozenset((
+    "alert.email_enabled", "alert.smtp_host", "alert.smtp_port",
+    "alert.smtp_user", "alert.smtp_password", "alert.smtp_from", "alert.smtp_tls",
+))

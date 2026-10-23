@@ -338,8 +338,14 @@ def main():
         r = c.get(f"/api/admin/ai-switch?business_id={biz_id}")
         items = r.json()["items"]
         check(len(items) == 6, f"回傳 6 種平台×場景組合（實得 {len(items)}）")
-        check(all(i["enabled"] for i in items), "尚未設定時預設全部開啟")
-        check(all(not i["configured"] for i in items), "尚未設定時 configured=false")
+        # ★ 新商家建立時就寫入 6 把實列（全開）→ 與客服端讀的是同一份資料。
+        #   不再有「讀不到就當 true」的 fallback，也沒有「預設」這個概念。
+        check(all(i["enabled"] for i in items), "新建商家 → 6 把場景開關全部開啟（實列）")
+        check(all("configured" not in i for i in items), "回傳不含 configured（不再有預設概念）")
+        from app.autoreply import autoreply_db as _ardb
+        same = all(_ardb.effective_scope_mode(biz_id, i["platform"], i["scope"]) == i["enabled"]
+                   for i in items)
+        check(same, "★ 管理員端顯示 == 客服端 effective_scope_mode（兩端同步）")
 
         r = c.post("/api/admin/ai-switch",
                    json={"business_id": biz_id, "platform": "ig", "scope": "comment", "enabled": False},
@@ -347,7 +353,9 @@ def main():
         check(r.status_code == 200, "單獨關閉 IG 留言開關")
         items = c.get(f"/api/admin/ai-switch?business_id={biz_id}").json()["items"]
         igc = [i for i in items if i["platform"] == "ig" and i["scope"] == "comment"][0]
-        check(igc["enabled"] is False and igc["configured"], "IG 留言＝關、configured=true")
+        check(igc["enabled"] is False, "IG 留言＝關")
+        check(_ardb.effective_scope_mode(biz_id, "ig", "comment") is False,
+              "★ 客服端同步為關（不是各看各的）")
 
         r = c.post("/api/admin/ai-switch",
                    json={"business_id": biz_id, "platform": "wechat", "scope": "comment", "enabled": True},

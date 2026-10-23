@@ -6,6 +6,12 @@
 """
 from __future__ import annotations
 
+import logging
+import time
+import uuid
+from datetime import datetime
+from email.message import EmailMessage
+
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -13,10 +19,12 @@ from pydantic import BaseModel
 from app import audit
 from app.auth import deps, rbac
 from app.internal import connector_client
+from app.internal import repo as internal_repo
 from app.ops import alerting
 from app.ops import repo
 
 router = APIRouter(prefix="/console/ops", tags=["ops"])
+log = logging.getLogger("crm")
 
 PLATFORMS = ("wechat", "whatsapp", "ig", "fb")
 
@@ -43,12 +51,29 @@ def dashboard(business_id: int = Query(default=0), sess: dict = Depends(deps.req
 
 @router.get("/config")
 def get_config(sess: dict = Depends(deps.require_ops)):
+    """運維參數清單。
+
+    ★ 敏感欄（SMTP 密碼）**不回明文**，只回 `"••••••••"` + `password_set`；
+      而且它不在 `editable` 裡 —— 要改請走「郵件設定」彈窗（先測試才能存）。
+    """
     flat, nested = repo.ops_config()
-    items = [{"key": k, "value": v, "type": repo.config_type_of(k),
-              "is_default": v == repo.schema.OPS_CONFIG_DEFAULTS.get(k)}
-             for k, v in sorted(flat.items())]
-    return {"ok": True, "config": nested, "flat": flat, "items": items,
-            "editable": sorted(repo.CONFIG_KEYS)}
+    safe = dict(flat)
+    for k in alerting.SENSITIVE_KEYS:
+        if k in safe:
+            safe[k] = alerting.MASK if str(flat.get(k) or "") else ""
+    if "alert" in (nested or {}):
+        nested = dict(nested)
+        nested["alert"] = {k: (alerting.MASK if f"alert.{k}" in alerting.SENSITIVE_KEYS
+                               and flat.get(f"alert.{k}") else v)
+                           for k, v in nested["alert"].items()}
+    items = [{"key": k, "value": safe.get(k), "type": repo.config_type_of(k),
+              "is_default": flat.get(k) == repo.schema.OPS_CONFIG_DEFAULTS.get(k),
+              "masked": k in alerting.SENSITIVE_KEYS,
+              "locked": k in repo.MAIL_SMTP_KEYS}
+             for k in sorted(flat)]
+    return {"ok": True, "config": nested, "flat": safe, "items": items,
+            "editable": sorted(repo.CONFIG_KEYS),
+            "mail_managed": sorted(repo.MAIL_SMTP_KEYS)}
 
 
 class ConfigIn(BaseModel):
@@ -180,6 +205,252 @@ def ack(payload: AckIn, sess: dict = Depends(deps.require_csrf)):
 
 
 # ================================================================ 郵件告警
+#
+# ★★ 「先測試、成功才准保存」（2026-10-23 小jo 要求）——**伺服器端強制**，不是前端 disable：
+#   測試成功時發一張短效 ticket（記憶體，10 分鐘），保存時必須帶上它，
+#   而且參數的 hash 要與測試當時**完全一致**。
+#   否則「測 A 存 B」（測好用的主機、存另一個）會讓這條規則形同虛設。
+_MAIL_TICKETS: dict[str, dict] = {}
+_MAIL_TICKET_TTL = 600.0
+_MAIL_TICKET_KEEP = 50
+
+MAIL_KEYS = tuple(alerting.PARAM_KEYS)          # 8 個參數（**不含**啟用開關）
+MAIL_SWITCH_KEY = "alert.email_enabled"          # 開關走獨立端點（見 /alert/email/toggle）
+
+
+class MailSettingsIn(BaseModel):
+    """郵件**參數**表單（2026-10-23 起不含啟用開關 —— 開關在概覽頁那一欄）。"""
+    host: str = ""
+    port: int = 587
+    user: str = ""
+    # ★ 留空或傳遮蔽值＝沿用已存的密碼（不然每改一次主機就要重打一次密碼）
+    password: str = ""
+    sender: str = ""
+    tls: bool = True
+    recipients: list[str] = []
+    min_severity: str = "warning"
+
+
+def _norm_recipients(v) -> list[str]:
+    raw = v if isinstance(v, list) else str(v or "").replace(";", ",").split(",")
+    out: list[str] = []
+    for x in raw:
+        s = str(x or "").strip()
+        if s and "@" in s and s not in out:
+            out.append(s)
+    return out
+
+
+def _effective_password(given: str) -> str:
+    """表單傳空 / 遮蔽值 → 用目前實際生效的那一組（DB 或 .env）。"""
+    p = str(given or "").strip()
+    if p and p != alerting.MASK and set(p) != {"•"}:
+        return p
+    return alerting.settings()["alert.smtp_password"]
+
+
+def _mail_settings(payload: MailSettingsIn) -> dict:
+    """把表單組成 `alerting.settings()` 那種格式（含 `alert.` 前綴的完整 key）。"""
+    sev = (payload.min_severity or "warning").strip().lower()
+    if sev not in repo.SEVERITIES:
+        sev = "warning"
+    return {
+        "alert.smtp_host": (payload.host or "").strip(),
+        "alert.smtp_port": int(payload.port or 587),
+        "alert.smtp_user": (payload.user or "").strip(),
+        "alert.smtp_password": _effective_password(payload.password),
+        "alert.smtp_from": (payload.sender or "").strip(),
+        "alert.smtp_tls": bool(payload.tls),
+        "alert.email_recipients": _norm_recipients(payload.recipients),
+        "alert.email_min_severity": sev,
+    }
+
+
+def _fingerprint(st: dict) -> str:
+    """參數指紋 —— ticket 綁定它，防止「測 A 存 B」。"""
+    import hashlib
+    import json as _json
+    raw = _json.dumps({k: st.get(k) for k in MAIL_KEYS}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _gc_tickets() -> None:
+    import time as _t
+    now = _t.time()
+    for k in [k for k, v in _MAIL_TICKETS.items() if v["exp"] < now]:
+        _MAIL_TICKETS.pop(k, None)
+    if len(_MAIL_TICKETS) > _MAIL_TICKET_KEEP:
+        for k in sorted(_MAIL_TICKETS, key=lambda x: _MAIL_TICKETS[x]["exp"])[:-_MAIL_TICKET_KEEP]:
+            _MAIL_TICKETS.pop(k, None)
+
+
+@router.get("/alert/email")
+def mail_settings(sess: dict = Depends(deps.require_ops)):
+    """郵件告警表單初值。**密碼不回明文**，只回 `password_set`。
+
+    `source`：'db' = 參數來自運維端存的值；'env' = 還沒存過，目前用 `.env`。
+    """
+    st = alerting.status()
+    return {"ok": True, "settings": st, "editable": list(MAIL_KEYS),
+            "password_mask": alerting.MASK}
+
+
+@router.post("/alert/email/test")
+def mail_settings_test(payload: MailSettingsIn, sess: dict = Depends(deps.require_csrf)):
+    """用**表單上的參數**（還沒存進 DB）連線＋登入＋寄一封測試信。
+
+    成功 → 回 `{ok, ticket, to, ...}`；失敗 → 400/502 + **人看得懂的原因**
+    （認證失敗 / TLS 不匹配 / 連不上…），前端據此顯示、且不給保存。
+    """
+    bad = _ops_guard(sess)
+    if bad:
+        return bad
+    st = _mail_settings(payload)
+
+    # ---- 先做能講清楚的靜態檢查（不用連線就知道錯的）
+    missing: list[str] = []
+    if not st["alert.smtp_host"]:
+        missing.append("SMTP 主機")
+    if not st["alert.email_recipients"]:
+        missing.append("收件人")
+    if not (st["alert.smtp_from"] or st["alert.smtp_user"]):
+        missing.append("寄件人（或 SMTP 帳號）")
+    if not st["alert.smtp_user"] and st["alert.smtp_password"]:
+        missing.append("SMTP 帳號（填了密碼卻沒有帳號）")
+    if missing:
+        return _err(400, "請先填寫：" + "、".join(missing))
+    port = int(st["alert.smtp_port"])
+    if not (1 <= port <= 65535):
+        return _err(400, f"連接埠不合法：{port}（應在 1–65535）")
+
+    to = st["alert.email_recipients"]
+    subject = "[客服系統] 郵件告警設定測試"
+    body = ("這是一封測試信，收到代表 SMTP 參數正確。\n\n"
+            f"主機：{st['alert.smtp_host']}:{port}\n"
+            f"TLS：{'開' if st['alert.smtp_tls'] else '關'}\n"
+            f"帳號：{st['alert.smtp_user'] or '（未設定，匿名寄送）'}\n"
+            f"寄件人：{st['alert.smtp_from'] or st['alert.smtp_user']}\n"
+            f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+    # ★ 這裡**不看** enabled（正在設定的人可能還沒勾啟用），直接試寄
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = st["alert.smtp_from"] or st["alert.smtp_user"]
+    msg["To"] = ", ".join(to)
+    msg.set_content(body)
+    try:
+        with alerting._connect(st) as sm:
+            if st["alert.smtp_user"]:
+                sm.login(st["alert.smtp_user"], st["alert.smtp_password"])
+            sm.send_message(msg)
+    except Exception as e:  # noqa: BLE001 —— 全部翻成人看得懂的原因
+        reason = alerting.explain_error(e, st)
+        log.warning("郵件設定測試失敗（%s:%s）: %s", st["alert.smtp_host"], port, e)
+        audit.log_standalone(sess, "alert_notify", payload={
+            "test": "smtp", "ok": False, "host": st["alert.smtp_host"],
+            "port": port, "error": reason[:200]})
+        # ★ 文案由後端統一回（前端直接顯示，不再自己加前綴，否則會出現
+        #   「測試失敗，請重試：測試失敗：…」這種重複兩次前綴的句子 —— 實測踩過）。
+        return _err(400, "測試失敗，請重試：" + reason)
+
+    # ---- 成功 → 發 ticket（保存時要用）
+    _gc_tickets()
+    ticket = uuid.uuid4().hex
+    _MAIL_TICKETS[ticket] = {
+        "fp": _fingerprint(st),
+        "exp": time.time() + _MAIL_TICKET_TTL,
+        "staff_id": sess.get("staff_id"),
+    }
+    audit.log_standalone(sess, "alert_notify", payload={
+        "test": "smtp", "ok": True, "host": st["alert.smtp_host"],
+        "port": port, "to": to})
+    return {"ok": True, "ticket": ticket, "to": to,
+            "expires_in": int(_MAIL_TICKET_TTL),
+            "message": f"測試信已寄給 {', '.join(to)}"}
+
+
+class MailSaveIn(MailSettingsIn):
+    ticket: str = ""
+
+
+@router.post("/alert/email/save")
+def mail_settings_save(payload: MailSaveIn, sess: dict = Depends(deps.require_csrf)):
+    """保存郵件**參數** —— **必須先測試成功**（帶測試時拿到的 ticket）。
+
+    ★ 只寫 8 個參數，**不動啟用開關**（那是概覽頁的滑動開關，走 `/alert/email/toggle`）。
+      所以「保存參數」不會把本來開著的提醒關掉，也不會偷偷打開。
+
+    三道檢查（任何一道不過都不會寫 DB）：
+      ① ticket 存在且未過期；
+      ② ticket 是這位登入者拿的（不能被別人撿去用）；
+      ③ **參數與測試當時完全一致**（改了任何一個欄位 → 要重新測試）。
+    """
+    bad = _ops_guard(sess)
+    if bad:
+        return bad
+    st = _mail_settings(payload)
+
+    _gc_tickets()
+    tk = _MAIL_TICKETS.get((payload.ticket or "").strip())
+    if not tk:
+        return _err(400, "請先按「測試」，測試成功後才能儲存（測試連結已過期或不存在）")
+    if tk.get("staff_id") != sess.get("staff_id"):
+        return _err(403, "這張測試憑證不是你的，請自己按一次測試")
+    if tk["fp"] != _fingerprint(st):
+        # 差異在哪裡要講出來，否則使用者只會覺得「明明測試過了」
+        cur = alerting.settings()
+        diff = [k for k in MAIL_KEYS if str(st.get(k)) != str(cur.get(k))]
+        return _err(400, "參數在測試之後被改過（" + "、".join(
+            k.split(".", 1)[-1] for k in diff[:4]) + "），請重新測試再儲存")
+
+    old = alerting.settings()
+    internal_repo.set_ops_config_many({k: st[k] for k in MAIL_KEYS})
+    _MAIL_TICKETS.pop((payload.ticket or "").strip(), None)   # 一張 ticket 只能用一次
+
+    # ★ 審計不落密碼，只記「有沒有換」
+    audit.log_standalone(sess, "ops_config_change", payload={
+        "scope": "alert_email",
+        "from": {k: ("***" if k in alerting.SENSITIVE_KEYS else old.get(k)) for k in MAIL_KEYS},
+        "to": {k: ("***" if k in alerting.SENSITIVE_KEYS else st.get(k)) for k in MAIL_KEYS},
+        "password_changed": old["alert.smtp_password"] != st["alert.smtp_password"],
+    })
+    return {"ok": True, "settings": alerting.status()}
+
+
+class MailToggleIn(BaseModel):
+    enabled: bool
+
+
+@router.post("/alert/email/toggle")
+def mail_toggle(payload: MailToggleIn, sess: dict = Depends(deps.require_csrf)):
+    """★ 郵件提醒的**啟用開關**（2026-10-23 與參數配置分開）。
+
+    ★★ 鐵則：**參數沒配置好就不准開**。使用者按下去如果參數是空的，
+      要回一句「請先配置參數」，而不是默默把開關打開然後永遠寄不出信
+      （那種「顯示已開啟、其實一封都沒寄」是最難排查的狀態）。
+
+    ⚠️ 這個端點不要求測試 ticket —— 開關本身不改任何連線參數，
+       而且「能不能開」已經由 `configured()` 保證了（參數是測試過才存得進來的）。
+    """
+    bad = _ops_guard(sess)
+    if bad:
+        return bad
+    st = alerting.status()
+    if payload.enabled and not st["configured"]:
+        missing = []
+        if not st["smtp_host"]:
+            missing.append("SMTP 主機")
+        if not st["recipients"]:
+            missing.append("收件人")
+        return _err(400, "請先配置郵件參數"
+                         + (f"（還缺：{'、'.join(missing)}）" if missing else "")
+                         + " —— 按右上角「參數配置」完成測試後就能開啟")
+    internal_repo.set_ops_config(MAIL_SWITCH_KEY, bool(payload.enabled))
+    audit.log_standalone(sess, "ops_config_change", payload={
+        "scope": "alert_email_switch",
+        "from": bool(st["enabled"]), "to": bool(payload.enabled)})
+    return {"ok": True, "settings": alerting.status()}
+
 
 @router.get("/mail")
 def mail_status(sess: dict = Depends(deps.require_ops)):
@@ -192,7 +463,11 @@ class MailTestIn(BaseModel):
 
 @router.post("/mail/test")
 def mail_test(payload: MailTestIn, sess: dict = Depends(deps.require_csrf)):
-    """寄一封測試信驗證 SMTP 設定（未配置時回 `ok=False` 講清楚缺什麼）。"""
+    """寄一封測試信驗證**目前生效**的 SMTP 設定（未配置時回 `ok=False` 講清楚缺什麼）。
+
+    ⚠️ 這支只測「已保存/已生效」的參數；要測「還沒保存的表單值」請用
+       `POST /alert/email/test`。
+    """
     bad = _ops_guard(sess)
     if bad:
         return bad
@@ -201,11 +476,11 @@ def mail_test(payload: MailTestIn, sess: dict = Depends(deps.require_csrf)):
         st = alerting.status()
         missing = []
         if not st["enabled"]:
-            missing.append("ALERT_EMAIL_ENABLED")
+            missing.append("啟用開關")
         if not st["smtp_host"]:
-            missing.append("SMTP_HOST")
+            missing.append("SMTP 主機")
         if not st["recipients"]:
-            missing.append("alert.email_recipients")
+            missing.append("收件人")
         return _err(400, "郵件告警尚未配置，缺少：" + "、".join(missing))
     ok = alerting.send_mail("[客服系統] 測試信", "這是一封測試信，收到代表 SMTP 設定正確。", to=to)
     audit.log_standalone(sess, "alert_notify", payload={"test": True, "to": to, "sent": bool(ok)})

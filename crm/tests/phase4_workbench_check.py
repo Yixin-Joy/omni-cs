@@ -10,7 +10,7 @@
   [4] 對話（訊息正序 + 該會話 AI 留痕）
   [5] 人工回覆 → 建任務 source='manual' + 審計 reply_send（同一事務）
   [6] 回覆入參校驗（空內容 / 帳號不屬該商家 / 非客服角色）
-  [7] 清紅點 → Connector is_handled=true + 審計 conversation_read
+  [7] 清紅點 → Connector is_handled=true（★ 刻意不寫審計，2026-10-20 決策）
   [8] CSRF 閘門
   [9] Connector 不可達 → 502（明確區分「沒會話」與「拿不到」）
 
@@ -316,7 +316,12 @@ def main() -> int:
             au = q(CRM_DSN, "SELECT count(*) AS n FROM crm_audit_log"
                             " WHERE business_id = %s AND operate_type = 'conversation_read'",
                    (biz,), fetch=True)
-            check(int(au[0]["n"]) >= 1, "寫了審計 conversation_read")
+            # ★ 2026-10-20 起「打開會話 / 清紅點」**刻意不記審計**（見 `app/audit.py` 開頭：
+            #   量最大、排查價值最低，會把真正的問題埋掉）。原本這條斷言要求「有寫」，
+            #   是舊行為留下的死斷言 —— 改成驗「沒有寫」，才對得上現在的設計。
+            check(int(au[0]["n"]) == 0,
+                  "★ 清紅點不寫 conversation_read 審計（2026-10-20 決策）"
+                  f"（實得 {au[0]['n']} 筆）")
             r = c.get("/console/agent/conversations",
                       params={"business_id": biz, "platform": "whatsapp"})
             s1 = next((it for it in (r.json().get("items") or []) if it["key"] == S1), {})

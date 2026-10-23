@@ -308,8 +308,10 @@ _IMG_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 def _files_of(raw, payload, attachments) -> list[dict]:
     """把訊息裡的附件正規化成工作台渲染用的 `files`（沿用舊單體的欄位約定）。
 
-    - wechat / whatsapp：從 `forwarded_payload.uploadedFiles` 取（`raw_content` 備援）
     - ig / fb：從 `igfb_dm.attachments` 取
+    - wechat / whatsapp：從 `forwarded_payload.uploadedFiles` 取（`raw_content` 備援）
+    - ★ 兩邊都再退一步吃 `assets`（本系統自己的寫法）—— 這樣**修好之前已經落庫的
+      歷史訊息**也能顯示附件，不必等新訊息才看到。
     """
     import json as _json
 
@@ -323,40 +325,49 @@ def _files_of(raw, payload, attachments) -> list[dict]:
                 return None
         return None
 
-    items: list = []
-    a = _load(attachments)
-    if isinstance(a, list) and a:
-        for x in a:
-            if not isinstance(x, dict):
-                continue
-            url = x.get("url") or ((x.get("payload") or {}).get("url") if isinstance(x.get("payload"), dict) else "") or ""
-            typ = x.get("type") or "file"
-            items.append({
-                "url": url,
-                "filename": url.split("/")[-1].split("?")[0] or typ or "檔案",
-                "fileSize": int(x.get("fileSize") or 0),
-                "isImage": typ == "image" or url.lower().endswith(_IMG_EXT),
-                "sticker": typ == "sticker",
-                "sticker_id": str(x.get("sticker_id") or ""),
-            })
-        return items
+    def _norm(x: dict) -> dict:
+        url = (x.get("url")
+               or ((x.get("payload") or {}).get("url") if isinstance(x.get("payload"), dict) else "")
+               or "")
+        typ = x.get("type") or "file"
+        stem = url.split("?")[0]
+        tail = stem.rsplit("/", 1)[-1]
+        has_ext = "." in tail.lstrip(".")
+        # ⚠️ 舊版一律寫 `type="image"`（連 PDF 也標成圖）→ 氣泡變破圖。
+        #   規則：`isImage` 明確標示 > **有副檔名就信副檔名** > 沒有副檔名才看 `type`。
+        is_img = (bool(x.get("isImage"))
+                  or tail.lower().endswith(_IMG_EXT)
+                  or (typ == "image" and not has_ext))
+        fname = (x.get("filename") or "").strip() or tail
+        return {
+            "url": url,
+            "filename": fname or typ or "檔案",
+            "fileSize": int(x.get("fileSize") or x.get("size") or 0),
+            "isImage": bool(is_img),
+            "sticker": bool(x.get("sticker")) or typ == "sticker",
+            "sticker_id": str(x.get("sticker_id") or ""),
+        }
+
+    for src in (attachments, payload, raw):
+        a = _load(src)
+        if not isinstance(a, list) or not a:
+            continue
+        got = [_norm(x) for x in a if isinstance(x, dict)]
+        if got:
+            return got
 
     for src in (payload, raw):
         d = _load(src)
-        if isinstance(d, dict) and isinstance(d.get("uploadedFiles"), list):
-            for x in d["uploadedFiles"]:
-                if not isinstance(x, dict):
-                    continue
-                url = x.get("url") or ""
-                items.append({
-                    "url": url,
-                    "filename": x.get("filename") or (url.split("/")[-1].split("?")[0] or "檔案"),
-                    "fileSize": int(x.get("fileSize") or 0),
-                    "isImage": bool(x.get("isImage")) or url.lower().endswith(_IMG_EXT),
-                    "sticker": bool(x.get("sticker")),
-                    "sticker_id": str(x.get("sticker_id") or ""),
-                })
-            return items
+        if not isinstance(d, dict):
+            continue
+        # `uploadedFiles` 是工作台的渲染契約（舊單體沿用）；`assets` 是本系統的寫法。
+        # 兩個都吃 → 修好之前已落庫的歷史訊息也能顯示附件。
+        for key in ("uploadedFiles", "assets"):
+            lst = d.get(key)
+            if isinstance(lst, list) and lst:
+                got = [_norm(x) for x in lst if isinstance(x, dict)]
+                if got:
+                    return got
     return []
 
 
@@ -391,7 +402,11 @@ def messages_query(
             "  FROM forward_log"
             " WHERE platform = %s AND platform_business_account_id = %s AND sender_id = %s"
             f"   AND (%s IS NULL OR {_ts} < %s::timestamptz)"
-            f" ORDER BY {_ts} DESC NULLS LAST LIMIT %s"
+            # ★★ 必須有 `id` 當第二排序鍵（2026-10-22 修「重新整理後順序錯亂」）：
+            #   Meta 的 `created_time` 只到**秒**，同一秒內兩則訊息（客戶連發、
+            #   或補拉一批舊訊息）`created_at` 完全相同 → 只排 `ts` 時資料庫每次
+            #   回的順序都可能不同 → 前端 20 秒輪詢一次就換一次順序（看起來亂跳）。
+            f" ORDER BY {_ts} DESC NULLS LAST, id DESC LIMIT %s"
         )
         args = (platform, platform_business_account_id, end_user_sender_id, before, before, n)
     elif platform in ("ig", "fb"):
@@ -405,7 +420,7 @@ def messages_query(
             " WHERE platform = %s AND platform_business_account_id = %s"
             "   AND (sender_id = %s OR conversation_key = %s)"
             f"   AND (%s IS NULL OR {_ts} < %s::timestamptz)"
-            f" ORDER BY {_ts} DESC NULLS LAST LIMIT %s"
+            f" ORDER BY {_ts} DESC NULLS LAST, id DESC LIMIT %s"
         )
         args = (platform, platform_business_account_id, end_user_sender_id,
                 end_user_sender_id, before, before, n)
@@ -532,17 +547,17 @@ def _conv_dm_forward_sql(before: str | None) -> str:
         "       count(*) FILTER (WHERE direction = 'inbound'"
         "                          AND COALESCE(is_handled, false) = false) AS pending,"
         "       count(*) AS total,"
-        f"       (array_agg(direction ORDER BY {_ts} DESC NULLS LAST))[1] AS last_dir,"
-        f"       (array_agg(message_type ORDER BY {_ts} DESC NULLS LAST))[1] AS last_type,"
-        f"       (array_agg(raw_content ORDER BY {_ts} DESC NULLS LAST))[1] AS last_raw,"
-        f"       (array_agg(forwarded_payload ORDER BY {_ts} DESC NULLS LAST))[1] AS last_payload,"
+        f"       (array_agg(direction ORDER BY {_ts} DESC NULLS LAST, id DESC))[1] AS last_dir,"
+        f"       (array_agg(message_type ORDER BY {_ts} DESC NULLS LAST, id DESC))[1] AS last_type,"
+        f"       (array_agg(raw_content ORDER BY {_ts} DESC NULLS LAST, id DESC))[1] AS last_raw,"
+        f"       (array_agg(forwarded_payload ORDER BY {_ts} DESC NULLS LAST, id DESC))[1] AS last_payload,"
         # ★ 顯示名字：收訊時存在 `forwarded_payload.webClientSender.name`
         #   （WhatsApp webhook 的 contacts[].profile.name；舊單體也是寫在這）。
         #   ⚠️ 用 `FILTER (WHERE ... <> '')` 而不是 NULLIF —— **array_agg 不會忽略 NULL**
         #   （跟 string_agg 不一樣）：我方的 outbound payload 沒有這個欄位，
         #   排序後 [1] 就會拿到那個 NULL，名字永遠是空的。
         f"       (array_agg(forwarded_payload->'webClientSender'->>'name'"
-        f"                  ORDER BY {_ts} DESC NULLS LAST)"
+        f"                  ORDER BY {_ts} DESC NULLS LAST, id DESC)"
         "        FILTER (WHERE COALESCE(forwarded_payload->'webClientSender'->>'name', '') <> ''"
         "        ))[1] AS last_name,"
         "       NULL::text AS post_id"
@@ -563,9 +578,9 @@ def _conv_dm_igfb_sql() -> str:
         "       count(*) FILTER (WHERE direction = 'inbound'"
         "                          AND COALESCE(is_handled, false) = false) AS pending,"
         "       count(*) AS total,"
-        f"       (array_agg(direction ORDER BY {_ts} DESC NULLS LAST))[1] AS last_dir,"
-        f"       (array_agg(message_type ORDER BY {_ts} DESC NULLS LAST))[1] AS last_type,"
-        f"       (array_agg(text ORDER BY {_ts} DESC NULLS LAST))[1] AS last_raw,"
+        f"       (array_agg(direction ORDER BY {_ts} DESC NULLS LAST, id DESC))[1] AS last_dir,"
+        f"       (array_agg(message_type ORDER BY {_ts} DESC NULLS LAST, id DESC))[1] AS last_type,"
+        f"       (array_agg(text ORDER BY {_ts} DESC NULLS LAST, id DESC))[1] AS last_raw,"
         "       NULL::jsonb AS last_payload,"
         # ★★ 顯示名字：取**最近一則「有名字」的**，不能直接拿最後一則。
         #   我方的 outbound（AI 回覆 / 客服回覆）`sender_name` 是空的，
@@ -573,7 +588,7 @@ def _conv_dm_igfb_sql() -> str:
         #   （症狀：一被回覆，會話列表上的用戶名就消失）。同一段的
         #   forward_log SQL 早就加了這個 FILTER，IG/FB 這兩支漏了。
         #   ⚠️ `array_agg` 不像 `string_agg` 會忽略 NULL —— 不能靠 COALESCE 蒙過去。
-        f"       (array_agg(COALESCE(sender_name, '') ORDER BY {_ts} DESC NULLS LAST)"
+        f"       (array_agg(COALESCE(sender_name, '') ORDER BY {_ts} DESC NULLS LAST, id DESC)"
         "        FILTER (WHERE COALESCE(sender_name, '') <> ''))[1] AS last_name,"
         "       NULL::text AS post_id"
         "  FROM igfb_dm"
@@ -605,14 +620,14 @@ def _conv_comment_sql() -> str:
         "       count(*) AS total,"
         "       'inbound'::text AS last_dir,"
         "       'comment'::text AS last_type,"
-        f"       (array_agg(text ORDER BY {_ts} DESC NULLS LAST))[1] AS last_raw,"
+        f"       (array_agg(text ORDER BY {_ts} DESC NULLS LAST, id DESC))[1] AS last_raw,"
         "       NULL::jsonb AS last_payload,"
         # 同一道理由：只取有名字的那幾列（我方回覆的留言 `from_name` 是 '客服'，
         # 但保險起見仍過濾空值）。留言的作者名另外靠
         # `igfb_store.fill_comment_names_from_dm()` 用私訊名回填。
-        f"       (array_agg(COALESCE(from_name, '') ORDER BY {_ts} DESC NULLS LAST)"
+        f"       (array_agg(COALESCE(from_name, '') ORDER BY {_ts} DESC NULLS LAST, id DESC)"
         "        FILTER (WHERE COALESCE(from_name, '') <> ''))[1] AS last_name,"
-        f"       (array_agg(post_id ORDER BY {_ts} DESC NULLS LAST))[1] AS post_id"
+        f"       (array_agg(post_id ORDER BY {_ts} DESC NULLS LAST, id DESC))[1] AS post_id"
         "  FROM igfb_comment"
         " WHERE platform = %s AND platform_business_account_id = %s"
         "   AND comment_id IS NOT NULL AND comment_id <> ''"
@@ -725,7 +740,7 @@ def posts(
 
     sql = (
         "SELECT p.post_id, p.name, p.media_type, p.media_url, p.permalink, p.like_count,"
-        "       p.comments_count, p.created_at,"
+        "       p.comments_count, COALESCE(p.created_at, p.inserted_at) AS ts,"
         "       (SELECT count(*) FROM igfb_comment c"
         "         WHERE c.platform = p.platform AND c.post_id = p.post_id"
         "           AND c.parent_id IS NULL AND COALESCE(c.replied, false) = false"
@@ -733,10 +748,16 @@ def posts(
         "           AND (c.from_id IS NULL OR c.from_id = '' OR c.from_id <> %s)) AS new_comments,"
         "       (SELECT count(*) FROM igfb_comment c"
         "         WHERE c.platform = p.platform AND c.post_id = p.post_id"
-        "           AND c.parent_id IS NULL) AS top_comments"
+        "           AND c.parent_id IS NULL) AS top_comments,"
+        "       (p.created_at IS NULL) AS ts_est"
         "  FROM igfb_post p"
         " WHERE p.platform = %s AND p.platform_business_account_id = %s"
-        " ORDER BY p.created_at DESC NULLS LAST"
+        # ★★ 用 `COALESCE(created_at, inserted_at)` 排序與顯示（2026-10-22 修）：
+        #   留言比貼文先到時（webhook 順序），`land_comment()` 會先建一列**佔位貼文**
+        #   —— 它的 `created_at` 是 NULL。工作台照 `created_at` 排 → 新貼文被丟到
+        #   清單最下面（NULLS LAST），而且時間欄是空的（「新增帖文沒有時間顯示」）。
+        #   退回 `inserted_at` 至少是「這篇貼文被發現的時間」，不會空白也不會沉底。
+        " ORDER BY COALESCE(p.created_at, p.inserted_at) DESC NULLS LAST"
         " LIMIT %s OFFSET %s"
     )
     conn = db.connect()
@@ -764,7 +785,11 @@ def posts(
             "permalink": r[4] or "",
             "like_count": int(r[5] or 0),
             "comments_count": int(r[9] or 0),   # 頂層實算，比 API 的可靠
+            # ★ `created_at_estimated`＝這篇只有佔位列（留言先到、貼文還沒同步）。
+            #   ★ 2026-10-22：工作台**不再顯示**「待同步」標籤（小jo 要求），
+            #     但欄位保留 —— 後端邏輯與測試仍靠它判斷，且日後要除錯也有依據。
             "created_at": _iso(r[7]),
+            "created_at_estimated": bool(r[10]),
             "new_comments": int(r[8] or 0),
             "top_comments": int(r[9] or 0),
         }
@@ -833,7 +858,8 @@ def post_detail(
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT post_id, name, media_type, media_url, permalink, like_count,"
-                "       comments_count, created_at"
+                "       comments_count, COALESCE(created_at, inserted_at) AS ts,"
+                "       (created_at IS NULL) AS ts_estimated"
                 "  FROM igfb_post"
                 " WHERE platform = %s AND platform_business_account_id = %s AND post_id = %s",
                 (platform, platform_business_account_id, post_id),
@@ -861,7 +887,10 @@ def post_detail(
         "post_id": p[0], "name": p[1] or "", "media_type": p[2] or "",
         "media_url": p[3] or "", "permalink": p[4] or "",
         "like_count": int(p[5] or 0), "comments_count": len(comments),
-        "created_at": _iso(p[7]), "platform": platform,
+        # `ts_estimated=True` ＝ 貼文本身還沒同步過（`created_at` 為空，退回 inserted_at）。
+        # ★ 2026-10-22：工作台不再顯示「待同步」標籤（小jo 要求）；欄位保留供後端判斷。
+        "created_at": _iso(p[7]), "created_at_estimated": bool(p[8]),
+        "platform": platform,
         "comments": comments,
     }
 

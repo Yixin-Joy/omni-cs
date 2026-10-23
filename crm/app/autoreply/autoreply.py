@@ -394,11 +394,14 @@ async def handle_inbound(
 
     # 6) 這次要用哪一組啟用集（設計案 §9.2）：私訊 / 未配置過的貼文 = 商家基準集；
     #    貼文留言且配置過 → 該貼文的覆寫集。空集代表該層不跑。
+    #    ★★ 一定要把 `post_id` + `channel` 一起傳下去 —— Connector 推 inbound 時
+    #       不可能帶 `post_config_id`（那是 CRM 主鍵），只傳 id 的話貼文配置永遠不生效。
     scope_set = None
     try:
         scope_set = await asyncio.to_thread(
             autoreply_db.resolve_scope_set, business_id,
-            scope=scope, post_config_id=post_config_id)
+            scope=scope, post_config_id=post_config_id,
+            post_id=post_id, platform=channel)
     except Exception as e:
         log.warning("取啟用集失敗（改用商家基準集）%s/%s: %s", channel, scope, e)
 

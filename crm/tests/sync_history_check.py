@@ -149,6 +149,49 @@ def run() -> int:
         short = originals["sync_history"]([])
         check(short.get("ok") is True and short.get("items") == [],
               "connector_client.sync_history([]) 直接回空，不打網路")
+
+        # ---------------- 非阻塞版（工作台實際用的那條路）
+        print("\n[8] 非阻塞版 /sync-history/start + /status（2026-10-22）")
+        import asyncio  # noqa: PLC0415
+
+        router.repo.list_accounts = lambda business_id, platform="": [
+            dict(a) for a in ACCOUNTS.get(int(business_id), [])]
+        router.connector_client.sync_history = fake_sync
+
+        async def _run_async():
+            r = await router.sync_history_start(sess=SUPER)
+            check(r.get("ok") is True and bool(r.get("job_id")), "start 立刻回 job_id",
+                  str(r)[:80])
+            check(r.get("accounts") == 3, "回報帳號數", str(r.get("accounts")))
+            job_id = r["job_id"]
+            # 等背景任務跑完（假 sync 是同步函式，很快）
+            st = None
+            for _ in range(40):
+                await asyncio.sleep(0.05)
+                st = router.sync_history_status(job_id=job_id, sess=SUPER)
+                if st.get("status") != "running":
+                    break
+            check(st.get("status") == "done", f"輪詢到 done（實得 {st.get('status')}）",
+                  str(st)[:120])
+            check((st.get("totals") or {}).get("dm_new") == 4, "status 帶回 totals")
+            check(isinstance(st.get("elapsed"), (int, float)), "帶 elapsed（前端顯示秒數）")
+            check("staff_id" not in st, "不外洩 staff_id")
+            # 別人的 job 看不到
+            other = router.sync_history_status(job_id=job_id, sess=AGENT)
+            check(getattr(other, "status_code", 200) == 404,
+                  "★ 別人的 job → 404（不然可以偷看別的客服補到什麼）",
+                  str(getattr(other, "status_code", "")))
+            # 不存在的 job
+            gone = router.sync_history_status(job_id="nope", sess=SUPER)
+            check(getattr(gone, "status_code", 200) == 404, "不存在的 job → 404")
+
+            # 沒有帳號 → job_id 空字串（前端直接收工，不要一直輪詢）
+            router.repo.list_accounts = lambda business_id, platform="": []
+            r2 = await router.sync_history_start(sess=SUPER)
+            check(r2.get("job_id") == "" and r2.get("accounts") == 0,
+                  "沒有帳號 → job_id 空、accounts=0", str(r2)[:60])
+
+        asyncio.run(_run_async())
     finally:
         router.repo.list_businesses = originals["list_businesses"]
         router.repo.list_accounts = originals["list_accounts"]

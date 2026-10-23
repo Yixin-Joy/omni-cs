@@ -583,6 +583,13 @@
       b.onclick = function () {
         state.tab = t.key;
         // 審計日誌的資料不在 reloadAll() 裡（避免每次登入都拉），切到此分頁才載入
+        if (t.key === 'ai') {
+          // ★ 先載再畫：AI 開關頁顯示的是**實際狀態**（沒有「預設」這層），
+          //   資料還沒到就渲染會短暫顯示全關，比看到舊商家的值更容易誤判。
+          if (!state.aiBizId && state.businesses.length) state.aiBizId = state.businesses[0].id;
+          loadAi().then(render);
+          return;
+        }
         render();
       };
       nav.appendChild(b);
@@ -667,11 +674,12 @@
     var pills = SCOPES.map(function (s) {
       var item = state.aiSwitch.filter(function (x) {
         return x.platform === s.platform && x.scope === s.scope;
-      })[0] || { enabled: true, configured: false };
-      var cls = item.enabled ? 'switch on' : 'switch off';
+      })[0];
+      // ★ 直接顯示當前狀態；沒有「預設值」這種東西（新商家建立時已寫入實列）。
+      var on = !!(item && item.enabled);
+      var cls = on ? 'switch on' : 'switch off';
       return '<button class="' + cls + '" data-act="ai-toggle" data-p="' + s.platform + '" data-s="' + s.scope + '">'
         + '<span class="dot2"></span>' + esc(s.label)
-        + (item.configured ? '' : ' <span class="muted" style="font-weight:400">(預設)</span>')
         + '</button>';
     }).join('');
     $('view').innerHTML =
@@ -680,9 +688,7 @@
       + '<div class="acts"><button class="ghost" data-act="ai-all-on">全部開啟</button>'
       + '<button class="ghost" data-act="ai-all-off">全部關閉</button></div></div>'
       + '<div class="card"><h3>第一層開關' + infotip('關閉某場景後，該商家該場景完全不跑 AI。實際生效＝這裡的設定 AND 平台帳號自己的 AI 開關。') + '</h3>'
-      + '<div class="grid">' + pills + '</div></div>'
-      + '<div class="card" style="border:none;background:transparent;box-shadow:none;padding:0">'
-      + '<div class="muted" style="font-size:12.5px">設定會逐筆寫入。標「預設」表示尚未單獨設定過，目前沿用預設值（開啟）。</div></div>';
+      + '<div class="grid">' + pills + '</div></div>';
     var sel = $('aiBizSel');
     if (sel) sel.onchange = function () { state.aiBizId = parseInt(this.value, 10); loadAi(); };
   }
@@ -901,7 +907,7 @@
       });
     } else if (act === 'ai-toggle') {
       var p = t.getAttribute('data-p'), s = t.getAttribute('data-s');
-      var cur = state.aiSwitch.filter(function (x) { return x.platform === p && x.scope === s; })[0] || { enabled: true };
+      var cur = state.aiSwitch.filter(function (x) { return x.platform === p && x.scope === s; })[0] || { enabled: false };
       api('/api/admin/ai-switch', 'POST', { business_id: state.aiBizId, platform: p, scope: s, enabled: !cur.enabled })
         .then(function (res) { if (guard(res)) loadAi().then(render); });
     } else if (act === 'ai-all-on' || act === 'ai-all-off') {

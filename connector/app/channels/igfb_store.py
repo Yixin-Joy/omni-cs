@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -49,33 +50,47 @@ def _media_ext(url: str) -> str:
     return suffix if suffix and len(suffix) <= 5 else "bin"
 
 
-async def download_attachments(attachments: list[dict]) -> list[dict]:
+async def download_attachments(attachments: list[dict],
+                              client: httpx.AsyncClient | None = None) -> list[dict]:
     """把媒體 url 下載到 media/，改指向本機 `/files/<name>`（失敗保留原 url）。
 
     FB/IG 的媒體是簽名 CDN url，不需 auth（與舊單體 `igfb_db._download_attachments` 相同）。
+
+    ★ 可傳入共用的 `client`（2026-10-22）：原本每個附件都 `async with AsyncClient()`
+      新建連線池，補拉一批舊訊息時等於每張圖都重新握手一次 —— 這是「重新整理很慢」
+      的主要來源之一。批次呼叫端（`history_sync._sync_dm`）現在共用一個 client，
+      並且**並行**下載。
     """
-    out: list[dict] = []
-    for i, att in enumerate(attachments or []):
-        url = (att or {}).get("url") or ""
-        if not url or att.get("type") == "sticker":
-            out.append(att)
-            continue
-        fname = f"igfb_{int(time.time() * 1000)}_{i}.{_media_ext(url)}"
-        save_path = Path(config.MEDIA_DIR) / fname
-        try:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                resp = await client.get(url)
+    items = list(attachments or [])
+    if not items:
+        return []
+    own = client is None
+    cli = client or httpx.AsyncClient(timeout=30, follow_redirects=True)
+    try:
+        async def _one(i: int, att: dict) -> dict:
+            url = (att or {}).get("url") or ""
+            if not url or att.get("type") == "sticker":
+                return att
+            fname = f"igfb_{int(time.time() * 1000)}_{i}.{_media_ext(url)}"
+            save_path = Path(config.MEDIA_DIR) / fname
+            try:
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                resp = await cli.get(url)
                 resp.raise_for_status()
                 save_path.write_bytes(resp.content)
-            a2 = dict(att)
-            a2["url"] = f"/files/{fname}"
-            a2["fileSize"] = save_path.stat().st_size
-            out.append(a2)
-        except Exception as e:  # noqa: BLE001 —— 下載失敗不影響訊息本身
-            log.warning("IG/FB 媒體下載失敗 %s: %s", url, e)
-            out.append(att)
-    return out
+                a2 = dict(att)
+                a2["url"] = f"/files/{fname}"
+                a2["fileSize"] = save_path.stat().st_size
+                return a2
+            except Exception as e:  # noqa: BLE001 —— 下載失敗不影響訊息本身
+                log.warning("IG/FB 媒體下載失敗 %s: %s", url, e)
+                return att
+
+        return list(await asyncio.gather(*[_one(i, a) for i, a in enumerate(items)]))
+
+    finally:
+        if own:
+            await cli.aclose()
 
 
 # ---------------------------------------------------------------- 落地
@@ -366,6 +381,35 @@ def _current_media_url(platform: str, post_id: str) -> str:
             return (row[0] or "") if row else ""
     except Exception:  # noqa: BLE001
         return ""
+    finally:
+        conn.close()
+
+
+def post_needs_sync(platform: str, post_id: str) -> bool:
+    """這篇貼文是不是**還沒真正同步過**（只有留言先到時建的佔位列）。
+
+    ★ 為什麼要問（2026-10-22 小jo「服務運行期間新增帖文沒有時間顯示」）：
+      留言的 webhook 常常比貼文資料更早到。`land_comment()` 會先插一列
+      **佔位貼文**（name='（貼文資訊待同步）'，`created_at` 是 NULL、
+      `media_url` 是空的），等 `POST_SYNC_MINUTES`（預設 5 分鐘）那輪才補。
+      這段空窗裡工作台看到的就是「有這篇貼文、但沒有時間」（排序還會被
+      `NULLS LAST` 丟到最底下）。而且如果該粉專的 `/feed` 讀不到
+      （缺 `pages_read_engagement` 時回 200 + 空陣列），**永遠不會被補**。
+      → 收留言時就主動補一次（一篇一次，成本可忽略）。
+    """
+    pid = (post_id or "").strip()
+    if not pid:
+        return False
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT created_at IS NULL OR COALESCE(name, '') = '（貼文資訊待同步）'"
+                "  FROM igfb_post WHERE platform=%s AND post_id=%s", (platform, pid))
+            row = cur.fetchone()
+            return bool(row[0]) if row else True   # 根本沒有這列 → 當然要補
+    except Exception:  # noqa: BLE001
+        return False
     finally:
         conn.close()
 

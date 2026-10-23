@@ -275,6 +275,35 @@ def all_scope_modes(business_id: int) -> dict[str, bool]:
     return {f"{r['platform']}:{r['scope']}": bool(r["enabled"]) for r in rows}
 
 
+def backfill_ai_switches() -> int:
+    """給「建商家的年代還沒有 seed」的舊商家補齊 6 把開關列（全開）。
+
+    ★ 只補**缺的列**（`ON CONFLICT DO NOTHING`）—— 手動關掉的那把不會被蓋回來，
+      所以這一步可以每次啟動都跑，且與「預設值」無關（就是補成實際可用的狀態）。
+    ★ 為什麼要補：管理員端的舊版是「讀不到就當 true」，客服端是「讀不到就當 false」，
+      同一個商家兩邊顯示相反。補成實列後兩端讀同一份資料。
+    """
+    total = 0
+    for platform, scope in config.AUTOREPLY_SCOPES:
+        total += execute(
+            "INSERT INTO business_ai_switch (business_id, platform, scope, enabled)"
+            " SELECT b.id, %s, %s, true FROM crm_business b"
+            " ON CONFLICT (business_id, platform, scope) DO NOTHING",
+            (platform, scope),
+        )
+    return total
+
+
+async def backfill_ai_switches_async() -> None:
+    """非同步包裝（服務啟動時用），失敗只記 log 不擋啟動。"""
+    try:
+        n = await asyncio.to_thread(backfill_ai_switches)
+        if n:
+            log.info("舊商家 AI 開關補齊 %s 把（缺列補成開啟）", n)
+    except Exception as e:  # noqa: BLE001
+        log.warning("舊商家 AI 開關補齊失敗: %s", e)
+
+
 # ---- 層級開關（FAQ / 業務表格 / RAG；無此列 = 啟用，沿用舊預設） ----
 
 def layer_enabled(business_id: int, layer: str) -> bool:
@@ -380,8 +409,29 @@ def business_scope_set(business_id: int) -> dict:
     return out
 
 
+def post_config_id_for(platform: str, post_id: str) -> int:
+    """用「平台 + 貼文原生 ID」反查 `post_ai_config.id`；沒配置過回 0。
+
+    ★★ 為什麼一定要有這一步（2026-10-22 修的 P0）：
+      `post_ai_config.id` 是 **CRM 內部主鍵**，Connector 推 inbound 時拿不到 ——
+      它只知道 `post_id`（平台原生 ID）。所以 `crm_ai_inbound_queue.content` 裡
+      **從來沒有** `post_config_id`，worker 讀出來永遠是 0 →
+      `resolve_scope_set()` 一路走 `business_scope_set()`（商家基準集）
+      → **貼文特殊配置形同不存在**（取消了某條 FAQ 照樣命中）。
+      貼文配置的解析必須在 CRM 這一側做，用平台原生 ID 對齊。
+    """
+    plat = (platform or "").strip()
+    pid = (post_id or "").strip()
+    if not plat or not pid:
+        return 0
+    rows = query("SELECT id FROM post_ai_config WHERE platform=%s AND post_id=%s",
+                 (plat, pid))
+    return int(rows[0]["id"]) if rows else 0
+
+
 def resolve_scope_set(business_id: int, *, scope: str = "dm",
-                      post_config_id: int = 0) -> dict:
+                      post_config_id: int = 0, post_id: str = "",
+                      platform: str = "") -> dict:
     """這次要用哪一組啟用集（§9.2）。
 
     * 私訊 → 商家基準集。
@@ -389,9 +439,31 @@ def resolve_scope_set(business_id: int, *, scope: str = "dm",
       因為彈窗的預設候選就是基準集。一旦配置過就完全按自己的儲存，不再逐組 fallback。
     * 貼文總開關關 → 三層全空、三層開關全關（該貼文不用 AI）。
 
+    ★ `post_config_id` 為 0 但有 `platform` + `post_id` 時**自己反查**
+      （見 `post_config_id_for()` 的說明）：正式流程（worker / 補拉）走的就是這條，
+      因為 Connector 不可能知道 CRM 的主鍵。
+    ★ 傳進來的 `post_config_id` 若與 `post_id` 對不上（呼叫端傳錯），改用 `post_id` 反查，
+      不讓一個錯 id 把整則貼文的配置指到別的貼文身上。
+
     回傳 `{"faq":[ids], "table":[ids], "kb":[ids], "layers":{...}, "source": str}`；
     某層是 `[]` 就代表那層這次不跑。
     """
+    if scope == "comment":
+        plat = (platform or "").strip()
+        pid = (post_id or "").strip()
+        if post_config_id:
+            # 驗一下這個 id 是不是真的屬於這則貼文（呼叫端傳錯 id 會靜默套錯配置）
+            rows = query("SELECT platform, post_id FROM post_ai_config WHERE id=%s",
+                         (int(post_config_id),))
+            if not rows:
+                post_config_id = 0
+            elif pid and (rows[0]["post_id"] or "") != pid:
+                log.warning("post_config_id=%s 屬於貼文 %s，與這次的 %s 不符 → 改用 post_id 反查",
+                            post_config_id, rows[0]["post_id"], pid)
+                post_config_id = 0
+        if not post_config_id and plat and pid:
+            post_config_id = post_config_id_for(plat, pid)
+
     if scope == "comment" and post_config_id:
         cfg = query("SELECT enabled, configured, kb_enabled, table_enabled, faq_enabled"
                     " FROM post_ai_config WHERE id=%s", (int(post_config_id),))

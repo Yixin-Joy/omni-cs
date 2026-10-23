@@ -115,9 +115,23 @@ def create_manual_reply(sess: dict, *, business_id: int, platform: str, bp_accou
     cfg, _ = internal_repo.ops_config()
     mr = int(cfg.get("outbound.max_retry", 3))
     bs = int(cfg.get("outbound.backoff_seconds", 1))
+    # ★ 只保留 Connector 認得的欄位，並且**一定要把 filename / mime 帶下去**：
+    #   Connector 存檔後 `media_key` 只剩 `<sha16>.<ext>`，原始檔名只有這裡有。
+    #   少了它 → WhatsApp 的 document 顯示 sha 檔名、工作台氣泡也只有 sha，
+    #   而且 Connector 判斷「是不是圖」只能靠副檔名（PDF 會被當成圖 → 破圖）。
+    clean_assets = []
+    for a in (assets or []):
+        if not isinstance(a, dict) or not a.get("media_key"):
+            continue
+        clean_assets.append({
+            "media_key": str(a["media_key"]).strip(),
+            "filename": str(a.get("filename") or "").strip(),
+            "mime": str(a.get("mime") or "").strip(),
+            "caption": str(a.get("caption") or "").strip(),
+        })
     content = {
         "text": (text or "").strip(),
-        "assets": [a for a in (assets or []) if isinstance(a, dict) and a.get("media_key")],
+        "assets": clean_assets,
         "source": "manual",
         "scope": scope,
     }
