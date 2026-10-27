@@ -29,6 +29,15 @@ def _client(timeout: float = 10.0) -> httpx.AsyncClient:
         base_url=config.CRM_INTERNAL_BASE,
         timeout=timeout,
         headers={"X-Internal-Token": config.INTERNAL_API_TOKEN or ""},
+        # ★★ 內部呼叫**絕不能走系統代理**。
+        #   httpx 預設 `trust_env=True` → 會讀 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY。
+        #   這台機器（以及很多開發機）掛著 Clash 之類的代理，於是把
+        #   `http://127.0.0.1:8020` 也送去代理 → 代理回
+        #   `502 upstream connect failed: ... (os error 10061)`。
+        #   症狀是「服務明明活著、health 也通，但內部呼叫全部失敗」，
+        #   而且失敗點散落在領任務 / 回報狀態 / 拉映射，非常難查。
+        #   127.0.0.1 是本機 loopback，不存在「需要代理出去」的情境。
+        trust_env=False,
         **kw,
     )
 

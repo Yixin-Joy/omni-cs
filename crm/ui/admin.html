@@ -571,8 +571,13 @@
     if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
     if (method !== 'GET') { opt.headers['X-CSRF-Token'] = state.csrf; }
     return fetch(path, opt).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (d) {
-        return { status: r.status, data: d || {} };
+      // ★ 先取原文再試著解析：JSON 解析失敗時（FastAPI 的 500 是純文字）
+      //   若直接 `.json().catch(()=>({}))`，真正的錯誤內容會消失，
+      //   呼叫端只剩一句「操作失敗」可看，排查線索被自己吃掉。
+      return r.text().then(function (txt) {
+        var d = {};
+        try { d = JSON.parse(txt); } catch (e) { d = {}; }
+        return { status: r.status, data: d || {}, raw: txt };
       });
     });
   }
@@ -1295,7 +1300,11 @@
        客戶換商家時會撞「該平台帳號已被綁定」而完全不知道為什麼。 */
   function openUnbind(id) {
     var row = findAcct(id);
-    if (!row) return;
+    if (!row) {
+      // ★ 不靜默 return —— 靜默會讓人以為「按了沒反應」，比報錯更難查。
+      toast('找不到這個帳號（清單可能已過期，請關掉彈窗重開）', true);
+      return;
+    }
     state.unbindId = id;
     $('unbindWho').textContent = row.platform_business_account_id
       + (row.display_name ? '（' + row.display_name + '）' : '');
@@ -1306,16 +1315,49 @@
     openOv('ovUnbind');
   }
 
+  /* ★ 錯誤一定要「自證」。
+     原本這裡用 `guard(res)`，它在「非 JSON 響應」時（FastAPI 的 500 是純文字
+     `Internal Server Error`）會拿到 `{}` → `!undefined` → 只顯示「操作失敗」，
+     真正的 status 與原因全部消失，等於自己把排查線索吃掉。
+     現在把 HTTP 狀態碼與響應原文都露出來，出問題時一眼看得出是哪一類。 */
+  function unbindFail(res, extra) {
+    var d = res.data || {};
+    var msg;
+    if (d.error) {
+      msg = d.error;
+    } else if (d.detail) {
+      msg = typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail);
+    } else if (res.status === 500) {
+      msg = '伺服器內部錯誤（HTTP 500）—— 詳情看 CRM 服務日誌';
+    } else if (res.status === 404) {
+      msg = '這個帳號已經不存在（HTTP 404），請關掉彈窗重新整理清單';
+    } else if (res.status === 403) {
+      msg = '權限不足或 CSRF 校驗失敗（HTTP 403），請按 F5 重新整理後再試';
+    } else if (res.status === 401) {
+      msg = '登入已過期（HTTP 401），請重新登入';
+    } else {
+      msg = 'HTTP ' + res.status + (res.raw ? '：' + String(res.raw).slice(0, 120) : '');
+    }
+    ovErr('ovUnbindErr', (extra ? extra + '：' : '') + msg);
+  }
+
   $('unbindOk').onclick = function () {
     var id = state.unbindId;
-    if (!id) return;
+    if (!id) {
+      ovErr('ovUnbindErr', '沒有選到帳號，請關掉彈窗重新點「解綁」');
+      return;
+    }
     var btn = $('unbindOk');
     btn.disabled = true;
     btn.textContent = '解綁中…';
     api('/api/admin/accounts/unbind', 'POST', { id: id }).then(function (res) {
       btn.disabled = false;
       btn.textContent = '確認解綁';
-      if (!guard(res)) { ovErr('ovUnbindErr', res.data.error || '解綁失敗'); return; }
+      if (res.status === 401) { window.location.href = '/login'; return; }
+      if (res.status !== 200 || !res.data.ok) {
+        unbindFail(res, '解綁失敗');
+        return;
+      }
       var d = res.data || {};
       var extra = [];
       if (d.post_config_deleted) extra.push('清掉 ' + d.post_config_deleted + ' 條貼文配置');
@@ -1325,7 +1367,14 @@
       toast('已解綁' + (extra.length ? '（' + extra.join('、') + '）' : ''));
       // 表單如果正在編輯這個帳號，先退出編輯模式（帳號已經不存在了）
       if ($('acctAdd').dataset.editCredId === String(id)) resetAcctForm();
-      loadAcct().then(function () { loadBiz().then(function () { if (state.tab === 'biz') viewBiz(); }); });
+      loadAcct().then(function () {
+        if (state.tab === 'biz') loadBiz().then(function () { viewBiz(); });
+      });
+    }).catch(function (e) {
+      // 網路層失敗（fetch 本身 reject）—— 後端根本沒收到，跟 500 是兩回事
+      btn.disabled = false;
+      btn.textContent = '確認解綁';
+      ovErr('ovUnbindErr', '連不上 CRM 服務：' + String(e && e.message ? e.message : e).slice(0, 120));
     });
   };
 

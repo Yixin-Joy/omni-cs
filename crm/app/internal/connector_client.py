@@ -32,6 +32,15 @@ def _client(timeout: float = 5.0) -> httpx.Client:
         base_url=config.CONNECTOR_INTERNAL_BASE,
         timeout=timeout,
         headers={"X-Internal-Token": config.INTERNAL_API_TOKEN or ""},
+        # ★★ 內部呼叫**絕不能走系統代理**。
+        #   httpx 預設 `trust_env=True` → 讀 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY。
+        #   開發機常掛 Clash 之類的代理，於是 `http://127.0.0.1:8010` 也被送去代理，
+        #   代理回 `502 upstream connect failed: ... (os error 10061)`。
+        #   症狀極具誤導性：Connector 活著、/health 也通，但推送帳號映射、
+        #   體檢 token、補拉歷史全部失敗 —— 而 `_push_account_map` 又是吞例外的，
+        #   於是變成「解綁成功、但 Connector 快取沒清、舊憑證還能收發」。
+        #   127.0.0.1 是 loopback，不存在需要代理出去的情境。
+        trust_env=False,
         **kw,
     )
 
