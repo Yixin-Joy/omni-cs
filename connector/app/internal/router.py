@@ -30,12 +30,21 @@ def _err(status: int, msg: str) -> JSONResponse:
 
 class AccountMapIn(BaseModel):
     items: list[dict] = []
+    # ★ True＝以這份清單為準**覆蓋**本地快取（不在清單裡的列直接刪掉）。
+    #   解綁時必須帶 True：純 upsert 不會刪掉剛解綁那一列，它會殘留到下一次
+    #   60s 定時拉取，這段窗口內舊憑證還能收發 ── 等於「解綁了但還在用」。
+    #   預設 False 保留原本的增量語義（呼叫端沒要求就別亂刪）。
+    replace: bool = False
 
 
 @router.post("/account-map/sync")
 def account_map_sync(payload: AccountMapIn):
-    """收 CRM 主動推送的映射（冪等 upsert）。"""
+    """收 CRM 主動推送的映射（冪等）。"""
     items = payload.items or []
+    if payload.replace:
+        n = account_map.replace_all(items)
+        account_map.mark_synced()
+        return {"ok": True, "replaced": n}
     n = account_map.upsert_many(items)
     account_map.mark_synced()
     return {"ok": True, "upserted": n}

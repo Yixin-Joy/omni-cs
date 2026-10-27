@@ -30,10 +30,14 @@ PLATFORMS = tuple(config.CHANNEL_LABELS.keys())          # wechat / whatsapp / i
 VALID_SCOPES = set(repo.AI_SWITCH_SCOPES)                # {(platform, scope)}
 
 
-def _push_account_map() -> None:
-    """綁定/解綁後主動把帳號映射推給 Connector（加速器；失敗無妨，有拉取兜底）。"""
+def _push_account_map(replace: bool = False) -> None:
+    """綁定/解綁後主動把帳號映射推給 Connector（加速器；失敗無妨，有拉取兜底）。
+
+    ★ `replace=True` 用於**解綁**：要求 Connector 以這份清單為準覆蓋本地快取。
+      少了它，剛解綁那一列會殘留到下一次 60s 定時拉取 —— 那段窗口內舊憑證還能收發。
+    """
     try:
-        connector_client.push_account_map()
+        connector_client.push_account_map(replace=replace)
     except Exception:  # noqa: BLE001
         pass
 
@@ -307,6 +311,49 @@ def update_account(payload: AccountUpdateIn, sess: dict = Depends(deps.require_a
                            "enabled": payload.enabled, "credential_updated": cred is not None})
     _push_account_map()
     return {"ok": True}
+
+
+class AccountUnbindIn(BaseModel):
+    id: int
+
+
+@router.post("/accounts/unbind")
+def unbind_account(payload: AccountUnbindIn, sess: dict = Depends(deps.require_admin)):
+    """解綁平台帳號（物理刪除，釋放 UNIQUE 鍵 → 可以綁到別的商家）。
+
+    ★ 與 `accounts/update` 傳 `enabled=false` 的差別：
+      - 停用：帳號還在、憑證還在、**仍占著唯一鍵**，只是不收發。想暫時關掉用它。
+      - 解綁：這條記錄整個消失。憑證一併帶走，貼文配置一起刪，
+        歷史發送任務保留但解除關聯。要換商家 / 換帳號就必須解綁。
+
+    ⚠️ 順序要求：先查資料（唯讀、不持鎖）→ 事務內刪 → **事務外**推映射。
+      推送會打 HTTP，放進事務裡等於持著 DB 連線等網路，慢的時候會卡住整表。
+    """
+    with repo.ro() as cur:
+        cur.execute(
+            "SELECT business_id, platform, platform_business_account_id, display_name, enabled"
+            "  FROM crm_business_platform_account WHERE id = %s",
+            (payload.id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return _err(404, "平台帳號不存在（可能已被刪除，請重新整理）")
+
+    with repo.tx() as (_, cur):
+        result = repo.delete_account(cur, payload.id)
+        if result["deleted"] == 0:
+            return _err(404, "平台帳號不存在")
+        audit.log(cur, sess, "platform_account_unbind",
+                  business_id=row["business_id"], platform=row["platform"],
+                  bp_account_id=payload.id,
+                  payload={"platform_business_account_id": row["platform_business_account_id"],
+                           "display_name": row["display_name"],
+                           "was_enabled": row["enabled"],
+                           "post_config_deleted": result["post_config_deleted"],
+                           "tasks_detached": result["tasks_detached"]})
+    # ★ 必須 replace=True：讓 Connector 立刻把這把憑證從快取裡抹掉。
+    _push_account_map(replace=True)
+    return {"ok": True, **result}
 
 
 # ================================================================ 員工

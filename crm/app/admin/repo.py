@@ -195,6 +195,41 @@ def update_account(cur, aid: int, display_name: str | None, ai_enabled: bool, en
         )
 
 
+def delete_account(cur, aid: int) -> dict:
+    """解綁：**物理刪除**平台帳號列（回傳各表處理筆數，供前端講清楚帶走了什麼）。
+
+    ★★ 為什麼是硬刪，不是 `enabled=false`：
+      唯一鍵 `UNIQUE (platform, platform_business_account_id)` **不看 enabled** ——
+      軟刪除會讓該平台帳號永遠卡在原商家，換商家時只能改庫。而「解綁」的核心
+      訴求正是「把這個平台帳號釋放出來，可以綁給別的商家」。單純想暫停收發
+      請用「停用」開關（那條路本來就在，不動）。
+
+    ★★ 外鍵處理 —— 有兩個表引用 `crm_business_platform_account(id)`：
+      - `post_ai_config`：該帳號的貼文配置**直接刪**。帳號都沒了，貼文 AI 配置
+        沒有歸屬，留著只會在下次綁同一個貼文時變成幽靈配置。
+      - `crm_outbound_task`：**保留歷史任務**，只把外鍵置 NULL。任務自己還有
+        `platform` 欄（text），對帳與審計痕跡不會斷；反過來若連任務一起刪，
+        等於湮滅「這家發過什麼」的紀錄 —— 那是不能刪的。
+
+    ⚠️ 呼叫端必須在同一個事務裡呼叫，並且**事務外**才推 account_map。
+    """
+    cur.execute("DELETE FROM post_ai_config WHERE business_platform_account_id = %s", (aid,))
+    post_cfg = cur.rowcount
+    cur.execute(
+        "UPDATE crm_outbound_task SET business_platform_account_id = NULL"
+        " WHERE business_platform_account_id = %s",
+        (aid,),
+    )
+    detached = cur.rowcount
+    cur.execute("DELETE FROM crm_business_platform_account WHERE id = %s", (aid,))
+    deleted = cur.rowcount
+    return {
+        "deleted": deleted,
+        "post_config_deleted": post_cfg,
+        "tasks_detached": detached,
+    }
+
+
 # ---------------------------------------------------------------- 員工
 
 def list_staff() -> list[dict]:

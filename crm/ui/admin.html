@@ -142,6 +142,18 @@
   .box.wide { max-width: 620px; }
   .box h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
   .box .sub { font-size: 12.5px; color: var(--text-soft); margin-bottom: 15px; }
+
+  /* ---------- 解綁確認 ---------- */
+  .unbind-target { background: #fafbfc; border: 1px solid var(--border); border-radius: 9px;
+    padding: 10px 12px; margin-bottom: 12px; }
+  .ut-row { display: flex; gap: 10px; font-size: 12.5px; line-height: 1.9; }
+  .ut-k { color: var(--text-soft); flex: 0 0 38px; }
+  .ut-v { color: var(--text); font-weight: 600; word-break: break-all; }
+  .unbind-note { background: var(--amber-soft); border-radius: 9px; padding: 11px 13px; margin-bottom: 11px; }
+  .unbind-note .un-title { font-size: 12.5px; font-weight: 700; color: var(--amber); margin-bottom: 6px; }
+  .unbind-note ul { margin: 0; padding-left: 17px; }
+  .unbind-note li { font-size: 12.5px; line-height: 1.75; color: var(--text); }
+  .unbind-hint { font-size: 12px; color: var(--text-soft); line-height: 1.7; margin-bottom: 14px; }
   .fld { margin-bottom: 13px; }
   .fld > label { display: block; font-size: 12.5px; color: var(--text-soft); font-weight: 600; margin-bottom: 5px; }
   .fld input[type=text], .fld input[type=password], .fld select {
@@ -355,9 +367,13 @@
         <div class="acct-scroll">
           <table>
             <colgroup>
-              <col style="width:76px"><col style="width:200px"><col style="width:156px">
+              <!-- ★ 欄寬是硬預算：容器可視寬 768px（.acct-scroll），七欄加起來不能超過它，
+                   否則 table-layout:fixed 也救不了 —— 會出橫向捲軸。
+                   加「解綁」按鈕後操作列從 72 → 116（兩個 tiny 按鈕 44+4+44，含 td padding 18），
+                   差額從「原生 ID / 顯示名稱 / 平台」三欄各讓一點（它們都有 break-all 會自己折行）。 -->
+              <col style="width:70px"><col style="width:178px"><col style="width:138px">
               <col style="width:68px"><col style="width:92px"><col style="width:86px">
-              <col style="width:72px">
+              <col style="width:116px">
             </colgroup>
             <thead><tr><th>平台</th><th>原生 ID</th><th>顯示名稱</th><th>憑證</th>
               <th>AI 回覆</th><th>狀態</th><th>操作</th></tr></thead>
@@ -368,6 +384,41 @@
     </div>
 
     <div class="acct-foot"><button class="ghost" data-close>關閉</button></div>
+  </div>
+</div>
+
+<!-- 解綁確認（靜態節點；不用 window.confirm —— 它會擋住整個 event loop 且樣式不可控） -->
+<div class="ov" id="ovUnbind">
+  <div class="box">
+    <h3>解綁平台帳號</h3>
+    <div class="sub">這一步<b>不能復原</b>，請確認你要的是解綁，而不是停用。</div>
+    <div class="err" id="ovUnbindErr"></div>
+
+    <div class="unbind-target">
+      <div class="ut-row"><span class="ut-k">帳號</span><span class="ut-v" id="unbindWho">—</span></div>
+      <div class="ut-row"><span class="ut-k">平台</span><span class="ut-v" id="unbindPlat">—</span></div>
+      <div class="ut-row"><span class="ut-k">商家</span><span class="ut-v" id="unbindBiz">—</span></div>
+    </div>
+
+    <div class="unbind-note">
+      <div class="un-title">解綁會發生什麼</div>
+      <ul>
+        <li>這個平台帳號從商家移除，<b>平台憑證一併刪除</b>，Connector 立刻不能再收發。</li>
+        <li>該帳號的<b>貼文 AI 配置會一起刪掉</b>（帳號沒了，配置沒有歸屬）。</li>
+        <li>歷史發送任務<b>保留</b>，只解除與這個帳號的關聯（對帳紀錄不湮滅）。</li>
+        <li>工作台左側<b>不會再出現這個帳號</b>，它的歷史會話也一併看不到。</li>
+        <li>唯一鍵釋放後，這個平台帳號可以<b>改綁到其他商家</b>。</li>
+      </ul>
+    </div>
+
+    <div class="unbind-hint">
+      只是想「先別收發」？按取消，改用清單上的「狀態」開關切成停用 —— 帳號與憑證都留著。
+    </div>
+
+    <div class="acts">
+      <button class="ghost" data-close>取消</button>
+      <button class="danger" id="unbindOk">確認解綁</button>
+    </div>
   </div>
 </div>
 
@@ -490,7 +541,8 @@
     tab: 'biz', csrf: '', me: null,
     businesses: [], staff: [], accounts: [], aiSwitch: [], aiBizId: null,
     // ★ 審計的狀態在 /ui/audit_view.js（頁面不持有）
-    permStaffId: null, acctBizId: null, editBizId: null, editStaffId: null
+    permStaffId: null, acctBizId: null, editBizId: null, editStaffId: null,
+    unbindId: null   // 解綁確認彈窗目前指向的平台帳號 id
   };
 
   // -------------------------------------------------- 工具
@@ -1113,7 +1165,9 @@
         + '<span class="dot2"></span>' + (a.ai_auto_reply_enabled ? '開' : '關') + '</button></td>'
         + '<td><button class="switch ' + (a.enabled ? 'on' : 'off') + '" data-acct-en="' + a.id + '">'
         + '<span class="dot2"></span>' + (a.enabled ? '啟用' : '停用') + '</button></td>'
-        + '<td><button class="ghost tiny" data-acct-cred="' + a.id + '">憑證</button></td>'
+        + '<td><button class="ghost tiny" data-acct-cred="' + a.id + '">憑證</button>'
+        // ★ 解綁＝真刪（釋放唯一鍵）；只想暫停收發請用「狀態」開關，別按這裡。
+        + ' <button class="danger tiny" data-acct-del="' + a.id + '">解綁</button></td>'
         + '</tr>';
     }).join('') : '<tr><td colspan="7" class="muted">尚未綁定平台帳號。</td></tr>';
   }
@@ -1211,7 +1265,10 @@
     var aiId = t.getAttribute('data-acct-ai');
     var enId = t.getAttribute('data-acct-en');
     var credId = t.getAttribute('data-acct-cred');
-    if (credId) {
+    var delId = t.getAttribute('data-acct-del');
+    if (delId) {
+      openUnbind(parseInt(delId, 10));
+    } else if (credId) {
       editCred(credId);
     } else if (aiId) {
       var row = findAcct(parseInt(aiId, 10));
@@ -1231,6 +1288,46 @@
       });
     }
   });
+
+  /* -------------------------------------------------- 解綁
+     ★ 走真刪除（POST /api/admin/accounts/unbind），不是切 enabled。
+       兩者差別寫在彈窗裡 —— 因為「停用」看起來像解綁，但帳號還占著唯一鍵，
+       客戶換商家時會撞「該平台帳號已被綁定」而完全不知道為什麼。 */
+  function openUnbind(id) {
+    var row = findAcct(id);
+    if (!row) return;
+    state.unbindId = id;
+    $('unbindWho').textContent = row.platform_business_account_id
+      + (row.display_name ? '（' + row.display_name + '）' : '');
+    $('unbindPlat').textContent = PLATFORM_LABEL[row.platform] || row.platform;
+    var biz = findById(state.businesses, row.business_id);
+    $('unbindBiz').textContent = biz ? biz.business_name : ('#' + row.business_id);
+    ovErr('ovUnbindErr', '');
+    openOv('ovUnbind');
+  }
+
+  $('unbindOk').onclick = function () {
+    var id = state.unbindId;
+    if (!id) return;
+    var btn = $('unbindOk');
+    btn.disabled = true;
+    btn.textContent = '解綁中…';
+    api('/api/admin/accounts/unbind', 'POST', { id: id }).then(function (res) {
+      btn.disabled = false;
+      btn.textContent = '確認解綁';
+      if (!guard(res)) { ovErr('ovUnbindErr', res.data.error || '解綁失敗'); return; }
+      var d = res.data || {};
+      var extra = [];
+      if (d.post_config_deleted) extra.push('清掉 ' + d.post_config_deleted + ' 條貼文配置');
+      if (d.tasks_detached) extra.push('保留 ' + d.tasks_detached + ' 筆歷史任務');
+      closeOv('ovUnbind');
+      state.unbindId = null;
+      toast('已解綁' + (extra.length ? '（' + extra.join('、') + '）' : ''));
+      // 表單如果正在編輯這個帳號，先退出編輯模式（帳號已經不存在了）
+      if ($('acctAdd').dataset.editCredId === String(id)) resetAcctForm();
+      loadAcct().then(function () { loadBiz().then(function () { if (state.tab === 'biz') viewBiz(); }); });
+    });
+  };
 
   function findAcct(id) {
     return (state.acctCache || []).filter(function (a) { return a.id === id; })[0];

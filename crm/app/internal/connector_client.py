@@ -71,10 +71,14 @@ def fetch_attempts_batch(task_ids: list[int]) -> dict[str, list] | None:
         return None
 
 
-def push_account_map(items: list[dict] | None = None) -> bool:
+def push_account_map(items: list[dict] | None = None, replace: bool = False) -> bool:
     """①主動推送（MIGRATION_PLAN §1.3）：綁定/解綁後把映射推給 Connector。
 
     **加速器，不是保證** —— 失敗只記 log；真正的保證是 Connector 每 60s 的拉取兜底。
+
+    ★ `replace=True`（解綁時用）：要求 Connector 以這份清單為準覆蓋本地快取。
+      少了它，剛解綁那一列還留在 `connector_account_map`，要等下一次定時拉取
+      才被清掉 —— 那段窗口內舊憑證仍可收發，等於「解綁了但還在用」。
     """
     if items is None:
         from app.internal import repo  # 避免循環 import
@@ -92,7 +96,8 @@ def push_account_map(items: list[dict] | None = None) -> bool:
                 #   收發只能用 .env fallback。與「定時拉取」路徑的欄位必須一致。
             }
             for it in items
-        ]
+        ],
+        "replace": bool(replace),
     }
     try:
         with _client() as c:
