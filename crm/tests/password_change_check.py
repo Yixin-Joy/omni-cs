@@ -273,7 +273,7 @@ def part_b() -> None:
 
         # ---- 新密碼太短 → 400
         code, d = _req("/api/auth/password", sid=sid_a, method="POST", csrf=csrf_a,
-                       body={"old_password": OLD_PW, "new_password": "1234567"})
+                       body={"old_password": OLD_PW, "new_password": "short7c"})
         check(code == 400 and "8" in (d.get("error") or ""), "新密碼 7 位 → 400",
               f"HTTP {code} {d.get('error','')}")
 
