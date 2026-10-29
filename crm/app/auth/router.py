@@ -20,7 +20,7 @@ from app.auth import deps, rbac
 from app.auth import session as session_mod
 from app.core import config
 from app.core import db
-from app.core.security import verify_password
+from app.core.security import hash_password, verify_password
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -227,3 +227,86 @@ def switch_role(payload: SwitchRoleIn, sess: dict = Depends(deps.require_csrf)):
 @router.get("/me")
 def me(sess: dict = Depends(deps.require_login)):
     return {"ok": True, "staff": _staff_public(sess), "csrf_token": sess.get("csrf_token")}
+
+
+# ---------------------------------------------------------------- 自助改密碼
+
+class ChangePasswordIn(BaseModel):
+    old_password: str = ""
+    new_password: str = ""
+
+
+@router.post("/password")
+def change_password(payload: ChangePasswordIn, sess: dict = Depends(deps.require_csrf)):
+    """**客服自己改密碼**（必須提供舊密碼）。
+
+    ★ 為什麼一定要驗舊密碼：這支「已登入就能打」。若只驗 session，等於
+      「共用電腦沒登出 / session 被偷 / XSS」時直接把帳號交出去。
+    ★ 與管理員重設（`POST /api/admin/staff/password`）的分工：
+      · 這支：只能改**自己**，必須知道舊密碼；
+      · 那支：可以改**任何人**，不需要舊密碼（客服忘了密碼時的救援路徑）。
+      兩支都只寫 `password_hash`（PBKDF2-SHA256，單向）——
+      **沒有任何一支能把明文讀回來**，所以管理員看不到客服的密碼，
+      只能「重設成新的一組」。這是需求要的語義，也是唯一安全的做法。
+    """
+    staff_id = int(sess.get("staff_id") or 0)
+    sid = (sess.get("session_id") or "").strip()
+    old = payload.old_password or ""
+    new = payload.new_password or ""
+    if not staff_id:
+        return _err(403, "未登入")
+    if not old:
+        return _err(400, "請輸入舊密碼")
+    if len(new) < 8:
+        return _err(400, "新密碼至少 8 位")
+    if len(new) > 128:
+        return _err(400, "新密碼太長（最多 128 位）")
+    if new == old:
+        return _err(400, "新密碼不能與舊密碼相同")
+
+    # ★ 舊密碼也要防暴力破解：session 被偷時不設限＝可以慢慢猜。
+    #   用 deps 既有的鎖，key 加 `pwd:` 前綴 —— 否則會跟「登入失敗鎖」互相汙染
+    #   （改密碼猜錯幾次就把人擋在登入頁外，反過來也一樣）。
+    lock_key = f"pwd:{staff_id}"
+    left = deps.login_locked_seconds(lock_key)
+    if left > 0:
+        return _err(403, f"舊密碼錯誤次數過多，請 {max(1, left // 60 + 1)} 分鐘後再試")
+
+    conn = db.connect()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT password_hash, enabled FROM crm_staff WHERE id = %s",
+                        (staff_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row or not row["enabled"]:
+        return _err(403, "帳號不存在或已停用")
+
+    if not verify_password(old, row["password_hash"]):
+        remain = deps.record_login_failure(lock_key)
+        if remain < 0:
+            return _err(403, f"舊密碼錯誤次數過多，帳號已暫時鎖定 "
+                             f"{config.LOGIN_LOCK_MINUTES} 分鐘")
+        return _err(400, f"舊密碼不正確（還可嘗試 {remain} 次）")
+
+    deps.clear_login_failures(lock_key)
+
+    conn = db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE crm_staff SET password_hash = %s, updated_at = now()"
+                " WHERE id = %s", (hash_password(new), staff_id))
+            # ★ 審計只記「改了」，**絕不落密碼明文或 hash**
+            audit.log(cur, sess, "staff_password_change", payload={"staff_id": staff_id})
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    # ★ 保留當前 session（改完不要把自己踢出去），其他裝置一律失效
+    killed = session_mod.delete_staff_sessions_except(staff_id, sid)
+    return {"ok": True, "killed_sessions": killed}

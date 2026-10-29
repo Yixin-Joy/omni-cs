@@ -21,7 +21,8 @@ from app.core import db
 OPERATE_TYPES = {
     # 人員 / 權限
     "staff_create", "staff_update", "staff_disable", "staff_role_change",
-    "staff_password_reset", "business_create", "business_update", "business_disable",
+    "staff_password_reset", "staff_password_change", "business_create", "business_update",
+    "business_disable",
     "staff_business_permission_grant", "staff_business_permission_revoke",
     "platform_account_bind", "platform_account_unbind", "ai_switch_change",
     # 知識庫

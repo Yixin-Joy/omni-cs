@@ -767,7 +767,8 @@
     border-right: 1px solid var(--border); display: flex; align-items: center;
     padding: 0 12px; }
   .mbar .mwho .who { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0;
-    padding: 7px 9px; border-radius: 10px; transition: background .12s; }
+    padding: 7px 9px; border-radius: 10px; transition: background .12s;
+    position: relative; }   /* ★ .moremenu 的定位祖先（選單右緣對齊三點） */
   .mbar .mwho .who.clickable { cursor: pointer; }
   .mbar .mwho .who.clickable:hover { background: #f6f8fa; }
   .mbar .mwho .who .ava { width: 34px; height: 34px; border-radius: 50%; background: #e2e8f0;
@@ -799,15 +800,6 @@
     color: var(--accent-dark); }
 
   /* 右：登出（常駐，不依賴身分選單） */
-  .mbar .mact { flex-shrink: 0; display: flex; align-items: center;
-    padding: 0 14px; border-left: 1px solid var(--border); }
-  .mbar .mact .logout { padding: 7px 14px; border: 1px solid var(--border);
-    border-radius: 8px; background: #fafbfc; color: var(--text-soft); font-size: 12.5px;
-    font-weight: 600; cursor: pointer; font-family: inherit; white-space: nowrap;
-    transition: all .12s; }
-  .mbar .mact .logout:hover { border-color: var(--red); color: var(--red); background: #fdecec; }
-
-  /* 右：商家列 */
   .mbar .mrest { flex: 1; display: flex; align-items: center; gap: 8px;
     padding: 0 16px; min-width: 0; position: relative; }
   .mbar .mtitle { font-size: 12px; color: var(--text-soft); font-weight: 700;
@@ -975,7 +967,7 @@
 <!-- ================= 頂部：商家列（該客服名下的商家） ================= -->
 <div class="mbar" id="mbar">
   <!-- 左：當前帳號（★ 靜態節點 —— renderMerchantBar 不會動到它，否則 TopUser 綁定會失效）
-       點頭像展開「切換身分」；登出固定在頂欄右側（.mact） -->
+       點頭像展開「切換身分」；用戶信息右邊的「⋮」展開 修改密碼／登出 -->
   <div class="mwho">
     <div class="who" id="whoBox">
       <div class="ava" id="ava">–</div>
@@ -984,6 +976,20 @@
         <div class="rl" id="meRole">–</div>
       </div>
       <span class="caret" id="whoCaret" hidden>▼</span>
+      <!-- ★ 三點選單：**自己綁定**（common.js 的 UserMenu），不看角色、不看身分數量。
+           絕不放進下面的 #roleMenu —— 那是 TopUser 管的，單身分帳號連點擊都不綁，
+           放進去就等於看不到（本專案踩過）。 -->
+      <button type="button" class="morebtn" id="btnMore" aria-expanded="false"
+              aria-haspopup="menu" aria-label="更多選項" title="更多選項">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <circle cx="8" cy="3.2" r="1.55"/><circle cx="8" cy="8" r="1.55"/>
+          <circle cx="8" cy="12.8" r="1.55"/>
+        </svg>
+      </button>
+      <!-- 三點選單容器：內容由 common.js 的 UserMenu 填（修改密碼 / 登出）。
+           ★ 放在 #whoBox 內 → absolute 定位相對它，選單右緣精確對齊按鈕，
+             不會因為父層 padding 而偏移。 -->
+      <div class="moremenu" id="moreMenu" role="menu"></div>
     </div>
     <div class="rolemenu" id="roleMenu">
       <div class="rolemenu-head">切換身分</div>
@@ -992,14 +998,6 @@
   </div>
   <!-- 右：商家列（由 renderMerchantBar() 重建） -->
   <div class="mrest" id="mrest"></div>
-  <!-- ★ 登出必須常駐可見（static 節點，rebuild 不會動到它）。
-       原本它放在 #roleMenu 裡 —— 那是**預設隱藏、點頭像才展開**的選單，
-       而 TopUser.init 對「單身分」帳號直接 return（連點擊都不綁），
-       結果客服坐席（通常只有 agent 一個身分）**完全看不到也點不到登出**。
-       admin/ops 的登出一直是側欄常駐按鈕，這裡對齊那個行為。 -->
-  <div class="mact">
-    <button class="logout" id="btnLogout">登出</button>
-  </div>
 </div>
 
 <div class="app">
@@ -6333,10 +6331,13 @@ function boot() {
       console.error(e);
     });
 
-  $('btnLogout').onclick = function () {
-    fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
-      .then(function () { window.location.href = '/login'; });
-  };
+  // 「⋮」使用者選單（修改密碼 / 登出）—— 由 common.js 的 UserMenu 處理
+  // ★ csrf 要傳「取值函式」不是當時的值：這一行是**同步**執行的，
+  //   而 `state.csrf` 要等上面 `/api/auth/me` 的 .then 才填 ——
+  //   傳值會抓到空字串，改密碼時後端回 403「CSRF 校驗失敗」
+  //   （真瀏覽器自檢抓到的，看起來完全不像 CSRF 問題）。
+  UserMenu.mount({ csrf: function () { return state.csrf; },
+                   onError: function (m) { showToast(m, 6000); } });
 
   $('textInput').addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); }
