@@ -797,12 +797,15 @@
   .mbar .mwho .roleitem.cur .ic { background: #fff; color: var(--accent-dark); }
   .mbar .mwho .roleitem .now { margin-left: auto; font-size: 10.5px; font-weight: 700;
     color: var(--accent-dark); }
-  .mbar .mwho .rolemenu-foot { margin-top: 8px; padding-top: 8px;
-    border-top: 1px solid var(--border); }
-  .mbar .mwho .logout { width: 100%; padding: 8px; border: 1px solid var(--border);
+
+  /* 右：登出（常駐，不依賴身分選單） */
+  .mbar .mact { flex-shrink: 0; display: flex; align-items: center;
+    padding: 0 14px; border-left: 1px solid var(--border); }
+  .mbar .mact .logout { padding: 7px 14px; border: 1px solid var(--border);
     border-radius: 8px; background: #fafbfc; color: var(--text-soft); font-size: 12.5px;
-    cursor: pointer; font-family: inherit; }
-  .mbar .mwho .logout:hover { border-color: var(--red); color: var(--red); background: #fdecec; }
+    font-weight: 600; cursor: pointer; font-family: inherit; white-space: nowrap;
+    transition: all .12s; }
+  .mbar .mact .logout:hover { border-color: var(--red); color: var(--red); background: #fdecec; }
 
   /* 右：商家列 */
   .mbar .mrest { flex: 1; display: flex; align-items: center; gap: 8px;
@@ -972,7 +975,7 @@
 <!-- ================= 頂部：商家列（該客服名下的商家） ================= -->
 <div class="mbar" id="mbar">
   <!-- 左：當前帳號（★ 靜態節點 —— renderMerchantBar 不會動到它，否則 TopUser 綁定會失效）
-       點頭像展開「切換身分 + 登出」 -->
+       點頭像展開「切換身分」；登出固定在頂欄右側（.mact） -->
   <div class="mwho">
     <div class="who" id="whoBox">
       <div class="ava" id="ava">–</div>
@@ -985,11 +988,18 @@
     <div class="rolemenu" id="roleMenu">
       <div class="rolemenu-head">切換身分</div>
       <div id="roleList"></div>
-      <div class="rolemenu-foot"><button class="logout" id="btnLogout">登出</button></div>
     </div>
   </div>
   <!-- 右：商家列（由 renderMerchantBar() 重建） -->
   <div class="mrest" id="mrest"></div>
+  <!-- ★ 登出必須常駐可見（static 節點，rebuild 不會動到它）。
+       原本它放在 #roleMenu 裡 —— 那是**預設隱藏、點頭像才展開**的選單，
+       而 TopUser.init 對「單身分」帳號直接 return（連點擊都不綁），
+       結果客服坐席（通常只有 agent 一個身分）**完全看不到也點不到登出**。
+       admin/ops 的登出一直是側欄常駐按鈕，這裡對齊那個行為。 -->
+  <div class="mact">
+    <button class="logout" id="btnLogout">登出</button>
+  </div>
 </div>
 
 <div class="app">
